@@ -4,6 +4,7 @@ import time
 
 GENERAL_VECTOR = 0x80000080
 PC_REGISTER = 0x25
+PACKET_SIZE = 0x4000
 
 
 class Client:
@@ -83,6 +84,11 @@ def main():
     check("step", stop.startswith("T05") and client.register(PC_REGISTER) == GENERAL_VECTOR + 4, hex(client.register(PC_REGISTER)))
     libraries = client.request("qXfer:libraries:read::0,fff")
     check("libraries", "coredll.elf" in libraries.lower(), libraries[:200])
+    data = bytes(range(256)) * 32
+    full = "M080380000,%x:%s" % (len(data) - 8, data[:-8].hex())
+    check("full packet size", len(full) == PACKET_SIZE, str(len(full)))
+    check("full packet write", client.request(full) == "OK")
+    check("full packet read", client.request("m80380000,%x" % (len(data) - 8)) == data[:-8].hex())
     client.send("k")
 
 

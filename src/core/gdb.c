@@ -1433,7 +1433,13 @@ static bool next_packet(gdb_t *gdb, char *packet, bool *interrupt) {
         uint8_t *end = memchr(gdb->input, '#', gdb->input_length);
         if (!end || (size_t)(end - gdb->input) + 3 > gdb->input_length) return false;
         size_t length = (size_t)(end - gdb->input) - 1;
-        if (length >= PACKET_MAX) length = PACKET_MAX - 1;
+        if (length > PACKET_MAX) {
+            consume(gdb, (size_t)(end - gdb->input) + 3);
+            logf_gdb(gdb, "gdb: dropped a %zu byte packet, over the %d byte limit\n", length, PACKET_MAX);
+            if (!gdb->no_ack) send_all(gdb, "+", 1);
+            send_packet(gdb, "E01");
+            continue;
+        }
         memcpy(packet, gdb->input + 1, length);
         packet[length] = 0;
         gdb->packet_length = length;
@@ -1554,7 +1560,7 @@ void gdb_service(gdb_t *gdb) {
         detach_debugger(gdb);
         if (!accept_client(gdb, false)) return;
     }
-    static char packet[PACKET_MAX];
+    static char packet[PACKET_MAX + 1];
     receive(gdb, false);
     while (gdb->client >= 0) {
         bool interrupt;
