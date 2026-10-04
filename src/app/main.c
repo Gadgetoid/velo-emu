@@ -44,6 +44,7 @@
 #define BACKUP_SECONDS   600
 #define BACKUP_KEEP      10
 #define NOTICE_SECONDS   2
+#define SPEED_SETTLE_SECONDS 10ull
 #define POWER_PRESS_SECONDS 0.2
 #define BACKLIGHT_PRESS_SECONDS 0.1
 #define AUDIO_CHUNK 8192
@@ -1322,7 +1323,7 @@ int main(int argc, char **argv) {
     rapi_data_path("rapi.sock", rapi_socket, sizeof rapi_socket);
     rapi_data_path("sync-manifest.txt", sync_manifest, sizeof sync_manifest);
     desktop_t *desktop = desktop_create(rapi_socket, sync_manifest);
-    uint64_t serial_reconnect_at = 0;
+    uint64_t serial_reconnect_at = 0, serial_unplug_at = 0;
     serial_mode_t serial_reconnect_mode = SERIAL_OFF;
     serial_restored(&serial, machine, &serial_reconnect_at, &serial_reconnect_mode);
     if (serial_mode != SERIAL_OFF && serial_reconnect_at) {
@@ -1720,7 +1721,7 @@ int main(int argc, char **argv) {
                     key_layout = machine_key_layout(machine);
                     snprintf(settings.machine, sizeof settings.machine, "%s", current.id);
                     settings_save(&settings);
-                    serial_reconnect_at = 0;
+                    serial_reconnect_at = serial_unplug_at = 0;
                     if (mode != SERIAL_OFF) {
                         serial_reconnect_mode = mode;
                         serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
@@ -1793,10 +1794,14 @@ int main(int argc, char **argv) {
         if (serial.gateway && net_gateway_take_desktop_connected(serial.gateway) && settings.shared_folder[0]) {
             desktop_sync(desktop, settings.shared_folder);
         }
-        if (desktop_take_reconnect(desktop) && serial.mode == SERIAL_NETWORK) {
-            serial_open(&serial, machine, SERIAL_OFF);
-            serial_reconnect_mode = SERIAL_NETWORK;
-            serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
+        if (desktop_take_reconnect(desktop) && serial.mode == SERIAL_NETWORK) serial_unplug_at = machine_cycles(machine) + SPEED_SETTLE_SECONDS * MACHINE_CLOCK_HZ;
+        if (serial_unplug_at && machine_cycles(machine) >= serial_unplug_at) {
+            serial_unplug_at = 0;
+            if (serial.mode == SERIAL_NETWORK) {
+                serial_open(&serial, machine, SERIAL_OFF);
+                serial_reconnect_mode = SERIAL_NETWORK;
+                serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
+            }
         }
         if (desktop_take_status(desktop, desktop_notice, sizeof desktop_notice)) {
             notice = desktop_notice;

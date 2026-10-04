@@ -160,7 +160,7 @@ static void run_baud(desktop_t *desktop, rapi_t *rapi) {
         set_status(desktop, "%s", rapi_error(rapi));
         return;
     }
-    set_status(desktop, "desktop connection set to %u baud, reconnecting", desktop->baud);
+    set_status(desktop, "desktop connection set to %u baud; reconnecting in a few seconds", desktop->baud);
     pthread_mutex_lock(&desktop->lock);
     desktop->reconnect = true;
     pthread_mutex_unlock(&desktop->lock);

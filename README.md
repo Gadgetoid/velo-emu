@@ -175,7 +175,7 @@ velo-rapi --help
 
 Velo paths are relative to `\My Documents` unless they start with `/` or `\`; both separate folders. Registry keys start with `HKCU`, `HKLM`, `HKCR` or `HKU`. `--socket=PATH` picks another socket, such as one from `velo-headless --rapi=PATH`. CE 2.0's stock ROM lacks `rapisrv.exe`, the RAPI server; without it CE 2.0 reports "Out of Memory" when the cable is connected.
 
-CE's desktop connection runs at 19200 baud, about 1.6 KB/s. PC Link > Connection Speed, or `velo-rapi baud 115200`, makes a faster connection the PC Connection (on CE 1.0 it adds a hidden `` `Desktop @ 115200` `` connection to the registry; CE 2.0 has its own `` `Serial Port @ `` ones), and the menu ticks the speed in use; the menu then reconnects the cable, and with `velo-rapi` it applies from the next connection. At 115200 the emulated CPU sets the pace: about 1.9 KB/s at CPU Speed 1x and 5.8 KB/s at 4x.
+CE's desktop connection runs at 19200 baud, about 1.6 KB/s. PC Link > Connection Speed, or `velo-rapi baud 115200`, makes a faster connection the PC Connection (on CE 1.0 it adds a hidden `` `Desktop @ 115200` `` connection to the registry; CE 2.0 has its own `` `Serial Port @ `` ones), and the menu ticks the speed in use; the menu then reconnects the cable after about 10 seconds, as CE only picks up the change if the old connection has had time to settle, and with `velo-rapi` it applies from the next connection. The speed is kept in the Velo's registry, so it lasts as long as the machine's saved state. At 115200 the emulated CPU sets the pace: about 1.9 KB/s at CPU Speed 1x and 5.8 KB/s at 4x.
 
 ### Installing CE 1.0 software
 
