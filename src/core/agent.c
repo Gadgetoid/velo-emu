@@ -81,9 +81,12 @@ static bool send_all(int fd, const uint8_t *data, size_t length) {
     return true;
 }
 
+static void receive_frames(agent_t *agent, mailbox_t *mailbox);
+
 static void accept_host(agent_t *agent, mailbox_t *mailbox) {
     struct pollfd poll_fd = { .fd = agent->listener, .events = POLLIN };
     if (poll(&poll_fd, 1, 0) <= 0) return;
+    if (agent->client >= 0) receive_frames(agent, mailbox);
     int client = accept(agent->listener, NULL, NULL);
     if (client < 0) return;
 #ifdef SO_NOSIGPIPE
