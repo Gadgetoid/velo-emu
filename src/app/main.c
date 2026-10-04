@@ -1070,6 +1070,14 @@ static machine_t *start_machine(const profile_t *profile, uint32_t speed, const 
         return machine;
     }
     FILE *existing = fopen(state, "rb");
+    if (existing && state_file) {
+        fclose(existing);
+        snprintf(message, sizeof message, "velo: cannot load %s with %s; it was saved with another ROM, or isn't a velo-emu state", state_file,
+                 file_leaf_name(rom_path));
+        *notice = message;
+        machine_destroy(machine);
+        return NULL;
+    }
     if (existing) {
         fclose(existing);
         char backup[1200];
