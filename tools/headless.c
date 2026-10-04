@@ -110,7 +110,8 @@ typedef struct {
     int      png_cell, png_backlight;
     bool     trace_pc, host_time;
     double   key_times[32];
-    unsigned key_codes[32];
+    unsigned key_codes[32][4];
+    int      key_lengths[32];
     int      key_count;
     double   tap_times[32];
     int      tap_x[32], tap_y[32];
@@ -167,7 +168,7 @@ static const option_t OPTIONS[] = {
     [OPT_HOST_TIME] = { "host-time", NULL, "set the clock from this computer at a cold boot", 0 },
     [OPT_HEADING_INPUT] = { NULL, NULL, "Input, at emulated times in seconds", 0 },
     [OPT_TAP] = { "tap", "SECONDS:X:Y[:HOLD]", "hold the pen at a screen position, for 0.5 s by default (0.08 for double taps)", 32 },
-    [OPT_KEY] = { "key", "SECONDS:SCANCODE", "press a Velo scancode (hex) for 50 ms; the backlight key is 5E", 32 },
+    [OPT_KEY] = { "key", "SECONDS:SCANCODE[+SCANCODE]", "press Velo scancodes (hex) together for 50 ms; the backlight key is 5E", 32 },
     [OPT_TYPE] = { "type", "SECONDS:TEXT", "type text, with \\n for Enter", 16 },
     [OPT_POWER] = { "power", "SECONDS", "press the power button for 200 ms", 8 },
     [OPT_BACKLIGHT] = { "backlight", "SECONDS", "press the backlight button for 100 ms", 8 },
@@ -246,8 +247,17 @@ static bool parse_option(void *context, int option, const char *value, char *err
     }
     case OPT_KEY: {
         int n = run->key_count;
-        if (!option_timed(value, &run->key_times[n], &rest) || !option_integer(rest, 16, &integer) || integer < 0 || integer > 0xFF) return false;
-        run->key_codes[n] = (unsigned)integer;
+        if (!option_timed(value, &run->key_times[n], &rest)) return false;
+        run->key_lengths[n] = 0;
+        while (*rest) {
+            char *end;
+            long code = strtol(rest, &end, 16);
+            if (end == rest || code < 0 || code > 0xFF || run->key_lengths[n] == 4 || (*end && *end != '+')) return false;
+            run->key_codes[n][run->key_lengths[n]++] = (unsigned)code;
+            rest = *end ? end + 1 : end;
+            if (*end && !*rest) return false;
+        }
+        if (!run->key_lengths[n]) return false;
         run->key_count++;
         return true;
     }
@@ -404,9 +414,15 @@ int main(int argc, char **argv) {
         for (int k = 0; k < run.key_count; k++) {
             uint64_t at = (uint64_t)(run.key_times[k] * MACHINE_CLOCK_HZ);
             if (at >= done && at < done + slice) {
-                machine_key(machine, (uint8_t)run.key_codes[k], false);
+                for (int i = 0; i < run.key_lengths[k]; i++) {
+                    if (i) advance(machine, MACHINE_CLOCK_HZ / 50);
+                    machine_key(machine, (uint8_t)run.key_codes[k][i], false);
+                }
                 advance(machine, MACHINE_CLOCK_HZ / 20);
-                machine_key(machine, (uint8_t)run.key_codes[k], true);
+                for (int i = run.key_lengths[k] - 1; i >= 0; i--) {
+                    machine_key(machine, (uint8_t)run.key_codes[k][i], true);
+                    if (i) advance(machine, MACHINE_CLOCK_HZ / 50);
+                }
             }
         }
         for (int t = 0; t < run.tap_count; t++) {

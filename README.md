@@ -240,7 +240,7 @@ velo-headless --help
 
 `--help` lists every option. Some details:
 
-- `--tap=SECONDS:X:Y[:HOLD]` holds the pen for 0.5 s by default; use 0.08 for double taps. `--key` takes a Velo scancode in hex (the backlight key is 5E), and `--type` types text with `\n` for Enter.
+- `--tap=SECONDS:X:Y[:HOLD]` holds the pen for 0.5 s by default; use 0.08 for double taps. `--key` takes a Velo scancode in hex (the backlight key is 5E), or up to four joined with `+` to press together, such as `19+11` for Alt-Tab, and `--type` types text with `\n` for Enter.
 - `--pgm=FILE` saves the raw greyscale screen, and `--png=FILE` saves it through the simulated LCD, as the GUI draws it.
 - `--net=SECONDS` connects the PPP network, `--rapi=SOCKET` makes the Velo's RAPI port available for `velo-rapi --socket`, and `--realtime[=N]` paces the run at N times real time for anything driving it over RAPI (unpaced, an idle Velo runs about 1000 times faster). `--cable` and `--cable-send` connect a bare serial cable and send bytes down it. `--replug=SECONDS` unplugs the `--net` cable and plugs it back in two seconds later.
 - `--watch-pc=VA` logs registers each time the CPU reaches an address; below 0x02000000 it matches in any process slot.
