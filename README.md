@@ -283,6 +283,8 @@ gdb maths.elf -ex 'target extended-remote :2159'
 
 `target remote` debugs the whole machine as it's running. `target extended-remote` starts with no process, as `gdbserver --multi` does, so IDEs such as VS Code's C/C++ extension start the program rather than attach. `remote put`, `remote get` and `remote delete` go through debugmgr, and so does reading the program's file when GDB asks for it. `run` starts the program, debugs that process and stops when it starts; `kill` ends it, and GDB is told when it exits. GDB treats `\` in `remote put` and `remote get` paths as an escape, so use `/` (the stub turns it into `\`) or double it. While a request is being handled the Velo runs, so other programs carry on. If debugmgr doesn't answer, GDB is told file transfer isn't supported and falls back to local files.
 
+The stub also supports GDB's non-stop protocol, so with `maint set target-non-stop on` GDB can list threads and read memory while the program runs, which IDEs do. VS Code's C/C++ extension needs `miDebuggerServerAddress` and `"useExtendedRemote": true` in the launch configuration as well, or it treats the program as a local process and its Pause and Stop do nothing.
+
 ## Host mailbox
 
 An emulator-only message pipe between a program running on the Velo and a tool on the host, for agents such as velo-toolchain's debug manager that transfer and launch programs faster than RAPI. The emulator only passes messages; what they mean is up to the agent and its host tool.

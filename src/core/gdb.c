@@ -153,6 +153,8 @@ struct gdb {
     size_t   packet_length;
 
     bool     extended;
+    bool     non_stop;
+    bool     sync_reply;
     bool     inferior;
     int      agent_state;
     uint16_t agent_sequence;
@@ -491,7 +493,7 @@ static void on_exception(void *context, uint32_t code, uint32_t pc, bool user) {
 
 void gdb_debug_line(gdb_t *gdb, const char *line) {
     if (gdb->client < 0) return;
-    if (gdb->forward_output && !gdb->halted && gdb->inferior) {
+    if (gdb->forward_output && !gdb->halted && gdb->inferior && !gdb->non_stop) {
         char text[600];
         snprintf(text, sizeof text, "%s\n", line);
         send_console(gdb, text);
@@ -593,19 +595,39 @@ static uint32_t current_library_hash(gdb_t *gdb) {
     return hash;
 }
 
-static void send_stop_reply(gdb_t *gdb) {
-    char reply[96];
+static void build_stop_reply(gdb_t *gdb, char *reply, size_t size) {
     int signal = gdb->stop_signal ? gdb->stop_signal : SIGNAL_TRAP;
+    const char *thread = gdb->non_stop ? "thread:1;" : "";
     if (gdb->stop_kind == STOP_LIBRARY) {
         gdb->library_hash = current_library_hash(gdb);
-        snprintf(reply, sizeof reply, "T%02xlibrary:;", SIGNAL_TRAP);
+        snprintf(reply, size, "T%02x%slibrary:;", SIGNAL_TRAP, thread);
     } else if (gdb->stop_kind == STOP_WATCH) {
         const char *kind = gdb->stop_watch_type == 3 ? "rwatch" : gdb->stop_watch_type == 4 ? "awatch" : "watch";
-        snprintf(reply, sizeof reply, "T%02x%s:%08x;", signal, kind, gdb->stop_address);
+        snprintf(reply, size, "T%02x%s%s:%08x;", signal, thread, kind, gdb->stop_address);
     } else {
-        snprintf(reply, sizeof reply, "T%02x", signal);
+        snprintf(reply, size, "T%02x%s", signal, thread);
     }
-    send_packet(gdb, reply);
+}
+
+static void send_notification(gdb_t *gdb, const char *payload) {
+    if (gdb->client < 0) return;
+    char frame[256];
+    uint8_t checksum = 0;
+    size_t length = (size_t)snprintf(frame, sizeof frame, "%%Stop:%s", payload);
+    for (size_t i = 1; i < length; i++) checksum += (uint8_t)frame[i];
+    length += (size_t)snprintf(frame + length, sizeof frame - length, "#%c%c", HEX[checksum >> 4], HEX[checksum & 15]);
+    send_all(gdb, frame, length);
+}
+
+static void send_async_stop(gdb_t *gdb, const char *payload) {
+    if (gdb->non_stop && !gdb->sync_reply) send_notification(gdb, payload);
+    else send_packet(gdb, payload);
+}
+
+static void send_stop_reply(gdb_t *gdb) {
+    char reply[96];
+    build_stop_reply(gdb, reply, sizeof reply);
+    send_async_stop(gdb, reply);
 }
 
 static void monitor_modules(gdb_t *gdb) {
@@ -629,7 +651,7 @@ static void halt(gdb_t *gdb) {
     gdb->stepping = false;
     gdb->resume_skip = false;
     update_debug(gdb);
-    if (gdb->post_mortem) {
+    if (gdb->post_mortem && (!gdb->non_stop || gdb->sync_reply)) {
         char name[CE_NAME_MAX] = "";
         ce_process_name(&gdb->ce, gdb->post_mortem_fault.process, name, sizeof name);
         char text[200];
@@ -851,12 +873,25 @@ static void handle_monitor(gdb_t *gdb, const char *packet) {
     send_packet(gdb, "OK");
 }
 
+static void stop_running(gdb_t *gdb, int signal) {
+    if (gdb->halted || !gdb->inferior) return;
+    gdb->stop_kind = STOP_SIGNAL;
+    gdb->stop_signal = signal;
+    halt(gdb);
+}
+
 static void handle_vcont(gdb_t *gdb, const char *packet) {
     if (!strcmp(packet, "vCont?")) {
-        send_packet(gdb, "vCont;c;C;s;S");
+        send_packet(gdb, "vCont;c;C;s;S;t");
         return;
     }
     const char *action = packet + strlen("vCont;");
+    if (action[0] == 't') {
+        send_packet(gdb, "OK");
+        stop_running(gdb, 0);
+        return;
+    }
+    if (gdb->non_stop) send_packet(gdb, "OK");
     resume(gdb, action[0] == 's' || action[0] == 'S');
 }
 
@@ -1156,7 +1191,9 @@ static void handle_vrun(gdb_t *gdb, const char *packet) {
     gdb->debug.stop = false;
     gdb->run_active = true;
     gdb->exit_check = 0;
+    gdb->sync_reply = true;
     halt(gdb);
+    gdb->sync_reply = false;
 }
 
 static void wait_for_exit(gdb_t *gdb) {
@@ -1197,6 +1234,7 @@ static bool kill_run_process(gdb_t *gdb) {
         return false;
     }
     wait_for_exit(gdb);
+    logf_gdb(gdb, "gdb: ended %s\n", gdb->process_name);
     return true;
 }
 
@@ -1221,7 +1259,7 @@ static void check_run_exit(gdb_t *gdb) {
     logf_gdb(gdb, "gdb: %s has exited\n", gdb->process_name);
     forget_inferior(gdb);
     gdb->run_sequence = 0;
-    send_packet(gdb, "W00");
+    send_async_stop(gdb, "W00");
 }
 
 static void handle_vkill(gdb_t *gdb) {
@@ -1235,8 +1273,13 @@ static void handle_vkill(gdb_t *gdb) {
 static void handle_packet(gdb_t *gdb, const char *packet) {
     switch (packet[0]) {
     case '?':
-        if (gdb->inferior) send_stop_reply(gdb);
-        else send_packet(gdb, "W00");
+        if (gdb->non_stop && (!gdb->inferior || !gdb->halted)) send_packet(gdb, "OK");
+        else if (!gdb->inferior) send_packet(gdb, "W00");
+        else {
+            gdb->sync_reply = true;
+            send_stop_reply(gdb);
+            gdb->sync_reply = false;
+        }
         return;
     case 'g':
         handle_read_registers(gdb);
@@ -1268,10 +1311,12 @@ static void handle_packet(gdb_t *gdb, const char *packet) {
         return;
     case 'c':
     case 'C':
+        if (gdb->non_stop) send_packet(gdb, "OK");
         resume(gdb, false);
         return;
     case 's':
     case 'S':
+        if (gdb->non_stop) send_packet(gdb, "OK");
         resume(gdb, true);
         return;
     case 'Z':
@@ -1311,10 +1356,15 @@ static void handle_packet(gdb_t *gdb, const char *packet) {
         else if (!strncmp(packet, "vFile:", 6)) handle_vfile(gdb, packet);
         else if (!strncmp(packet, "vRun;", 5)) handle_vrun(gdb, packet);
         else if (!strncmp(packet, "vKill;", 6)) handle_vkill(gdb);
+        else if (!strcmp(packet, "vStopped")) send_packet(gdb, "OK");
+        else if (!strcmp(packet, "vCtrlC")) {
+            send_packet(gdb, "OK");
+            stop_running(gdb, SIGNAL_INT);
+        }
         else send_packet(gdb, "");
         return;
     case 'q':
-        if (!strncmp(packet, "qSupported", 10)) send_packet(gdb, "PacketSize=4000;qXfer:features:read+;qXfer:libraries:read+;QStartNoAckMode+;vContSupported+");
+        if (!strncmp(packet, "qSupported", 10)) send_packet(gdb, "PacketSize=4000;qXfer:features:read+;qXfer:libraries:read+;QStartNoAckMode+;vContSupported+;QNonStop+");
         else if (!strncmp(packet, "qXfer:features:read:target.xml:", 31)) handle_xfer(gdb, packet, "features", TARGET_XML, sizeof TARGET_XML - 1);
         else if (!strncmp(packet, "qXfer:libraries:read::", 22)) {
             static char xml[CE_MODULE_MAX * 128 + 64];
@@ -1331,7 +1381,10 @@ static void handle_packet(gdb_t *gdb, const char *packet) {
         else send_packet(gdb, "");
         return;
     case 'Q':
-        if (!strcmp(packet, "QStartNoAckMode")) {
+        if (!strncmp(packet, "QNonStop:", 9)) {
+            gdb->non_stop = packet[9] == '1';
+            send_packet(gdb, "OK");
+        } else if (!strcmp(packet, "QStartNoAckMode")) {
             send_packet(gdb, "OK");
             gdb->no_ack = true;
         } else {
@@ -1420,6 +1473,7 @@ static bool accept_client(gdb_t *gdb, bool wait) {
     gdb->no_ack = false;
     gdb->library_hash = 0;
     gdb->extended = false;
+    gdb->non_stop = false;
     gdb->inferior = true;
     gdb->agent_state = 0;
     memset(gdb->file_open, 0, sizeof gdb->file_open);
@@ -1534,7 +1588,7 @@ static void check_libraries(gdb_t *gdb) {
     gdb->stop_kind = STOP_SIGNAL;
     gdb->stop_signal = SIGNAL_TRAP;
     update_debug(gdb);
-    send_packet(gdb, "T05library:;");
+    send_async_stop(gdb, gdb->non_stop ? "T05thread:1;library:;" : "T05library:;");
 }
 
 void gdb_after_run(gdb_t *gdb) {
