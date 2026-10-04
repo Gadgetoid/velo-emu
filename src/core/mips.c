@@ -364,6 +364,7 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
             if (cpu->on_break && cpu->on_break(cpu->bus.context, (op >> 6) & 0xFFFFFu)) break;
             raise_exception(cpu, MIPS_EXC_BP, current_pc, current_in_delay_slot);
             break;
+        case 0x0F: break;
         case 0x10: r[rd] = cpu->hi; break;
         case 0x11: cpu->hi = r[rs]; break;
         case 0x12: r[rd] = cpu->lo; break;
