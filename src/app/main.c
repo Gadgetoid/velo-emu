@@ -1339,6 +1339,12 @@ static void window_size(view_display_t display, uint32_t scale, int *width, int 
 }
 
 static void fit_window(SDL_Window *window, view_t *view, uint32_t scale) {
+#ifdef __ANDROID__
+    (void)window;
+    (void)view;
+    (void)scale;
+    return;
+#endif
     if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) SDL_SetWindowFullscreen(window, false);
     int width, height;
     window_size(view_display(view), scale, &width, &height);
