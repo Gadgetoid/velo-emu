@@ -62,6 +62,7 @@ enum {
 
 void menu_install(SDL_Window *window);
 int  menu_bar_height(void);
+void menu_insets(int *left, int *top, int *right, int *bottom);
 bool menu_event(const SDL_Event *event);
 bool menu_active(void);
 void menu_draw(SDL_Renderer *renderer);

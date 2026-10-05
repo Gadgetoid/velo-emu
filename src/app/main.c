@@ -1301,6 +1301,9 @@ int main(int argc, char **argv) {
     SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, NULL) : NULL;
     if (!renderer) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetRenderVSync(renderer, 1);
+#ifdef __ANDROID__
+    SDL_SetWindowFullscreen(window, true);
+#endif
 
     view_t *view = view_create(window, renderer, (view_display_t)settings.display, menu_bar_height());
 
@@ -1940,7 +1943,9 @@ int main(int argc, char **argv) {
         machine_screen(machine, lcd_framebuffer);
         bool lcd_on = machine_lcd_enabled(machine);
         SDL_UnlockMutex(runner.lock);
-        view_set_top(view, menu_bar_height());
+        int inset_left, inset_top, inset_right, inset_bottom;
+        menu_insets(&inset_left, &inset_top, &inset_right, &inset_bottom);
+        view_set_insets(view, inset_left, inset_top, inset_right, inset_bottom);
         bool screen_changed = view_update(view, (float)elapsed, lcd_on);
         if (screen_changed || events_seen || menu_active()) {
             view_render(view);

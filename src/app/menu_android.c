@@ -5,11 +5,12 @@
 #include "app/dialog.h"
 #include "app/menu.h"
 
-#define ROW_POINTS        44.0f
-#define MIN_BUTTON_POINTS 52.0f
-#define GAP_POINTS        3.0f
-#define LABEL_HEIGHT      0.4f
-#define MENU_QUEUE        16
+#define ROW_POINTS    44.0f
+#define COLUMN_POINTS 64.0f
+#define GAP_POINTS    3.0f
+#define LABEL_WIDTH   0.85f
+#define LABEL_HEIGHT  0.4f
+#define MENU_QUEUE    16
 
 typedef enum { BUTTON_KEYBOARD, BUTTON_KEY, BUTTON_MODIFIER, BUTTON_ITEM, BUTTON_NEXT_MACHINE } button_kind_t;
 
@@ -21,22 +22,30 @@ typedef struct {
 } button_t;
 
 static const button_t BUTTONS[] = {
-    { "Kbd", BUTTON_KEYBOARD, 0, 0 },
+    { "Swap", BUTTON_NEXT_MACHINE, 0, 0 },
     { "Esc", BUTTON_KEY, SDLK_ESCAPE, 0 },
     { "Tab", BUTTON_KEY, SDLK_TAB, 0 },
     { "Ctrl", BUTTON_MODIFIER, SDLK_LCTRL, 0 },
     { "Alt", BUTTON_MODIFIER, SDLK_LALT, 0 },
     { "Shift", BUTTON_MODIFIER, SDLK_LSHIFT, 0 },
-    { "<", BUTTON_KEY, SDLK_LEFT, 0 },
-    { "^", BUTTON_KEY, SDLK_UP, 0 },
-    { "v", BUTTON_KEY, SDLK_DOWN, 0 },
-    { ">", BUTTON_KEY, SDLK_RIGHT, 0 },
-    { "Light", BUTTON_ITEM, 0, MENU_BACKLIGHT },
+    { "Kbd", BUTTON_KEYBOARD, 0, 0 },
     { "Power", BUTTON_ITEM, 0, MENU_POWER },
-    { "Switch", BUTTON_NEXT_MACHINE, 0, 0 },
+    { "Light", BUTTON_ITEM, 0, MENU_BACKLIGHT },
+    { "^", BUTTON_KEY, SDLK_UP, 0 },
+    { "<", BUTTON_KEY, SDLK_LEFT, 0 },
+    { ">", BUTTON_KEY, SDLK_RIGHT, 0 },
+    { "v", BUTTON_KEY, SDLK_DOWN, 0 },
+    { "Enter", BUTTON_KEY, SDLK_RETURN, 0 },
 };
 
 #define BUTTON_COUNT (int)(sizeof BUTTONS / sizeof BUTTONS[0])
+#define GROUP_SIZE   ((BUTTON_COUNT + 1) / 2)
+
+typedef struct {
+    SDL_FRect buttons[BUTTON_COUNT];
+    int       left, top, right, bottom;
+    float     label_scale;
+} layout_t;
 
 static SDL_Window *main_window;
 static int         pressed = -1;
@@ -46,51 +55,57 @@ static bool        hidden[MENU_COUNT];
 static int         queue[MENU_QUEUE];
 static int         queued;
 
-static float display_scale(void) {
-    float scale = main_window ? SDL_GetWindowDisplayScale(main_window) : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    return scale > 0 ? scale : 1.0f;
+static SDL_FRect inset(SDL_FRect rect, float gap) {
+    return (SDL_FRect){ floorf(rect.x + gap / 2), floorf(rect.y + gap / 2), floorf(rect.w - gap), floorf(rect.h - gap) };
 }
 
-static void window_size(int *width, int *height) {
-    *width = *height = 0;
-    if (main_window) {
-        SDL_GetWindowSize(main_window, width, height);
-        return;
-    }
-    const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
-    if (mode) {
-        *width = mode->w;
-        *height = mode->h;
-    }
-}
-
-static int row_count(void) {
+static layout_t layout(void) {
+    layout_t result = { 0 };
+    if (!main_window) return result;
     int width, height;
-    window_size(&width, &height);
-    float needed = BUTTON_COUNT * MIN_BUTTON_POINTS * display_scale();
-    return width > 0 && (float)width < needed ? 2 : 1;
-}
-
-static int per_row(void) {
-    int rows = row_count();
-    return (BUTTON_COUNT + rows - 1) / rows;
-}
-
-static SDL_FRect button_rect(int index) {
-    int width, height;
-    window_size(&width, &height);
-    float scale = display_scale();
-    float row_height = ROW_POINTS * scale, gap = GAP_POINTS * scale;
-    int columns = per_row();
-    int row = index / columns, column = index % columns;
-    float cell = (float)width / columns;
-    return (SDL_FRect){ floorf(column * cell + gap / 2), floorf(row * row_height + gap / 2), floorf(cell - gap), floorf(row_height - gap) };
+    SDL_GetWindowSize(main_window, &width, &height);
+    SDL_Rect safe = { 0, 0, width, height };
+    SDL_GetWindowSafeArea(main_window, &safe);
+    float scale = SDL_GetWindowDisplayScale(main_window);
+    if (scale <= 0) scale = 1;
+    float gap = GAP_POINTS * scale;
+    int safe_right = width - safe.x - safe.w, safe_bottom = height - safe.y - safe.h;
+    if (width > height) {
+        float column = floorf(COLUMN_POINTS * scale), cell = (float)safe.h / GROUP_SIZE;
+        for (int i = 0; i < BUTTON_COUNT; i++) {
+            float x = i < GROUP_SIZE ? (float)safe.x : (float)(safe.x + safe.w) - column;
+            result.buttons[i] = inset((SDL_FRect){ x, safe.y + (i % GROUP_SIZE) * cell, column, cell }, gap);
+        }
+        result.left = safe.x + (int)column;
+        result.right = safe_right + (int)column;
+        result.top = safe.y;
+        result.bottom = safe_bottom;
+    } else {
+        float row = floorf(ROW_POINTS * scale), cell = (float)safe.w / GROUP_SIZE;
+        for (int i = 0; i < BUTTON_COUNT; i++) {
+            result.buttons[i] = inset((SDL_FRect){ safe.x + (i % GROUP_SIZE) * cell, safe.y + (i / GROUP_SIZE) * row, cell, row }, gap);
+        }
+        result.left = safe.x;
+        result.right = safe_right;
+        result.top = safe.y + (int)(2 * row);
+        result.bottom = safe_bottom;
+    }
+    result.label_scale = INFINITY;
+    for (int i = 0; i < BUTTON_COUNT; i++) {
+        float length = (float)strlen(BUTTONS[i].label);
+        SDL_FRect *rect = &result.buttons[i];
+        float fit = fminf(rect->h * LABEL_HEIGHT, rect->w * LABEL_WIDTH / length) / SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE;
+        result.label_scale = fminf(result.label_scale, fit);
+    }
+    result.label_scale = fmaxf(1, floorf(result.label_scale));
+    return result;
 }
 
 static int button_at(float x, float y) {
+    layout_t current = layout();
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        SDL_FRect rect = button_rect(i);
-        if (x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h) return i;
+        SDL_FRect *rect = &current.buttons[i];
+        if (x >= rect->x && x < rect->x + rect->w && y >= rect->y && y < rect->y + rect->h) return i;
     }
     return -1;
 }
@@ -158,16 +173,25 @@ void menu_install(SDL_Window *window) {
 }
 
 int menu_bar_height(void) {
-    return (int)(row_count() * ROW_POINTS * display_scale());
+    return layout().top;
+}
+
+void menu_insets(int *left, int *top, int *right, int *bottom) {
+    layout_t current = layout();
+    *left = current.left;
+    *top = current.top;
+    *right = current.right;
+    *bottom = current.bottom;
 }
 
 bool menu_event(const SDL_Event *event) {
     switch (event->type) {
-    case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        if (event->button.y >= menu_bar_height()) return false;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         int index = button_at(event->button.x, event->button.y);
-        if (index >= 0) press(index);
+        if (index < 0) return false;
+        press(index);
         return true;
+    }
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (pressed < 0) return false;
         release();
@@ -187,31 +211,25 @@ bool menu_active(void) {
     return false;
 }
 
-static void draw_label(SDL_Renderer *renderer, const SDL_FRect *rect, const char *label) {
-    float length = (float)strlen(label);
-    float scale = floorf(fminf(rect->h * LABEL_HEIGHT, rect->w * 0.8f / length) / SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE);
-    if (scale < 1) scale = 1;
-    float width = length * SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale, height = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale;
+static void draw_label(SDL_Renderer *renderer, const SDL_FRect *rect, const char *label, float scale) {
+    float width = (float)strlen(label) * SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale, height = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale;
     SDL_SetRenderScale(renderer, scale, scale);
     SDL_RenderDebugText(renderer, floorf((rect->x + (rect->w - width) / 2) / scale), floorf((rect->y + (rect->h - height) / 2) / scale), label);
     SDL_SetRenderScale(renderer, 1, 1);
 }
 
 void menu_draw(SDL_Renderer *renderer) {
-    int width, height;
-    window_size(&width, &height);
-    SDL_SetRenderDrawColor(renderer, 0x22, 0x22, 0x22, 0xFF);
-    SDL_RenderFillRect(renderer, &(SDL_FRect){ 0, 0, (float)width, (float)menu_bar_height() });
+    layout_t current = layout();
     bool keyboard = SDL_ScreenKeyboardShown(main_window);
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        SDL_FRect rect = button_rect(i);
+        SDL_FRect *rect = &current.buttons[i];
         bool lit = i == pressed || latched[i] || (BUTTONS[i].kind == BUTTON_KEYBOARD && keyboard) || (BUTTONS[i].kind == BUTTON_ITEM && checked[BUTTONS[i].item]);
         if (lit) SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
         else SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
-        SDL_RenderFillRect(renderer, &rect);
+        SDL_RenderFillRect(renderer, rect);
         if (lit) SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
         else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
-        draw_label(renderer, &rect, BUTTONS[i].label);
+        draw_label(renderer, rect, BUTTONS[i].label, current.label_scale);
     }
 }
 

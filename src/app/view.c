@@ -12,7 +12,7 @@ struct view {
     view_display_t display;
     int            texture_w, texture_h;
     int            output_w, output_h;
-    float          top;
+    float          left, top, right, bottom;
     bool           laid_out;
     SDL_FRect      dest;
     uint32_t       sharp[SCREEN_MAX_WIDTH * SCREEN_MAX_HEIGHT];
@@ -44,9 +44,12 @@ void view_set_display(view_t *view, view_display_t display) {
     view->laid_out = false;
 }
 
-void view_set_top(view_t *view, int top) {
-    if (view->top == (float)top) return;
+void view_set_insets(view_t *view, int left, int top, int right, int bottom) {
+    if (view->left == (float)left && view->top == (float)top && view->right == (float)right && view->bottom == (float)bottom) return;
+    view->left = (float)left;
     view->top = (float)top;
+    view->right = (float)right;
+    view->bottom = (float)bottom;
     view->laid_out = false;
 }
 
@@ -71,11 +74,13 @@ static bool layout(view_t *view) {
 
     int window_w, window_h;
     SDL_GetWindowSize(view->window, &window_w, &window_h);
-    float top = window_h > 0 ? floorf(view->top * output_h / window_h) : 0;
-    float area_h = output_h - top;
+    float ratio = window_h > 0 ? (float)output_h / window_h : 0;
+    float left = floorf(view->left * ratio), top = floorf(view->top * ratio);
+    float area_w = output_w - left - floorf(view->right * ratio);
+    float area_h = output_h - top - floorf(view->bottom * ratio);
     int source_w, source_h;
     view_source_size(view->display, &source_w, &source_h);
-    float fit = fminf((float)output_w / source_w, area_h / source_h);
+    float fit = fminf(area_w / source_w, area_h / source_h);
     bool whole = fabsf(fit - roundf(fit)) < 0.01f && fit >= 1.0f;
     float scale = whole ? roundf(fit) : fit;
 
@@ -96,7 +101,7 @@ static bool layout(view_t *view) {
     SDL_SetTextureScaleMode(view->texture, whole && (view->display == VIEW_SHARP || (int)scale == lcd_compose_width() / source_w) ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
     view->dest.w = source_w * scale;
     view->dest.h = source_h * scale;
-    view->dest.x = floorf((output_w - view->dest.w) / 2);
+    view->dest.x = left + floorf((area_w - view->dest.w) / 2);
 #ifdef __ANDROID__
     view->dest.y = top;
 #else
