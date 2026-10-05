@@ -1,5 +1,6 @@
 #include "rapi/rapi.h"
 
+#include <netdb.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -303,6 +304,8 @@ bool rapi_data_path(const char *leaf, char *path, size_t size) {
     return length > 0 && (size_t)length < size;
 }
 
+static rapi_t *rapi_start(int fd, char *error, size_t error_size);
+
 rapi_t *rapi_connect(const char *socket_path, char *error, size_t error_size) {
     struct sockaddr_un address = { .sun_family = AF_UNIX };
     snprintf(address.sun_path, sizeof address.sun_path, "%s", socket_path);
@@ -312,6 +315,32 @@ rapi_t *rapi_connect(const char *socket_path, char *error, size_t error_size) {
         snprintf(error, error_size, "the emulator isn't running with Network (PPP) connected (no %s)", socket_path);
         return NULL;
     }
+    return rapi_start(fd, error, error_size);
+}
+
+rapi_t *rapi_connect_tcp(const char *host, const char *port, char *error, size_t error_size) {
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM }, *found = NULL;
+    if (getaddrinfo(host, port, &hints, &found) != 0 || !found) {
+        snprintf(error, error_size, "cannot find %s", host);
+        return NULL;
+    }
+    int fd = -1;
+    for (struct addrinfo *at = found; at && fd < 0; at = at->ai_next) {
+        fd = socket(at->ai_family, at->ai_socktype, at->ai_protocol);
+        if (fd >= 0 && connect(fd, at->ai_addr, at->ai_addrlen) != 0) {
+            close(fd);
+            fd = -1;
+        }
+    }
+    freeaddrinfo(found);
+    if (fd < 0) {
+        snprintf(error, error_size, "cannot connect to %s:%s (is RAPI over the Network on, with Network (PPP) connected?)", host, port);
+        return NULL;
+    }
+    return rapi_start(fd, error, error_size);
+}
+
+static rapi_t *rapi_start(int fd, char *error, size_t error_size) {
     struct timeval timeout = { HANDSHAKE_TIMEOUT, 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
 #ifdef SO_NOSIGPIPE

@@ -196,6 +196,8 @@ velo-rapi --help
 
 Velo paths are relative to `\My Documents` unless they start with `/` or `\`; both separate folders. Registry keys start with `HKCU`, `HKLM`, `HKCR` or `HKU`. `--socket=PATH` picks another socket, such as one from `velo-headless --rapi=PATH`. CE 2.0's stock ROM lacks `rapisrv.exe`, the RAPI server; without it CE 2.0 reports "Out of Memory" when the cable is connected.
 
+PC Link > RAPI over the Network also accepts RAPI connections on port 9990 (`rapi_port` in `emu.ini`) on every network interface, so other computers, or a Mac talking to the Android app, can use it: `velo-rapi --connect=HOST:9990 put tool.exe /Windows/tool.exe`. The menu shows the address to use. Connections are passed to the Velo as if from the desktop, which CE 2.0's RAPI server insists on. `velo-headless --rapi-port=PORT` does the same.
+
 CE's desktop connection runs at 19200 baud, about 1.6 KB/s. PC Link > Connection Speed, or `velo-rapi baud 115200`, makes a faster connection the PC Connection (on CE 1.0 it adds a hidden `` `Desktop @ 115200` `` connection to the registry; CE 2.0 has its own `` `Serial Port @ `` ones), and the menu ticks the speed in use; the menu then reconnects the cable after about 10 seconds, as CE only picks up the change if the old connection has had time to settle, and with `velo-rapi` it applies from the next connection. The speed is kept in the Velo's registry, so it lasts as long as the machine's saved state. At 115200 the emulated CPU sets the pace: about 1.9 KB/s at CPU Speed 1x and 5.8 KB/s at 4x.
 
 ### Installing CE 1.0 software
@@ -277,7 +279,7 @@ CE's debug output, from `OutputDebugString` in programs and the kernel's own mes
 
 ## Debugging with GDB
 
-`headless --gdb=PORT` waits for GDB on 127.0.0.1:PORT before running, and then runs until GDB detaches or kills it, or until `--seconds` if that's given. `velo --gdb=PORT` listens while the Velo runs, and GDB can attach and detach at any time. Any GDB with MIPS support works as the client: `gdb-multiarch` on Linux, or Homebrew's `gdb` on macOS.
+`headless --gdb=PORT` waits for GDB on 127.0.0.1:PORT before running, and then runs until GDB detaches or kills it, or until `--seconds` if that's given. `velo --gdb=PORT` listens while the Velo runs, and GDB can attach and detach at any time. Machine > GDB Server does the same on port 1234 (`gdb_port` in `emu.ini`) on every network interface, and is remembered, so GDB on another computer can reach the emulator, including the Android app over Wi-Fi: `target extended-remote 192.168.1.20:1234`. With velo-toolchain's debugmgr in `\Windows\StartUp` (copy it with `velo-rapi --connect`), `remote put` and `run` work there too. Any GDB with MIPS support works as the client: `gdb-multiarch` on Linux, or Homebrew's `gdb` on macOS.
 
 ```
 velo-headless nk.bin --load=state.bin --card=card.img --gdb=2159 --gdb-process=maths.exe

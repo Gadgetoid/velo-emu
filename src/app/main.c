@@ -28,8 +28,12 @@
 #include "util/options.h"
 #include "util/png.h"
 
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -55,6 +59,8 @@
 #define WINDOW_TITLE     "Philips Velo 1"
 #define ANDROID_UNLIT_LEVEL 0.5f
 #define CE2_DEFAULT_MEMORY 32
+#define GDB_DEFAULT_PORT  1234
+#define RAPI_DEFAULT_PORT 9990
 
 #ifdef __APPLE__
 #define SCREENSHOT_FOLDER SDL_FOLDER_DESKTOP
@@ -188,6 +194,9 @@ static gdb_t *debugger;
 static agent_t *agent;
 
 static void log_gdb(const char *message) {
+#ifdef __ANDROID__
+    SDL_Log("%s", message);
+#endif
     fputs(message, stderr);
 }
 
@@ -271,6 +280,7 @@ typedef struct {
     char     pty_name[128];
     const char *user_agent;
     const char *device;
+    int      rapi_port;
     uint32_t baud;
     uint8_t  queue[SERIAL_QUEUE];
     size_t   queued;
@@ -333,6 +343,9 @@ static void device_follow_baud(serial_t *serial, machine_t *machine) {
 }
 
 static void serial_log(const char *message) {
+#ifdef __ANDROID__
+    SDL_Log("%s", message);
+#endif
     if (verbose) fputs(message, stderr);
 }
 
@@ -362,7 +375,7 @@ static const char *serial_open(serial_t *serial, machine_t *machine, serial_mode
     if (mode == SERIAL_NETWORK) {
         char rapi_socket[1024];
         rapi_socket_path(rapi_socket, sizeof rapi_socket);
-        net_gateway_options_t options = { serial->user_agent, rapi_socket };
+        net_gateway_options_t options = { serial->user_agent, rapi_socket, serial->rapi_port };
         serial->gateway = net_gateway_create(serial_log, &options);
         if (!serial->gateway) return "built without libslirp";
     } else if (mode == SERIAL_PTY) {
@@ -529,6 +542,9 @@ static const char *handle_drop(dropped_t *dropped, machine_t *machine, desktop_t
 }
 
 static void log_message(const char *message) {
+#ifdef __ANDROID__
+    SDL_Log("%s", message);
+#endif
     if (verbose) fputs(message, stderr);
 }
 
@@ -776,6 +792,8 @@ typedef struct {
     char     user_agent[256];
     char     shared_folder[1024];
     uint32_t full_brightness;
+    uint32_t gdb_server, gdb_port;
+    uint32_t network_rapi, rapi_port;
 } settings_t;
 
 static void settings_path(char *path, size_t size) {
@@ -809,7 +827,7 @@ static void copy_setting(char *destination, size_t size, const char *value) {
 }
 
 static settings_t settings_load(void) {
-    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1 };
+    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1, .gdb_port = GDB_DEFAULT_PORT, .rapi_port = RAPI_DEFAULT_PORT };
     char path[1100];
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "r");
@@ -834,6 +852,10 @@ static settings_t settings_load(void) {
         else if (!strncmp(line, "serial_device=", 14)) copy_setting(settings.serial_device, sizeof settings.serial_device, line + 14);
         else if (!strncmp(line, "shared_folder=", 14)) copy_setting(settings.shared_folder, sizeof settings.shared_folder, line + 14);
         else if (sscanf(line, "full_brightness=%u", &value) == 1) settings.full_brightness = value != 0;
+        else if (sscanf(line, "gdb_server=%u", &value) == 1) settings.gdb_server = value != 0;
+        else if (sscanf(line, "gdb_port=%u", &value) == 1 && value > 0 && value < 65536) settings.gdb_port = value;
+        else if (sscanf(line, "network_rapi=%u", &value) == 1) settings.network_rapi = value != 0;
+        else if (sscanf(line, "rapi_port=%u", &value) == 1 && value > 0 && value < 65536) settings.rapi_port = value;
     }
     fclose(file);
     return settings;
@@ -844,9 +866,10 @@ static void settings_save(const settings_t *settings) {
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "w");
     if (!file) return;
-    fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\nfull_brightness=%u\n", settings->memory,
+    fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\nfull_brightness=%u\ngdb_server=%u\ngdb_port=%u\nnetwork_rapi=%u\nrapi_port=%u\n", settings->memory,
             settings->screen.width, settings->screen.height, settings->speed, settings->host_time, settings->scale, settings->display, settings->connect_at_launch, settings->system, settings->machine, settings->serial_device,
-            settings->user_agent, settings->shared_folder, settings->full_brightness);
+            settings->user_agent, settings->shared_folder, settings->full_brightness, settings->gdb_server, settings->gdb_port,
+            settings->network_rapi, settings->rapi_port);
     fclose(file);
 }
 
@@ -907,6 +930,30 @@ static void reveal_file(const char *path) {
     if (slash && slash != folder) *slash = 0;
     open_path(folder);
 #endif
+}
+
+static void local_address(char *address, size_t size) {
+    snprintf(address, size, "this computer");
+    struct ifaddrs *interfaces;
+    if (getifaddrs(&interfaces) != 0) return;
+    int best = 0;
+    for (struct ifaddrs *at = interfaces; at; at = at->ifa_next) {
+        if (!at->ifa_addr || at->ifa_addr->sa_family != AF_INET || (at->ifa_flags & IFF_LOOPBACK) || !(at->ifa_flags & IFF_UP)) continue;
+        int score = !strncmp(at->ifa_name, "wlan", 4) || !strcmp(at->ifa_name, "en0") ? 2 : 1;
+        if (score <= best) continue;
+        best = score;
+        inet_ntop(AF_INET, &((struct sockaddr_in *)at->ifa_addr)->sin_addr, address, (socklen_t)size);
+    }
+    freeifaddrs(interfaces);
+}
+
+static gdb_t *start_network_gdb(machine_t *machine, uint32_t port, char *notice, size_t size) {
+    gdb_t *gdb = gdb_create(machine, (int)port, true, log_gdb);
+    char address[64];
+    local_address(address, sizeof address);
+    if (gdb) snprintf(notice, size, "GDB server at %s:%u", address, port);
+    else snprintf(notice, size, "cannot listen for GDB on port %u", port);
+    return gdb;
 }
 
 static void set_title(SDL_Window *window, const char *name, const char *notice, bool paused, bool suspended) {
@@ -1545,7 +1592,7 @@ int main(int argc, char **argv) {
     const char *notice = startup_notice;
     if (notice) notice_left = 6;
     static serial_t serial;
-    serial = (serial_t){ SERIAL_OFF, NULL, -1, -1, "", settings.user_agent, settings.serial_device, 0, { 0 }, 0 };
+    serial = (serial_t){ SERIAL_OFF, NULL, -1, -1, "", settings.user_agent, settings.serial_device, settings.network_rapi ? (int)settings.rapi_port : 0, 0, { 0 }, 0 };
     char rapi_socket[1024], sync_manifest[1024], desktop_notice[256], shared_notice[1200], paste_notice[64];
     static typer_t typer;
     static scroller_t scroller;
@@ -1573,12 +1620,20 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (launch.gdb_port) {
-        debugger = gdb_create(machine, launch.gdb_port, log_gdb);
+        debugger = gdb_create(machine, launch.gdb_port, false, log_gdb);
         if (!debugger) {
             fprintf(stderr, "velo: cannot listen for GDB on port %d\n", launch.gdb_port);
             return 1;
         }
         if (launch.gdb_process) gdb_set_process(debugger, launch.gdb_process);
+    }
+    static char gdb_notice[160];
+    if (!debugger && settings.gdb_server) {
+        debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
+        if (!notice) {
+            notice = gdb_notice;
+            notice_left = NOTICE_SECONDS * 3;
+        }
     }
     if (launch.agent_socket && !(agent = agent_create(launch.agent_socket, log_gdb))) {
         fprintf(stderr, "velo: cannot listen on agent socket %s\n", launch.agent_socket);
@@ -1951,6 +2006,34 @@ int main(int argc, char **argv) {
                 break;
             }
 #endif
+            case MENU_GDB_SERVER:
+                if (debugger) {
+                    gdb_destroy(debugger);
+                    debugger = NULL;
+                    settings.gdb_server = 0;
+                    notice = "GDB server stopped";
+                } else {
+                    debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
+                    settings.gdb_server = debugger != NULL;
+                    notice = gdb_notice;
+                }
+                settings_save(&settings);
+                notice_left = NOTICE_SECONDS * 3;
+                break;
+            case MENU_NETWORK_RAPI: {
+                static char rapi_notice[160];
+                settings.network_rapi = !settings.network_rapi;
+                settings_save(&settings);
+                serial.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
+                char address[64];
+                local_address(address, sizeof address);
+                if (settings.network_rapi) snprintf(rapi_notice, sizeof rapi_notice, "RAPI at %s:%u", address, settings.rapi_port);
+                else snprintf(rapi_notice, sizeof rapi_notice, "RAPI over the network off");
+                if (serial.mode == SERIAL_NETWORK) serial_open(&serial, machine, SERIAL_NETWORK);
+                notice = rapi_notice;
+                notice_left = NOTICE_SECONDS * 3;
+                break;
+            }
             case MENU_SEND_FILES:
                 SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_SEND, window, NULL, 0, NULL, true);
                 break;
@@ -2144,6 +2227,8 @@ int main(int argc, char **argv) {
         menu_set_checked(MENU_PAUSE, paused);
         menu_set_checked(MENU_BACKLIGHT, machine_backlight(machine));
         menu_set_checked(MENU_SOUND, sound);
+        menu_set_checked(MENU_GDB_SERVER, debugger != NULL);
+        menu_set_checked(MENU_NETWORK_RAPI, settings.network_rapi != 0);
         menu_set_checked(MENU_FULL_BRIGHTNESS, settings.full_brightness != 0);
         for (int i = 0; i < PROFILES_MAX; i++) {
             int machine_item = MENU_MACHINE_FIRST + i;

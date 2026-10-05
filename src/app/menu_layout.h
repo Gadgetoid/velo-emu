@@ -72,6 +72,7 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_ITEM, MENU_SPEED_8, "8x", 0, 0 },
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SHOW_DEBUG_OUTPUT, "Show Debug Output", 0, 0 },
+    { MENU_ENTRY_ITEM, MENU_GDB_SERVER, "GDB Server", 0, 0 },
 #ifndef __APPLE__
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_QUIT, "Quit", 'q', MENU_KEY_PRIMARY },
@@ -159,6 +160,7 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_HEADING, 0, "Velo Settings", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SET_PROXY, "Set Up Pocket IE Proxy", 0, 0 },
+    { MENU_ENTRY_ITEM, MENU_NETWORK_RAPI, "RAPI over the Network", 0, 0 },
     { MENU_ENTRY_SUBMENU, 0, "Connection Speed", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_BAUD_19200, "19200 (original)", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_BAUD_38400, "38400", 0, 0 },

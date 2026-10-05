@@ -1494,12 +1494,12 @@ static bool accept_client(gdb_t *gdb, bool wait) {
     return true;
 }
 
-gdb_t *gdb_create(machine_t *machine, int port, gdb_log_fn log) {
+gdb_t *gdb_create(machine_t *machine, int port, bool network, gdb_log_fn log) {
     int listener = socket(AF_INET, SOCK_STREAM, 0);
     if (listener < 0) return NULL;
     int on = 1;
     setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
-    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr.s_addr = htonl(network ? INADDR_ANY : INADDR_LOOPBACK) };
     if (bind(listener, (struct sockaddr *)&address, sizeof address) < 0 || listen(listener, 1) < 0) {
         close(listener);
         return NULL;
@@ -1520,7 +1520,8 @@ gdb_t *gdb_create(machine_t *machine, int port, gdb_log_fn log) {
     gdb->debug.access = on_access;
     gdb->debug.exception = on_exception;
     machine_cpu(machine)->debug = &gdb->debug;
-    logf_gdb(gdb, "gdb: listening on 127.0.0.1:%d\n", port);
+    if (network) logf_gdb(gdb, "gdb: listening on all interfaces, port %d\n", port);
+    else logf_gdb(gdb, "gdb: listening on 127.0.0.1:%d\n", port);
     return gdb;
 }
 

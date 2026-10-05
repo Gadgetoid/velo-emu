@@ -77,13 +77,15 @@ if pkg-config --exists slirp libcurl; then
 fi
 if pkg-config --exists slirp; then
     SOCKET="${TMPDIR:-/tmp}/velo-test-$$.sock"
-    ./headless "$ROM" --seconds=100000 --realtime=10 --load="$OUT/desktop.state" --net=1 --rapi="$SOCKET" >/dev/null 2>&1 &
+    RAPI_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    ./headless "$ROM" --seconds=100000 --realtime=10 --load="$OUT/desktop.state" --net=1 --rapi="$SOCKET" --rapi-port="$RAPI_PORT" >/dev/null 2>&1 &
     EMULATOR=$!
     trap 'kill $SERVER $EMULATOR 2>/dev/null || true' EXIT
     for attempt in 1 2 3 4 5 6 7 8 9 10; do ./velo-rapi --socket="$SOCKET" info >/dev/null 2>&1 && break; sleep 1; done
     head -c 20000 /dev/urandom > "$OUT/blob.bin"
     rm -f "$OUT/blob.back"
     if ./velo-rapi --socket="$SOCKET" put "$OUT/blob.bin" && ./velo-rapi --socket="$SOCKET" get blob.bin "$OUT/blob.back" && cmp -s "$OUT/blob.bin" "$OUT/blob.back" && ./velo-rapi --socket="$SOCKET" rm blob.bin; then echo "ok   rapi_roundtrip"; else echo "FAIL rapi_roundtrip"; exit 1; fi
+    if ./velo-rapi --connect="127.0.0.1:$RAPI_PORT" ls / | grep -q "My Documents"; then echo "ok   rapi_tcp"; else echo "FAIL rapi_tcp"; exit 1; fi
     SHARED="$OUT/shared"
     rm -rf "$SHARED"
     mkdir -p "$SHARED/Notes"
