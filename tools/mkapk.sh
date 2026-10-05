@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
+mode=apk
+if [ "$1" = push ]; then
+    mode=push
+    shift
+fi
 out=${1:-dist/velo.apk}
+package=org.velo_emu.velo
 ndk=${ANDROID_NDK_HOME:-/opt/homebrew/share/android-ndk}
 sdk=${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}
 min_api=24
@@ -31,6 +37,17 @@ fi
 PKG_CONFIG_LIBDIR="$PWD/$work/sdl/lib/pkgconfig" CFLAGS="-fPIC -D_GNU_SOURCE" \
     make -s BUILD="$work/obj" MENU=android CC="$cc" THREAD_LIBS= "$work/obj/libmain.so"
 
+if [ $mode = push ]; then
+    adb exec-in "run-as $package sh -c 'mkdir -p files; cat > files/libmain.so.new'" < "$work/obj/libmain.so"
+    adb shell "run-as $package sh -c 'chmod 600 files/libmain.so.new; mv files/libmain.so.new files/libmain.so'"
+    adb shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME > /dev/null
+    sleep 3
+    adb shell am force-stop $package
+    adb shell am start -n $package/.VeloActivity > /dev/null
+    echo "pushed $work/obj/libmain.so"
+    exit 0
+fi
+
 stage=$work/stage
 rm -rf "$stage"
 mkdir -p "$stage/classes" "$stage/dex" "$stage/res/mipmap-xxxhdpi" "$stage/apk/lib/arm64-v8a"
@@ -38,13 +55,13 @@ cp "$icons/velo-256.png" "$stage/res/mipmap-xxxhdpi/velo.png"
 
 cat > "$stage/AndroidManifest.xml" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.velo_emu.velo">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="$package">
     <uses-feature android:glEsVersion="0x00020000" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
     <application android:label="Velo" android:icon="@mipmap/velo" android:hasCode="true"
         android:extractNativeLibs="true" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
-        <activity android:name="org.libsdl.app.SDLActivity" android:label="Velo" android:exported="true"
+        <activity android:name=".VeloActivity" android:label="Velo" android:exported="true"
             android:alwaysRetainTaskState="true" android:launchMode="singleInstance" android:preferMinimalPostProcessing="true"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
             <intent-filter>
@@ -57,7 +74,7 @@ cat > "$stage/AndroidManifest.xml" <<EOF
 EOF
 
 javac -nowarn -source 11 -target 11 -Xlint:-options -cp "$android_jar" -d "$stage/classes" \
-    $(find "$sdl/android-project/app/src/main/java" -name '*.java')
+    $(find "$sdl/android-project/app/src/main/java" -name '*.java') src/app/VeloActivity.java
 "$build_tools/d8" --min-api $min_api --lib "$android_jar" --output "$stage/dex" $(find "$stage/classes" -name '*.class')
 
 "$build_tools/aapt2" compile --dir "$stage/res" -o "$stage/res.zip"

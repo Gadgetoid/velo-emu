@@ -113,6 +113,9 @@ app: $(PROG) $(VELORAPI) $(VELOSTATE) icons
 apk: icons
 	ICONS=$(BUILD)/icons sh tools/mkapk.sh
 
+apk-push:
+	sh tools/mkapk.sh push
+
 GUEST_COMPONENTS = $(patsubst guest/%/CMakeLists.txt,%,$(wildcard guest/*/CMakeLists.txt))
 
 guest:
@@ -129,7 +132,7 @@ vdisk: guest
 clean:
 	rm -rf $(BUILD) $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE) Velo.app
 
-.PHONY: all run clean test check app apk icons guest vdisk FORCE
+.PHONY: all run clean test check app apk apk-push icons guest vdisk FORCE
 
 -include $(OBJ_APP:.o=.d) $(OBJ_HEADLESS:.o=.d) $(BUILD)/tools/proxy_check.d $(BUILD)/tools/velo_rapi.d $(BUILD)/tools/velo_state.d $(BUILD)/tools/icon.d
 
