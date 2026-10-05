@@ -24,6 +24,7 @@
 #include "rapi/rapi.h"
 #include "util/fat.h"
 #include "util/file.h"
+#include "util/marker.h"
 #include "util/options.h"
 #include "util/png.h"
 
@@ -920,7 +921,10 @@ static void set_title(SDL_Window *window, const char *name, const char *notice, 
 typedef struct {
     char   path[3][1024];
     size_t size[3];
+    int    rank[3];
 } rom_set_t;
+
+enum { ROM_UNMARKED, ROM_PATCHED, ROM_PATCHED_115K };
 
 static void rom_folder(char *path, size_t size) {
     char base[1024];
@@ -940,17 +944,21 @@ typedef struct {
     time_t   modified;
     int      system;
     uint32_t screens;
+    int      rank;
 } rom_probe_t;
 
 static rom_probe_t rom_probes[ROM_PROBE_CACHE];
 static int rom_probe_count = 0;
 static int rom_probe_next = 0;
 
-static int rom_system(const char *path, uint32_t *screens) {
+static int rom_system(const char *path, uint32_t *screens, int *rank) {
     *screens = 0;
+    *rank = ROM_UNMARKED;
     size_t size;
     uint8_t *rom = file_read(path, &size);
     if (!rom) return 0;
+    char sets[512];
+    if (marker_patch_sets(rom, size, sets, sizeof sets)) *rank = marker_has_set(sets, "pc-link-115k") ? ROM_PATCHED_115K : ROM_PATCHED;
     char error[256];
     machine_t *machine = machine_create(rom, size, error, sizeof error);
     free(rom);
@@ -963,13 +971,14 @@ static int rom_system(const char *path, uint32_t *screens) {
     return system;
 }
 
-static int cached_rom_system(const char *path, const struct stat *info, uint32_t *screens) {
+static int cached_rom_system(const char *path, const struct stat *info, uint32_t *screens, int *rank) {
     rom_probe_t *probe = NULL;
     for (int i = 0; i < rom_probe_count && !probe; i++) {
         if (!strcmp(rom_probes[i].path, path)) probe = &rom_probes[i];
     }
     if (probe && probe->size == info->st_size && probe->modified == info->st_mtime) {
         *screens = probe->screens;
+        *rank = probe->rank;
         return probe->system;
     }
     if (!probe) {
@@ -983,8 +992,9 @@ static int cached_rom_system(const char *path, const struct stat *info, uint32_t
     }
     probe->size = info->st_size;
     probe->modified = info->st_mtime;
-    probe->system = rom_system(path, &probe->screens);
+    probe->system = rom_system(path, &probe->screens, &probe->rank);
     *screens = probe->screens;
+    *rank = probe->rank;
     return probe->system;
 }
 
@@ -1002,11 +1012,14 @@ static void find_roms(rom_set_t *roms) {
         struct stat info;
         if (stat(path, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < ROM_MIN_BYTES || info.st_size > ROM_MAX_BYTES) continue;
         uint32_t screens;
-        int system = cached_rom_system(path, &info, &screens);
+        int rank;
+        int system = cached_rom_system(path, &info, &screens, &rank);
         size_t size = (size_t)info.st_size;
-        if (!system || size <= roms->size[system]) continue;
+        bool better = !roms->path[system][0] || rank > roms->rank[system] || (rank == roms->rank[system] && size > roms->size[system]);
+        if (!system || !better) continue;
         memcpy(roms->path[system], path, sizeof path);
         roms->size[system] = size;
+        roms->rank[system] = rank;
     }
     closedir(dir);
 }
@@ -1099,7 +1112,8 @@ static int import_files(int *cards) {
         if (!android_import(pick.uris[i], roms, path, sizeof path)) continue;
         struct stat info;
         uint32_t screens;
-        if (stat(path, &info) == 0 && info.st_size >= ROM_MIN_BYTES && info.st_size <= ROM_MAX_BYTES && rom_system(path, &screens)) {
+        int rank;
+        if (stat(path, &info) == 0 && info.st_size >= ROM_MIN_BYTES && info.st_size <= ROM_MAX_BYTES && rom_system(path, &screens, &rank)) {
             rom_count++;
             continue;
         }
@@ -1141,9 +1155,11 @@ static uint32_t probe_rom(const char *path, char *label, size_t label_size) {
     struct stat info;
     if (stat(path, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < ROM_MIN_BYTES || info.st_size > ROM_MAX_BYTES) return 0;
     uint32_t screens;
-    int system = cached_rom_system(path, &info, &screens);
+    int rank;
+    int system = cached_rom_system(path, &info, &screens, &rank);
     if (!system) return 0;
-    snprintf(label, label_size, "%s: %s", system == 1 ? "CE 1.0" : "CE 2.0", file_leaf_name(path));
+    static const char *RANKS[] = { "", " (patched)", " (patched, 115200)" };
+    snprintf(label, label_size, "%s: %s%s", system == 1 ? "CE 1.0" : "CE 2.0", file_leaf_name(path), RANKS[rank]);
     return screens;
 }
 
@@ -1169,7 +1185,8 @@ static int profile_system(const profile_t *profile) {
     struct stat info;
     uint32_t screens;
     if (stat(profile->rom, &info) != 0) return 0;
-    return cached_rom_system(profile->rom, &info, &screens);
+    int rank;
+    return cached_rom_system(profile->rom, &info, &screens, &rank);
 }
 
 static bool legacy_state_path(const char *rom_path, char *state, size_t size) {
