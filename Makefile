@@ -10,10 +10,12 @@ VELO_TOOLCHAIN ?= ../velo-toolchain
 
 .DEFAULT_GOAL := all
 
+PKG_CONFIG ?= pkg-config
+
 CFLAGS  += -Isrc -I$(BUILD) -Wall -Wextra -O2 -std=c11 -fno-common -MMD -MP
-CFLAGS  += $(shell pkg-config --cflags sdl3)
+CFLAGS  += $(shell $(PKG_CONFIG) --cflags sdl3)
 THREAD_LIBS = -lpthread
-LDFLAGS += $(shell pkg-config --libs sdl3) -lm -lz $(THREAD_LIBS)
+LDFLAGS += $(shell $(PKG_CONFIG) --libs sdl3) -lm -lz $(THREAD_LIBS)
 
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Darwin)
@@ -31,14 +33,14 @@ else
 SRC_MENU  = src/app/menu_bar.c src/vendor/truetype.c
 endif
 
-ifeq ($(shell pkg-config --exists slirp && echo yes),yes)
+ifeq ($(shell $(PKG_CONFIG) --exists slirp && echo yes),yes)
 SRC_NET  = src/net/net_gateway.c
-CFLAGS  += $(shell pkg-config --cflags slirp)
-NET_LIBS = $(shell pkg-config --libs slirp)
-ifeq ($(shell pkg-config --exists libcurl && echo yes),yes)
+CFLAGS  += $(shell $(PKG_CONFIG) --cflags slirp)
+NET_LIBS = $(shell $(PKG_CONFIG) --libs slirp)
+ifeq ($(shell $(PKG_CONFIG) --exists libcurl && echo yes),yes)
 SRC_NET  += src/net/web_proxy.c src/net/web_image.c src/vendor/image.c src/vendor/svg.c
-CFLAGS   += $(shell pkg-config --cflags libcurl)
-NET_LIBS += $(shell pkg-config --libs libcurl)
+CFLAGS   += $(shell $(PKG_CONFIG) --cflags libcurl)
+NET_LIBS += $(shell $(PKG_CONFIG) --libs libcurl)
 else
 SRC_NET  += src/net/web_proxy_none.c
 endif

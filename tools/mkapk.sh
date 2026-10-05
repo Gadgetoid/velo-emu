@@ -9,7 +9,7 @@ out=${1:-dist/velo.apk}
 package=org.velo_emu.velo
 ndk=${ANDROID_NDK_HOME:-/opt/homebrew/share/android-ndk}
 sdk=${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}
-min_api=24
+min_api=28
 target_api=35
 sdl_version=3.4.16
 version=${VERSION:-$(git describe --always --dirty 2>/dev/null || echo unknown)}
@@ -34,8 +34,10 @@ if [ ! -f "$work/sdl/lib/libSDL3.so" ]; then
     cmake --install "$work/sdl-build"
 fi
 
-PKG_CONFIG_LIBDIR="$PWD/$work/sdl/lib/pkgconfig" CFLAGS="-fPIC -D_GNU_SOURCE" \
-    make -s BUILD="$work/obj" MENU=android CC="$cc" THREAD_LIBS= "$work/obj/libmain.so"
+ANDROID_API=$min_api BUILD=${BUILD:-build} sh tools/android-deps.sh
+
+PKG_CONFIG_LIBDIR="$PWD/$work/deps/lib/pkgconfig:$PWD/$work/sdl/lib/pkgconfig" CFLAGS="-fPIC -D_GNU_SOURCE" \
+    make -s BUILD="$work/obj" MENU=android CC="$cc" THREAD_LIBS= PKG_CONFIG="pkg-config --static" "$work/obj/libmain.so"
 
 if [ $mode = push ]; then
     adb exec-in "run-as $package sh -c 'mkdir -p files; cat > files/libmain.so.new'" < "$work/obj/libmain.so"

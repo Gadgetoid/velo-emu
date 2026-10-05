@@ -4,16 +4,26 @@
 
 #include "app/dialog.h"
 #include "app/menu.h"
+#include "app/menu_layout.h"
 
-#define ROW_POINTS    44.0f
-#define COLUMN_POINTS 64.0f
-#define TAB_POINTS    28.0f
-#define GAP_POINTS    3.0f
-#define LABEL_WIDTH   0.85f
-#define LABEL_HEIGHT  0.4f
-#define MENU_QUEUE    16
+#define ROW_POINTS        44.0f
+#define COLUMN_POINTS     64.0f
+#define TAB_POINTS        28.0f
+#define GAP_POINTS        3.0f
+#define LIST_ROW_POINTS   48.0f
+#define LIST_HEAD_POINTS  32.0f
+#define LIST_SEP_POINTS   12.0f
+#define LIST_PAD_POINTS   16.0f
+#define DRAG_POINTS       8.0f
+#define LABEL_WIDTH       0.85f
+#define LABEL_HEIGHT      0.4f
+#define LIST_LABEL_HEIGHT 0.33f
+#define MENU_QUEUE        16
+#define PAGE_MAX          8
+#define ROW_MAX           64
+#define TITLE_MAX         96
 
-typedef enum { BUTTON_TOGGLE, BUTTON_KEYBOARD, BUTTON_KEY, BUTTON_MODIFIER, BUTTON_ITEM, BUTTON_NEXT_MACHINE } button_kind_t;
+typedef enum { BUTTON_TOGGLE, BUTTON_MENU, BUTTON_KEYBOARD, BUTTON_KEY, BUTTON_MODIFIER, BUTTON_ITEM } button_kind_t;
 
 typedef struct {
     const char   *label;
@@ -24,7 +34,7 @@ typedef struct {
 
 static const button_t BUTTONS[] = {
     { "Hide", BUTTON_TOGGLE, 0, 0 },
-    { "Swap", BUTTON_NEXT_MACHINE, 0, 0 },
+    { "Menu", BUTTON_MENU, 0, 0 },
     { "Esc", BUTTON_KEY, SDLK_ESCAPE, 0 },
     { "Tab", BUTTON_KEY, SDLK_TAB, 0 },
     { "Ctrl", BUTTON_MODIFIER, SDLK_LCTRL, 0 },
@@ -43,11 +53,26 @@ static const button_t BUTTONS[] = {
 #define BUTTON_COUNT (int)(sizeof BUTTONS / sizeof BUTTONS[0])
 #define FIRST_GROUP  8
 
+static const int UNSUPPORTED[] = {
+    MENU_NEW_MACHINE, MENU_MANAGE_MACHINES, MENU_SHOW_DEBUG_OUTPUT, MENU_SHOW_STATE, MENU_COPY_SCREEN,
+    MENU_SAVE_SCREENSHOT, MENU_SCALE_50, MENU_SCALE_75, MENU_SCALE_100, MENU_SCALE_150, MENU_SCALE_200,
+    MENU_ZOOM_IN, MENU_ZOOM_OUT, MENU_FULL_SCREEN, MENU_SERIAL_PTY, MENU_SHARED_FOLDER, MENU_SYNC_NOW,
+    MENU_STOP_SHARING, MENU_FETCH_DOCUMENTS,
+};
+
 typedef struct {
     SDL_FRect buttons[BUTTON_COUNT];
     int       left, top, right, bottom;
     float     label_scale;
 } layout_t;
+
+typedef enum { ROW_ITEM, ROW_HEADING, ROW_SEPARATOR } row_kind_t;
+
+typedef struct {
+    row_kind_t  kind;
+    int         tag;
+    const char *title;
+} row_t;
 
 static SDL_Window *main_window;
 static bool        collapsed;
@@ -55,11 +80,28 @@ static int         pressed = -1;
 static bool        latched[BUTTON_COUNT];
 static bool        checked[MENU_COUNT];
 static bool        hidden[MENU_COUNT];
+static bool        disabled[MENU_COUNT];
+static char        titles[MENU_COUNT][TITLE_MAX];
 static int         queue[MENU_QUEUE];
 static int         queued;
 
+static bool  panel_open;
+static int   page;
+static float scroll;
+static bool  touching, dragging;
+static float touch_x, touch_y, touch_scroll;
+
+static float display_scale(void) {
+    float scale = main_window ? SDL_GetWindowDisplayScale(main_window) : 1.0f;
+    return scale > 0 ? scale : 1.0f;
+}
+
 static SDL_FRect inset(SDL_FRect rect, float gap) {
     return (SDL_FRect){ floorf(rect.x + gap / 2), floorf(rect.y + gap / 2), floorf(rect.w - gap), floorf(rect.h - gap) };
+}
+
+static bool contains(const SDL_FRect *rect, float x, float y) {
+    return rect->w > 0 && x >= rect->x && x < rect->x + rect->w && y >= rect->y && y < rect->y + rect->h;
 }
 
 static const char *label_of(int index) {
@@ -81,8 +123,7 @@ static layout_t layout(void) {
     SDL_GetWindowSize(main_window, &width, &height);
     SDL_Rect safe = { 0, 0, width, height };
     SDL_GetWindowSafeArea(main_window, &safe);
-    float scale = SDL_GetWindowDisplayScale(main_window);
-    if (scale <= 0) scale = 1;
+    float scale = display_scale();
     float gap = GAP_POINTS * scale, tab = floorf(TAB_POINTS * scale);
     bool landscape = width > height;
     int start = landscape ? safe.x : safe.y;
@@ -120,8 +161,113 @@ static layout_t layout(void) {
 static int button_at(float x, float y) {
     layout_t current = layout();
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        SDL_FRect *rect = &current.buttons[i];
-        if (rect->w > 0 && x >= rect->x && x < rect->x + rect->w && y >= rect->y && y < rect->y + rect->h) return i;
+        if (contains(&current.buttons[i], x, y)) return i;
+    }
+    return -1;
+}
+
+static bool supported(int tag) {
+    if (tag >= MENU_SERIAL_PORT_FIRST && tag <= MENU_SERIAL_PORT_LAST) return false;
+    for (size_t i = 0; i < sizeof UNSUPPORTED / sizeof UNSUPPORTED[0]; i++) {
+        if (UNSUPPORTED[i] == tag) return false;
+    }
+    return true;
+}
+
+static int page_entries(int *starts) {
+    int count = 0;
+    for (int i = 0; i < MENU_ENTRY_COUNT && count < PAGE_MAX; i++) {
+        if (MENU_ENTRIES[i].kind == MENU_ENTRY_MENU) starts[count++] = i;
+    }
+    return count;
+}
+
+static bool visible_item(const menu_entry_t *entry) {
+    return entry->kind == MENU_ENTRY_ITEM && supported(entry->tag) && !hidden[entry->tag];
+}
+
+static bool section_has_items(int from) {
+    for (int i = from; i < MENU_ENTRY_COUNT; i++) {
+        menu_entry_kind_t kind = MENU_ENTRIES[i].kind;
+        if (kind == MENU_ENTRY_END || kind == MENU_ENTRY_SEPARATOR || kind == MENU_ENTRY_HEADING || kind == MENU_ENTRY_SUBMENU) return false;
+        if (visible_item(&MENU_ENTRIES[i])) return true;
+    }
+    return false;
+}
+
+static int page_rows(int index, row_t *rows) {
+    int starts[PAGE_MAX];
+    int pages = page_entries(starts);
+    if (index < 0 || index >= pages) return 0;
+    int count = 0, depth = 0;
+    for (int i = starts[index] + 1; i < MENU_ENTRY_COUNT && count < ROW_MAX; i++) {
+        const menu_entry_t *entry = &MENU_ENTRIES[i];
+        if (entry->kind == MENU_ENTRY_END) {
+            if (depth-- == 0) break;
+            continue;
+        }
+        if (entry->kind == MENU_ENTRY_SUBMENU) {
+            depth++;
+            if (section_has_items(i + 1)) rows[count++] = (row_t){ ROW_HEADING, 0, entry->title };
+        } else if (entry->kind == MENU_ENTRY_HEADING) {
+            if (section_has_items(i + 1)) rows[count++] = (row_t){ ROW_HEADING, 0, entry->title };
+        } else if (entry->kind == MENU_ENTRY_SEPARATOR) {
+            if (count && rows[count - 1].kind != ROW_SEPARATOR) rows[count++] = (row_t){ ROW_SEPARATOR, 0, NULL };
+        } else if (visible_item(entry)) {
+            rows[count++] = (row_t){ ROW_ITEM, entry->tag, titles[entry->tag][0] ? titles[entry->tag] : entry->title };
+        }
+    }
+    while (count && rows[count - 1].kind == ROW_SEPARATOR) count--;
+    return count;
+}
+
+static float row_height(row_kind_t kind) {
+    float points = kind == ROW_ITEM ? LIST_ROW_POINTS : kind == ROW_HEADING ? LIST_HEAD_POINTS : LIST_SEP_POINTS;
+    return floorf(points * display_scale());
+}
+
+static SDL_Rect panel_area(void) {
+    int width, height;
+    SDL_GetWindowSize(main_window, &width, &height);
+    SDL_Rect safe = { 0, 0, width, height };
+    SDL_GetWindowSafeArea(main_window, &safe);
+    if (width > height) return (SDL_Rect){ safe.x, 0, safe.w, height };
+    return (SDL_Rect){ 0, safe.y, width, safe.h };
+}
+
+static SDL_FRect tab_rect(int index, int count) {
+    SDL_Rect area = panel_area();
+    float cell = (float)area.w / count;
+    return inset((SDL_FRect){ area.x + index * cell, (float)area.y, cell, floorf(ROW_POINTS * display_scale()) }, GAP_POINTS * display_scale());
+}
+
+static float list_top(void) {
+    return (float)panel_area().y + floorf(ROW_POINTS * display_scale()) + floorf(GAP_POINTS * display_scale());
+}
+
+static float content_height(const row_t *rows, int count) {
+    float height = 0;
+    for (int i = 0; i < count; i++) height += row_height(rows[i].kind);
+    return height;
+}
+
+static void clamp_scroll(void) {
+    row_t rows[ROW_MAX];
+    int count = page_rows(page, rows);
+    SDL_Rect area = panel_area();
+    float visible = (float)(area.y + area.h) - list_top();
+    float limit = fmaxf(0, content_height(rows, count) - visible);
+    scroll = fminf(fmaxf(scroll, 0), limit);
+}
+
+static int row_at(float y) {
+    row_t rows[ROW_MAX];
+    int count = page_rows(page, rows);
+    float top = list_top() - scroll;
+    for (int i = 0; i < count; i++) {
+        float height = row_height(rows[i].kind);
+        if (y >= top && y < top + height) return rows[i].kind == ROW_ITEM ? rows[i].tag : -1;
+        top += height;
     }
     return -1;
 }
@@ -140,17 +286,19 @@ static void enqueue(int item) {
     if (queued < MENU_QUEUE) queue[queued++] = item;
 }
 
-static void next_machine(void) {
-    int current = -1;
-    for (int i = MENU_MACHINE_FIRST; i <= MENU_MACHINE_LAST; i++) {
-        if (!hidden[i] && checked[i]) current = i;
-    }
-    for (int step = 1; step <= MENU_MACHINE_LAST - MENU_MACHINE_FIRST; step++) {
-        int candidate = MENU_MACHINE_FIRST + ((current < 0 ? 0 : current - MENU_MACHINE_FIRST) + step) % (MENU_MACHINE_LAST - MENU_MACHINE_FIRST + 1);
-        if (!hidden[candidate]) {
-            enqueue(candidate);
-            return;
-        }
+static void release(void) {
+    if (pressed < 0) return;
+    push_key(BUTTONS[pressed].key, false);
+    pressed = -1;
+}
+
+static void open_panel(bool open) {
+    panel_open = open;
+    touching = dragging = false;
+    if (open) {
+        release();
+        if (SDL_ScreenKeyboardShown(main_window)) SDL_StopTextInput(main_window);
+        clamp_scroll();
     }
 }
 
@@ -159,6 +307,9 @@ static void press(int index) {
     switch (button->kind) {
     case BUTTON_TOGGLE:
         collapsed = !collapsed;
+        break;
+    case BUTTON_MENU:
+        open_panel(true);
         break;
     case BUTTON_KEYBOARD:
         if (SDL_ScreenKeyboardShown(main_window)) SDL_StopTextInput(main_window);
@@ -175,20 +326,69 @@ static void press(int index) {
     case BUTTON_ITEM:
         enqueue(button->item);
         break;
-    case BUTTON_NEXT_MACHINE:
-        next_machine();
-        break;
     }
 }
 
-static void release(void) {
-    if (pressed < 0) return;
-    push_key(BUTTONS[pressed].key, false);
-    pressed = -1;
+static void panel_tap(float x, float y) {
+    int starts[PAGE_MAX];
+    int pages = page_entries(starts);
+    for (int i = 0; i <= pages; i++) {
+        SDL_FRect rect = tab_rect(i, pages + 1);
+        if (!contains(&rect, x, y)) continue;
+        if (i == pages) open_panel(false);
+        else if (i != page) {
+            page = i;
+            scroll = 0;
+        }
+        return;
+    }
+    if (y < list_top()) return;
+    int tag = row_at(y);
+    if (tag < 0 || disabled[tag]) return;
+    enqueue(tag);
+    open_panel(false);
+}
+
+static bool panel_event(const SDL_Event *event) {
+    float threshold = DRAG_POINTS * display_scale();
+    switch (event->type) {
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        touching = true;
+        dragging = false;
+        touch_x = event->button.x;
+        touch_y = event->button.y;
+        touch_scroll = scroll;
+        break;
+    case SDL_EVENT_MOUSE_MOTION:
+        if (!touching) break;
+        if (!dragging && fabsf(event->motion.y - touch_y) > threshold && touch_y >= list_top()) dragging = true;
+        if (dragging) {
+            scroll = touch_scroll - (event->motion.y - touch_y);
+            clamp_scroll();
+        }
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (touching && !dragging) panel_tap(touch_x, touch_y);
+        touching = dragging = false;
+        break;
+    case SDL_EVENT_KEY_DOWN:
+        if (event->key.key == SDLK_AC_BACK || event->key.key == SDLK_ESCAPE) open_panel(false);
+        break;
+    case SDL_EVENT_QUIT:
+    case SDL_EVENT_TERMINATING:
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+        return false;
+    default:
+        if (event->type >= SDL_EVENT_USER) return false;
+        if (event->type >= SDL_EVENT_WINDOW_FIRST && event->type <= SDL_EVENT_WINDOW_LAST) return false;
+        break;
+    }
+    return true;
 }
 
 void menu_install(SDL_Window *window) {
     main_window = window;
+    for (int i = 0; i < MENU_COUNT; i++) titles[i][0] = 0;
 }
 
 int menu_bar_height(void) {
@@ -204,6 +404,7 @@ void menu_insets(int *left, int *top, int *right, int *bottom) {
 }
 
 bool menu_event(const SDL_Event *event) {
+    if (panel_open) return panel_event(event);
     switch (event->type) {
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         int index = button_at(event->button.x, event->button.y);
@@ -217,6 +418,12 @@ bool menu_event(const SDL_Event *event) {
         return true;
     case SDL_EVENT_MOUSE_MOTION:
         return pressed >= 0;
+    case SDL_EVENT_KEY_DOWN:
+        if (event->key.key != SDLK_AC_BACK) return false;
+        open_panel(true);
+        return true;
+    case SDL_EVENT_KEY_UP:
+        return event->key.key == SDLK_AC_BACK;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         release();
         memset(latched, 0, sizeof latched);
@@ -227,14 +434,95 @@ bool menu_event(const SDL_Event *event) {
 }
 
 bool menu_active(void) {
-    return false;
+    return panel_open;
+}
+
+static void copy_ascii(char *out, size_t size, const char *text) {
+    size_t length = 0;
+    for (const unsigned char *at = (const unsigned char *)text; *at && length + 4 < size; at++) {
+        if (at[0] == 0xE2 && at[1] == 0x80 && at[2] == 0xA6) {
+            memcpy(out + length, "...", 3);
+            length += 3;
+            at += 2;
+        } else if (*at >= 0x20 && *at < 0x7F) {
+            out[length++] = (char)*at;
+        }
+    }
+    out[length] = 0;
+}
+
+static void draw_text(SDL_Renderer *renderer, float x, float y, const char *text, float scale) {
+    char ascii[TITLE_MAX * 2];
+    copy_ascii(ascii, sizeof ascii, text);
+    SDL_SetRenderScale(renderer, scale, scale);
+    SDL_RenderDebugText(renderer, floorf(x / scale), floorf(y / scale), ascii);
+    SDL_SetRenderScale(renderer, 1, 1);
 }
 
 static void draw_label(SDL_Renderer *renderer, const SDL_FRect *rect, const char *label, float scale) {
     float width = (float)strlen(label) * SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale, height = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale;
-    SDL_SetRenderScale(renderer, scale, scale);
-    SDL_RenderDebugText(renderer, floorf((rect->x + (rect->w - width) / 2) / scale), floorf((rect->y + (rect->h - height) / 2) / scale), label);
-    SDL_SetRenderScale(renderer, 1, 1);
+    draw_text(renderer, rect->x + (rect->w - width) / 2, rect->y + (rect->h - height) / 2, label, scale);
+}
+
+static void draw_panel(SDL_Renderer *renderer) {
+    int width, height;
+    SDL_GetWindowSize(main_window, &width, &height);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xF0);
+    SDL_RenderFillRect(renderer, &(SDL_FRect){ 0, 0, (float)width, (float)height });
+
+    float scale = display_scale();
+    float text_scale = fmaxf(1, floorf(LIST_ROW_POINTS * scale * LIST_LABEL_HEIGHT / SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE));
+    float heading_scale = fmaxf(1, text_scale - 1);
+    float character = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE;
+    int starts[PAGE_MAX];
+    int pages = page_entries(starts);
+    float tab_scale = text_scale;
+    for (int i = 0; i <= pages; i++) {
+        SDL_FRect rect = tab_rect(i, pages + 1);
+        const char *title = i == pages ? "Close" : MENU_ENTRIES[starts[i]].title;
+        tab_scale = fminf(tab_scale, fmaxf(1, floorf(rect.w * LABEL_WIDTH / (strlen(title) * character))));
+    }
+    for (int i = 0; i <= pages; i++) {
+        SDL_FRect rect = tab_rect(i, pages + 1);
+        bool lit = i == page;
+        if (lit) SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
+        else SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
+        SDL_RenderFillRect(renderer, &rect);
+        if (lit) SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
+        else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
+        draw_label(renderer, &rect, i == pages ? "Close" : MENU_ENTRIES[starts[i]].title, tab_scale);
+    }
+
+    SDL_Rect area = panel_area();
+    float top = list_top();
+    SDL_SetRenderClipRect(renderer, &(SDL_Rect){ area.x, (int)top, area.w, area.y + area.h - (int)top });
+    float pad = floorf(LIST_PAD_POINTS * scale);
+    float mark = floorf(character * text_scale);
+    float y = top - scroll;
+    row_t rows[ROW_MAX];
+    int count = page_rows(page, rows);
+    for (int i = 0; i < count; i++) {
+        float height = row_height(rows[i].kind);
+        if (rows[i].kind == ROW_SEPARATOR) {
+            SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
+            SDL_RenderFillRect(renderer, &(SDL_FRect){ area.x + pad, floorf(y + height / 2), area.w - 2 * pad, fmaxf(1, floorf(scale)) });
+        } else if (rows[i].kind == ROW_HEADING) {
+            SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
+            draw_text(renderer, area.x + pad, y + height - character * heading_scale - floorf(4 * scale), rows[i].title, heading_scale);
+        } else {
+            int tag = rows[i].tag;
+            if (checked[tag]) {
+                SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
+                SDL_RenderFillRect(renderer, &(SDL_FRect){ area.x + pad, floorf(y + (height - mark) / 2), mark, mark });
+            }
+            if (disabled[tag]) SDL_SetRenderDrawColor(renderer, 0x66, 0x66, 0x66, 0xFF);
+            else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
+            draw_text(renderer, area.x + 2 * pad + mark, floorf(y + (height - character * text_scale) / 2), rows[i].title, text_scale);
+        }
+        y += height;
+    }
+    SDL_SetRenderClipRect(renderer, NULL);
 }
 
 void menu_draw(SDL_Renderer *renderer) {
@@ -251,6 +539,7 @@ void menu_draw(SDL_Renderer *renderer) {
         else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
         draw_label(renderer, rect, label_of(i), current.label_scale);
     }
+    if (panel_open) draw_panel(renderer);
 }
 
 void menu_ensure(void) {}
@@ -267,13 +556,11 @@ void menu_set_checked(int item, bool value) {
 }
 
 void menu_set_enabled(int item, bool value) {
-    (void)item;
-    (void)value;
+    if (item >= 0 && item < MENU_COUNT) disabled[item] = !value;
 }
 
 void menu_set_title(int item, const char *title) {
-    (void)item;
-    (void)title;
+    if (item >= 0 && item < MENU_COUNT) SDL_strlcpy(titles[item], title, sizeof titles[item]);
 }
 
 void menu_set_hidden(int item, bool value) {

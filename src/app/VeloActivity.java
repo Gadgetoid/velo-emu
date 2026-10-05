@@ -2,6 +2,9 @@ package org.velo_emu.velo;
 
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.view.WindowManager;
 import java.io.File;
 import org.libsdl.app.SDLActivity;
@@ -37,6 +40,15 @@ public class VeloActivity extends SDLActivity {
     protected String getMainSharedObject() {
         File library = developmentLibrary();
         return library != null ? library.getAbsolutePath() : super.getMainSharedObject();
+    }
+
+    public String displayName(String uri) {
+        try (Cursor cursor = getContentResolver().query(Uri.parse(uri), new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
+        } catch (Exception e) {
+            return null;
+        }
+        return null;
     }
 
     @Override
