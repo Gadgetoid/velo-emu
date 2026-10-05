@@ -10,6 +10,7 @@ typedef struct view view_t;
 view_t        *view_create(SDL_Window *window, SDL_Renderer *renderer, view_display_t display, int top);
 void           view_destroy(view_t *view);
 void           view_set_display(view_t *view, view_display_t display);
+void           view_set_top(view_t *view, int top);
 view_display_t view_display(const view_t *view);
 void           view_set_screen_size(view_t *view, int width, int height);
 void           view_source_size(view_display_t display, int *width, int *height);

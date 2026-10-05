@@ -18,13 +18,15 @@ LDFLAGS += $(shell pkg-config --libs sdl3) -lm -lz $(THREAD_LIBS)
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Darwin)
 MENU     ?= macos
-LDFLAGS  += -framework Cocoa
 else
 MENU     ?= bar
 CFLAGS   += -D_GNU_SOURCE
 endif
 ifeq ($(MENU),macos)
 SRC_MENU  = src/app/menu_macos.m src/app/dialog_macos.m
+LDFLAGS  += -framework Cocoa
+else ifeq ($(MENU),android)
+SRC_MENU  = src/app/menu_android.c
 else
 SRC_MENU  = src/app/menu_bar.c src/vendor/truetype.c
 endif
@@ -56,6 +58,9 @@ all: $(PROG) $(VELORAPI) $(VELOSTATE)
 
 $(PROG): $(OBJ_APP)
 	$(CC) -o $@ $^ $(LDFLAGS)
+
+$(BUILD)/libmain.so: $(OBJ_APP)
+	$(CC) -shared -o $@ $^ $(LDFLAGS)
 
 $(HEADLESS): $(OBJ_HEADLESS)
 	$(CC) -o $@ $^ -lm -lz $(NET_LIBS) $(THREAD_LIBS)
@@ -105,6 +110,9 @@ run: $(PROG)
 app: $(PROG) $(VELORAPI) $(VELOSTATE) icons
 	ICONS=$(BUILD)/icons sh tools/mkapp.sh Velo.app
 
+apk: icons
+	ICONS=$(BUILD)/icons sh tools/mkapk.sh
+
 GUEST_COMPONENTS = $(patsubst guest/%/CMakeLists.txt,%,$(wildcard guest/*/CMakeLists.txt))
 
 guest:
@@ -121,7 +129,7 @@ vdisk: guest
 clean:
 	rm -rf $(BUILD) $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE) Velo.app
 
-.PHONY: all run clean test check app icons guest vdisk FORCE
+.PHONY: all run clean test check app apk icons guest vdisk FORCE
 
 -include $(OBJ_APP:.o=.d) $(OBJ_HEADLESS:.o=.d) $(BUILD)/tools/proxy_check.d $(BUILD)/tools/velo_rapi.d $(BUILD)/tools/velo_state.d $(BUILD)/tools/icon.d
 

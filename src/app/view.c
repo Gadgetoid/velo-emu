@@ -44,6 +44,12 @@ void view_set_display(view_t *view, view_display_t display) {
     view->laid_out = false;
 }
 
+void view_set_top(view_t *view, int top) {
+    if (view->top == (float)top) return;
+    view->top = (float)top;
+    view->laid_out = false;
+}
+
 view_display_t view_display(const view_t *view) {
     return view->display;
 }
@@ -91,7 +97,11 @@ static bool layout(view_t *view) {
     view->dest.w = source_w * scale;
     view->dest.h = source_h * scale;
     view->dest.x = floorf((output_w - view->dest.w) / 2);
+#ifdef __ANDROID__
+    view->dest.y = top;
+#else
     view->dest.y = top + floorf((area_h - view->dest.h) / 2);
+#endif
     return true;
 }
 

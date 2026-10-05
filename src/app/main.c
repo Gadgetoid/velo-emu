@@ -1236,6 +1236,14 @@ static const option_spec_t LAUNCH_SPEC = {
 
 int main(int argc, char **argv) {
     const char *rom_path = NULL;
+#ifdef __ANDROID__
+    const char *storage = SDL_GetAndroidExternalStoragePath();
+    if (storage) {
+        setenv("XDG_DATA_HOME", storage, 1);
+        setenv("XDG_CONFIG_HOME", storage, 1);
+    }
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait");
+#endif
     migrate_old_folders();
     settings_t settings = settings_load();
     launch_t launch = { &settings, settings.connect_at_launch ? SERIAL_NETWORK : SERIAL_OFF, NULL, NULL, NULL, NULL, false, 0, NULL, NULL };
@@ -1379,7 +1387,11 @@ int main(int argc, char **argv) {
             }
             switch (event.type) {
             case SDL_EVENT_QUIT:
+            case SDL_EVENT_TERMINATING:
                 running = false;
+                break;
+            case SDL_EVENT_WILL_ENTER_BACKGROUND:
+                machine_save(machine, state, (int64_t)time(NULL));
                 break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
@@ -1928,6 +1940,7 @@ int main(int argc, char **argv) {
         machine_screen(machine, lcd_framebuffer);
         bool lcd_on = machine_lcd_enabled(machine);
         SDL_UnlockMutex(runner.lock);
+        view_set_top(view, menu_bar_height());
         bool screen_changed = view_update(view, (float)elapsed, lcd_on);
         if (screen_changed || events_seen || menu_active()) {
             view_render(view);
