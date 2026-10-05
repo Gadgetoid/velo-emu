@@ -1,6 +1,6 @@
 # velo-emu
 
-An emulator for the Philips Velo 1 (1997), a Windows CE Handheld PC. It runs the stock CE 1.0 ROM and the CE 2.0 upgrade, with a simulated backlit LCD, PC Card images, a PPP network with a web proxy for Pocket IE, and the desktop connection tools of the day. Unlike [CERF](https://github.com/gweslab/cerf), which it draws on, it runs on macOS and Linux.
+An emulator for the Philips Velo 1 (1997), a Windows CE Handheld PC. It runs the stock CE 1.0 ROM and the CE 2.0 upgrade, with a simulated backlit LCD, PC Card images, a PPP network with a web proxy for Pocket IE, and the desktop connection tools of the day. Unlike [CERF](https://github.com/gweslab/cerf), which it draws on, it runs on macOS, Linux and Android.
 
 ![Windows CE 1.0 desktop](docs/screenshots/ce1-desktop.png)
 ![Windows CE 2.0 desktop](docs/screenshots/ce2-desktop.png)
@@ -18,7 +18,7 @@ With the CE 2.0 upgrade's applications, a library of period software on a PC Car
 
 - **macOS (Apple silicon):** `Velo.app`, from a release or `make app` (see Building). It isn't notarised, so macOS blocks a downloaded copy the first time it opens: allow it in System Settings > Privacy & Security > Open Anyway, or run `xattr -dr com.apple.quarantine Velo.app`. A copy built with `make app` opens normally. `velo-rapi` and `velo-state` are inside it, in `Velo.app/Contents/MacOS`.
 - **Debian 13 and Ubuntu:** the `.deb`, from a release or `tools/mkdeb.sh`. It installs `velo`, `velo-headless`, `velo-rapi` and `velo-state`, with a desktop entry.
-- **Android (arm64, Android 9 or later):** `make apk` builds `dist/velo.apk`, a debug build. Its first run asks for ROMs and card images and copies them into the app. Controls run down both sides of the screen in landscape and across the top in portrait: Menu opens the full menu, Kbd the phone's keyboard, and Ctrl, Alt and Shift stay down until tapped again. With the Velo's backlight on, the phone runs at full brightness.
+- **Android (arm64, Android 9 or later):** the `.apk` from a release, or `make apk` (see Building). See Android.
 - **From source:** see Building.
 
 ### ROMs
@@ -86,6 +86,24 @@ CE 1.0 and 2.0 have no scroll wheel, so scrolling (a mouse wheel or two-finger s
 Dropping files on the window sends them to `\My Documents`, a dropped `.load` script installs its package, and a single dropped `.img` is inserted as the card.
 
 The backlight is under CE's control: the backlight key toggles it, and the Backlight control panel's idle timeout turns it off (30 seconds by default, since the Velo reports external power).
+
+## Android
+
+![The Velo Software Library on a phone, with the controls beside the screen](docs/screenshots/android-library.png)
+![Pocket IE with the controls hidden](docs/screenshots/android-pocket-ie.png)
+![The Machine menu](docs/screenshots/android-menu.png)
+![Pocket Paint, drawn with a finger](docs/screenshots/android-paint.png)
+
+The first run asks for ROMs and card images, from the phone's storage or Downloads, and copies them into the app; Machine > Import ROMs and Cards… adds more later. A finger is the stylus. In landscape the controls run down both sides of the screen and in portrait across the top, leaving room for the keyboard below:
+
+- **Hide** folds them into a Keys tab and gives the screen the full height.
+- **Menu**, or Back, opens the menus above as tabs. The ones that need a desktop (zoom, full screen, the pseudo-terminal and host serial ports) are left out.
+- **Kbd** opens the phone's keyboard, which types on the Velo. Ctrl, Alt and Shift stay down until tapped again, so Alt-Tab is Alt, Tab, Alt.
+- **Esc**, **Tab**, the arrows and **Enter** are the Velo's keys, and **Power** and **Light** its power and backlight buttons.
+
+Notices that the desktop shows in the title bar appear at the bottom of the screen. The unlit screen is dimmed to look like the Velo's reflective LCD; with the backlight on, the phone runs at full brightness (View > Full Brightness with Backlight turns that off). The phone stays awake while the Velo is on.
+
+Picked card, disk and snapshot files are copied into the app, under `Android/data/org.velo_emu.velo/files/velo-emu`, and a saved snapshot goes where you choose. Save Screenshot puts it in Pictures/Velo, and Share Screen… shares it. PC Link's Shared Folder… and Copy My Documents… need All files access, which they ask for, and choose a folder in the phone's storage. Leaving the app saves the machine.
 
 ## Saved state and snapshots
 
@@ -323,6 +341,8 @@ make apk        # dist/velo.apk for Android, with the NDK, SDK and a JDK from Ho
 make apk-install # install it on the phone over adb, and start it
 make apk-push   # replace a debug install's native code without reinstalling
 ```
+
+`make apk` needs `brew install --cask android-ndk android-commandlinetools`, `brew install openjdk@21 meson ninja` and `sdkmanager "platforms;android-35" "build-tools;35.0.0"`. `tools/android-deps.sh` cross-builds GLib, libslirp, mbedTLS and curl into `build/android` the first time. Without a release key, the APK is a debug build signed with `~/.android/debug.keystore`. `make apk-install` installs with the Play Store as the installer, which gets past phones that block USB installs, such as Xiaomi's. `make apk-push` works because a debug build loads a newer `libmain.so` from its private files when there is one.
 
 Debian 13 or Ubuntu:
 
