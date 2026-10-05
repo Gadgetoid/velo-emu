@@ -69,11 +69,15 @@ cat > "$stage/AndroidManifest.xml" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="$package">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-feature android:glEsVersion="0x00020000" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
     <application android:label="Velo" android:icon="@mipmap/velo" android:hasCode="true"
-        android:extractNativeLibs="true" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+        android:extractNativeLibs="true" android:requestLegacyExternalStorage="true" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+        <provider android:name=".VeloShareProvider" android:authorities="$package.share" android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".VeloActivity" android:label="Velo" android:exported="true"
             android:alwaysRetainTaskState="true" android:launchMode="singleInstance" android:preferMinimalPostProcessing="true"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
@@ -87,7 +91,7 @@ cat > "$stage/AndroidManifest.xml" <<EOF
 EOF
 
 javac -nowarn -source 11 -target 11 -Xlint:-options -cp "$android_jar" -d "$stage/classes" \
-    $(find "$sdl/android-project/app/src/main/java" -name '*.java') src/app/VeloActivity.java
+    $(find "$sdl/android-project/app/src/main/java" -name '*.java') src/app/VeloActivity.java src/app/VeloShareProvider.java
 "$build_tools/d8" --min-api $min_api --lib "$android_jar" --output "$stage/dex" $(find "$stage/classes" -name '*.class')
 
 "$build_tools/aapt2" compile --dir "$stage/res" -o "$stage/res.zip"

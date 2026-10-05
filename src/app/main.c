@@ -286,6 +286,11 @@ static int compare_names(const void *a, const void *b) {
 }
 
 static int list_serial_ports(char ports[][64], int max) {
+#ifdef __ANDROID__
+    (void)ports;
+    (void)max;
+    return 0;
+#endif
     DIR *dev = opendir("/dev");
     if (!dev) return 0;
     int count = 0;
@@ -768,6 +773,7 @@ typedef struct {
     uint32_t display;
     char     user_agent[256];
     char     shared_folder[1024];
+    uint32_t full_brightness;
 } settings_t;
 
 static void settings_path(char *path, size_t size) {
@@ -801,7 +807,7 @@ static void copy_setting(char *destination, size_t size, const char *value) {
 }
 
 static settings_t settings_load(void) {
-    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT };
+    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1 };
     char path[1100];
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "r");
@@ -825,6 +831,7 @@ static settings_t settings_load(void) {
         else if (!strncmp(line, "user_agent=", 11)) copy_setting(settings.user_agent, sizeof settings.user_agent, line + 11);
         else if (!strncmp(line, "serial_device=", 14)) copy_setting(settings.serial_device, sizeof settings.serial_device, line + 14);
         else if (!strncmp(line, "shared_folder=", 14)) copy_setting(settings.shared_folder, sizeof settings.shared_folder, line + 14);
+        else if (sscanf(line, "full_brightness=%u", &value) == 1) settings.full_brightness = value != 0;
     }
     fclose(file);
     return settings;
@@ -835,9 +842,9 @@ static void settings_save(const settings_t *settings) {
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "w");
     if (!file) return;
-    fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\n", settings->memory,
+    fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\nfull_brightness=%u\n", settings->memory,
             settings->screen.width, settings->screen.height, settings->speed, settings->host_time, settings->scale, settings->display, settings->connect_at_launch, settings->system, settings->machine, settings->serial_device,
-            settings->user_agent, settings->shared_folder);
+            settings->user_agent, settings->shared_folder, settings->full_brightness);
     fclose(file);
 }
 
@@ -1265,6 +1272,11 @@ static bool copy_screen(view_t *view) {
     uint8_t *png;
     size_t length;
     if (!pixels || !png_encode(pixels, width, height, &png, &length)) return false;
+#ifdef __ANDROID__
+    bool shared = android_share_picture(png, length, "Velo Screen.png");
+    free(png);
+    return shared;
+#endif
     size_t *stored = malloc(sizeof(size_t) + length);
     if (!stored) { free(png); return false; }
     stored[0] = length;
@@ -1287,6 +1299,12 @@ static bool save_screenshot(view_t *view, char *path, size_t size) {
     localtime_r(&now, &local);
     char stamp[64];
     strftime(stamp, sizeof stamp, "%Y-%m-%d at %H.%M.%S", &local);
+#ifdef __ANDROID__
+    snprintf(path, size, "Velo Screenshot %s.png", stamp);
+    bool stored = android_save_picture(png, length, path);
+    free(png);
+    return stored;
+#endif
     const char *folder = SDL_GetUserFolder(SCREENSHOT_FOLDER);
     if (folder) snprintf(path, size, "%sVelo Screenshot %s.png", folder, stamp);
     else snprintf(path, size, "%s/Velo Screenshot %s.png", getenv("HOME") ? getenv("HOME") : ".", stamp);
@@ -1878,15 +1896,45 @@ int main(int argc, char **argv) {
                 notice = serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : SERIAL_OFF);
                 notice_left = NOTICE_SECONDS * 3;
                 break;
+#ifdef __ANDROID__
+            case MENU_FULL_BRIGHTNESS:
+                settings.full_brightness = !settings.full_brightness;
+                settings_save(&settings);
+                break;
+            case MENU_FETCH_DOCUMENTS:
+            case MENU_SHARED_FOLDER: {
+                if (!android_all_files_access()) {
+                    android_request_all_files_access();
+                    notice = "allow All files access for Velo, then try again";
+                    notice_left = NOTICE_SECONDS * 3;
+                    break;
+                }
+                bool shared = item == MENU_SHARED_FOLDER;
+                picked_t *folder = calloc(1, sizeof *folder);
+                const char *start = shared && settings.shared_folder[0] ? settings.shared_folder : "/storage/emulated/0/Documents";
+                if (folder && android_choose_folder(shared ? "Folder to share with My Documents" : "Folder to copy My Documents into", start, folder->paths[0], sizeof folder->paths[0])) {
+                    folder->kind = shared ? PICK_SHARED : PICK_FETCH;
+                    folder->count = 1;
+                    free(picked);
+                    picked = folder;
+                } else {
+                    free(folder);
+                }
+                events_seen = true;
+                break;
+            }
+#endif
             case MENU_SEND_FILES:
                 SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_SEND, window, NULL, 0, NULL, true);
                 break;
+#ifndef __ANDROID__
             case MENU_FETCH_DOCUMENTS:
                 SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_FETCH, window, NULL, false);
                 break;
             case MENU_SHARED_FOLDER:
                 SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_SHARED, window, settings.shared_folder[0] ? settings.shared_folder : NULL, false);
                 break;
+#endif
             case MENU_SYNC_NOW:
                 desktop_sync(desktop, settings.shared_folder);
                 break;
@@ -2069,6 +2117,7 @@ int main(int argc, char **argv) {
         menu_set_checked(MENU_PAUSE, paused);
         menu_set_checked(MENU_BACKLIGHT, machine_backlight(machine));
         menu_set_checked(MENU_SOUND, sound);
+        menu_set_checked(MENU_FULL_BRIGHTNESS, settings.full_brightness != 0);
         for (int i = 0; i < PROFILES_MAX; i++) {
             int machine_item = MENU_MACHINE_FIRST + i;
             menu_set_hidden(machine_item, i >= profiles.count);
@@ -2144,7 +2193,7 @@ int main(int argc, char **argv) {
         lcd_set_power(machine_lcd_enabled(machine));
         lcd_set_backlight(machine_backlight(machine));
 #ifdef __ANDROID__
-        android_update(machine_backlight(machine) && machine_lcd_enabled(machine), !machine_suspended(machine));
+        android_update(settings.full_brightness && machine_backlight(machine) && machine_lcd_enabled(machine), !machine_suspended(machine));
 #endif
         machine_screen(machine, lcd_framebuffer);
         bool lcd_on = machine_lcd_enabled(machine);

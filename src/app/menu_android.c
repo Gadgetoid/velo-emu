@@ -1,10 +1,17 @@
 #include <SDL3/SDL.h>
+#include <dirent.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 
+#include "app/android.h"
 #include "app/dialog.h"
 #include "app/menu.h"
 #include "app/menu_layout.h"
+#include "vendor/stb_truetype.h"
 
 #define ROW_POINTS        44.0f
 #define COLUMN_POINTS     64.0f
@@ -18,11 +25,21 @@
 #define FLING_DECAY       4.0f
 #define FLING_STOP_POINTS 20.0f
 #define LABEL_WIDTH       0.85f
-#define LABEL_HEIGHT      0.4f
-#define LIST_LABEL_HEIGHT 0.3f
+#define LABEL_HEIGHT      0.36f
+#define LIST_LABEL_HEIGHT 0.36f
+#define HEADING_SIZE      0.8f
+#define MARK_SIZE         0.6f
+#define FONT_SIZES        6
+#define ATLAS_WIDTH       1024
+#define ATLAS_HEIGHT      1024
+#define FIRST_CHARACTER   32
+#define CHARACTER_COUNT   95
+#define ELLIPSIS_CODE     0x2026
+#define STORAGE_ROOT      "/storage/emulated/0"
+#define PROGRESS_WIDTH    0.6f
 #define MENU_QUEUE        16
 #define PAGE_MAX          8
-#define ROW_MAX           64
+#define ROW_MAX           128
 #define TITLE_MAX         96
 #define TAB_MAX           (PAGE_MAX + 1)
 #define MODAL_WAIT_MS     16
@@ -58,16 +75,14 @@ static const button_t BUTTONS[] = {
 #define FIRST_GROUP  8
 
 static const int UNSUPPORTED[] = {
-    MENU_SHOW_DEBUG_OUTPUT, MENU_SHOW_STATE, MENU_COPY_SCREEN,
-    MENU_SAVE_SCREENSHOT, MENU_SCALE_50, MENU_SCALE_75, MENU_SCALE_100, MENU_SCALE_150, MENU_SCALE_200,
-    MENU_ZOOM_IN, MENU_ZOOM_OUT, MENU_FULL_SCREEN, MENU_SERIAL_PTY, MENU_SHARED_FOLDER, MENU_SYNC_NOW,
-    MENU_STOP_SHARING, MENU_FETCH_DOCUMENTS,
+    MENU_SHOW_DEBUG_OUTPUT, MENU_SHOW_STATE, MENU_SCALE_50, MENU_SCALE_75, MENU_SCALE_100, MENU_SCALE_150,
+    MENU_SCALE_200, MENU_ZOOM_IN, MENU_ZOOM_OUT, MENU_FULL_SCREEN, MENU_SERIAL_PTY,
 };
 
 typedef struct {
     SDL_FRect buttons[BUTTON_COUNT];
     int       left, top, right, bottom;
-    float     label_scale;
+    float     label_size;
 } layout_t;
 
 typedef enum { ROW_ITEM, ROW_HEADING, ROW_SEPARATOR } row_kind_t;
@@ -109,6 +124,175 @@ static bool  touching, dragging;
 static float touch_x, touch_y, touch_scroll;
 static float velocity, last_motion_y;
 static uint64_t last_motion_ns, last_frame_ns;
+
+typedef struct {
+    float            size;
+    float            ascent;
+    stbtt_packedchar characters[CHARACTER_COUNT];
+    stbtt_packedchar ellipsis;
+    SDL_Texture     *texture;
+    uint64_t         used;
+} font_size_t;
+
+static struct {
+    unsigned char *data;
+    stbtt_fontinfo info;
+    bool           tried, loaded;
+    font_size_t    sizes[FONT_SIZES];
+    uint64_t       clock;
+} font;
+
+static const char *FONT_PATHS[] = {
+    "/system/fonts/RobotoStatic-Regular.ttf",
+    "/system/fonts/Roboto-Regular.ttf",
+    "/system/fonts/DroidSans.ttf",
+};
+
+static void load_font(void) {
+    if (font.tried) return;
+    font.tried = true;
+    for (size_t i = 0; i < sizeof FONT_PATHS / sizeof FONT_PATHS[0] && !font.loaded; i++) {
+        size_t length;
+        unsigned char *data = SDL_LoadFile(FONT_PATHS[i], &length);
+        if (!data) continue;
+        int offset = stbtt_GetFontOffsetForIndex(data, 0);
+        if (offset >= 0 && stbtt_InitFont(&font.info, data, offset)) {
+            font.data = data;
+            font.loaded = true;
+        } else {
+            SDL_free(data);
+        }
+    }
+}
+
+static font_size_t *font_at(SDL_Renderer *renderer, float size) {
+    load_font();
+    if (!font.loaded) return NULL;
+    size = roundf(size);
+    font_size_t *oldest = &font.sizes[0];
+    for (int i = 0; i < FONT_SIZES; i++) {
+        font_size_t *entry = &font.sizes[i];
+        if (entry->texture && entry->size == size) {
+            entry->used = ++font.clock;
+            return entry;
+        }
+        if (!entry->texture || entry->used < oldest->used) oldest = entry;
+    }
+    if (!renderer) return NULL;
+    unsigned char *atlas = calloc(ATLAS_WIDTH, ATLAS_HEIGHT);
+    uint32_t *pixels = malloc((size_t)ATLAS_WIDTH * ATLAS_HEIGHT * 4);
+    if (!atlas || !pixels) {
+        free(atlas);
+        free(pixels);
+        return NULL;
+    }
+    stbtt_pack_context pack;
+    stbtt_pack_range ranges[2] = {
+        { size, FIRST_CHARACTER, NULL, CHARACTER_COUNT, oldest->characters, 0, 0 },
+        { size, ELLIPSIS_CODE, NULL, 1, &oldest->ellipsis, 0, 0 },
+    };
+    stbtt_PackBegin(&pack, atlas, ATLAS_WIDTH, ATLAS_HEIGHT, 0, 1, NULL);
+    stbtt_PackSetOversampling(&pack, 1, 1);
+    stbtt_PackFontRanges(&pack, font.data, 0, ranges, 2);
+    stbtt_PackEnd(&pack);
+    for (int i = 0; i < ATLAS_WIDTH * ATLAS_HEIGHT; i++) pixels[i] = 0x00FFFFFFu | (uint32_t)atlas[i] << 24;
+    if (oldest->texture) SDL_DestroyTexture(oldest->texture);
+    oldest->texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, ATLAS_WIDTH, ATLAS_HEIGHT);
+    if (oldest->texture) {
+        SDL_UpdateTexture(oldest->texture, NULL, pixels, ATLAS_WIDTH * 4);
+        SDL_SetTextureBlendMode(oldest->texture, SDL_BLENDMODE_BLEND);
+    }
+    free(atlas);
+    free(pixels);
+    int ascent, descent, gap;
+    stbtt_GetFontVMetrics(&font.info, &ascent, &descent, &gap);
+    oldest->size = size;
+    oldest->ascent = ascent * stbtt_ScaleForPixelHeight(&font.info, size);
+    oldest->used = ++font.clock;
+    return oldest->texture ? oldest : NULL;
+}
+
+static uint32_t next_codepoint(const unsigned char **cursor) {
+    const unsigned char *at = *cursor;
+    uint32_t codepoint = *at++;
+    int extra = codepoint >= 0xF0 ? 3 : codepoint >= 0xE0 ? 2 : codepoint >= 0xC0 ? 1 : 0;
+    if (extra) codepoint &= 0x3F >> extra;
+    for (int i = 0; i < extra && (*at & 0xC0) == 0x80; i++) codepoint = (codepoint << 6) | (*at++ & 0x3F);
+    *cursor = at;
+    return codepoint;
+}
+
+static const stbtt_packedchar *glyph_of(const font_size_t *entry, uint32_t codepoint) {
+    if (codepoint >= FIRST_CHARACTER && codepoint < FIRST_CHARACTER + CHARACTER_COUNT) return &entry->characters[codepoint - FIRST_CHARACTER];
+    if (codepoint == ELLIPSIS_CODE) return &entry->ellipsis;
+    return NULL;
+}
+
+static float debug_scale(float size) {
+    return fmaxf(1, floorf(size / SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE));
+}
+
+static float text_width(SDL_Renderer *renderer, const char *text, float size) {
+    font_size_t *entry = font_at(renderer, size);
+    float width = 0;
+    for (const unsigned char *at = (const unsigned char *)text; *at;) {
+        uint32_t codepoint = next_codepoint(&at);
+        if (!entry) {
+            width += (codepoint == ELLIPSIS_CODE ? 3 : 1) * SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * debug_scale(size);
+            continue;
+        }
+        const stbtt_packedchar *glyph = glyph_of(entry, codepoint);
+        if (glyph) width += glyph->xadvance;
+    }
+    return width;
+}
+
+static void draw_text(SDL_Renderer *renderer, float x, float y, const char *text, float size) {
+    font_size_t *entry = font_at(renderer, size);
+    if (!entry) {
+        char ascii[TITLE_MAX * 2];
+        size_t length = 0;
+        for (const unsigned char *at = (const unsigned char *)text; *at && length + 4 < sizeof ascii;) {
+            uint32_t codepoint = next_codepoint(&at);
+            if (codepoint == ELLIPSIS_CODE) {
+                memcpy(ascii + length, "...", 3);
+                length += 3;
+            } else if (codepoint >= 0x20 && codepoint < 0x7F) {
+                ascii[length++] = (char)codepoint;
+            }
+        }
+        ascii[length] = 0;
+        float scale = debug_scale(size);
+        SDL_SetRenderScale(renderer, scale, scale);
+        SDL_RenderDebugText(renderer, floorf(x / scale), floorf((y + (size - SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale) / 2) / scale), ascii);
+        SDL_SetRenderScale(renderer, 1, 1);
+        return;
+    }
+    Uint8 r, g, b, a;
+    SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a);
+    SDL_SetTextureColorMod(entry->texture, r, g, b);
+    float pen = roundf(x), baseline = roundf(y + entry->ascent);
+    for (const unsigned char *at = (const unsigned char *)text; *at;) {
+        const stbtt_packedchar *glyph = glyph_of(entry, next_codepoint(&at));
+        if (!glyph) continue;
+        SDL_FRect source = { glyph->x0, glyph->y0, (float)(glyph->x1 - glyph->x0), (float)(glyph->y1 - glyph->y0) };
+        SDL_FRect target = { roundf(pen + glyph->xoff), baseline + glyph->yoff, source.w, source.h };
+        SDL_RenderTexture(renderer, entry->texture, &source, &target);
+        pen += glyph->xadvance;
+    }
+}
+
+static void draw_label(SDL_Renderer *renderer, const SDL_FRect *rect, const char *label, float size) {
+    float width = text_width(renderer, label, size);
+    draw_text(renderer, rect->x + (rect->w - width) / 2, rect->y + (rect->h - size) / 2, label, size);
+}
+
+static float fit_size(SDL_Renderer *renderer, const SDL_FRect *rect, const char *label, float height) {
+    float size = rect->h * height;
+    float width = text_width(renderer, label, size);
+    if (width > rect->w * LABEL_WIDTH) size *= rect->w * LABEL_WIDTH / width;
+    return floorf(size);
+}
 
 static float display_scale(void) {
     float scale = main_window ? SDL_GetWindowDisplayScale(main_window) : 1.0f;
@@ -166,14 +350,13 @@ static layout_t layout(void) {
         result.top = leading;
         result.bottom = trailing;
     }
-    result.label_scale = INFINITY;
+    SDL_Renderer *renderer = SDL_GetRenderer(main_window);
+    result.label_size = INFINITY;
     for (int i = 0; i < BUTTON_COUNT; i++) {
         SDL_FRect *rect = &result.buttons[i];
-        if (rect->w <= 0) continue;
-        float fit = fminf(rect->h * LABEL_HEIGHT, rect->w * LABEL_WIDTH / (float)strlen(label_of(i))) / SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE;
-        result.label_scale = fminf(result.label_scale, fit);
+        if (rect->w > 0) result.label_size = fminf(result.label_size, fit_size(renderer, rect, label_of(i), LABEL_HEIGHT));
     }
-    result.label_scale = fmaxf(1, floorf(result.label_scale));
+    result.label_size = fmaxf(1, result.label_size);
     return result;
 }
 
@@ -450,6 +633,7 @@ static bool panel_event(const SDL_Event *event) {
 void menu_install(SDL_Window *window) {
     main_window = window;
     for (int i = 0; i < MENU_COUNT; i++) titles[i][0] = 0;
+    SDL_strlcpy(titles[MENU_COPY_SCREEN], "Share Screen" ELLIPSIS, sizeof titles[MENU_COPY_SCREEN]);
 }
 
 int menu_bar_height(void) {
@@ -498,33 +682,6 @@ bool menu_active(void) {
     return panel_open;
 }
 
-static void copy_ascii(char *out, size_t size, const char *text) {
-    size_t length = 0;
-    for (const unsigned char *at = (const unsigned char *)text; *at && length + 4 < size; at++) {
-        if (at[0] == 0xE2 && at[1] == 0x80 && at[2] == 0xA6) {
-            memcpy(out + length, "...", 3);
-            length += 3;
-            at += 2;
-        } else if (*at >= 0x20 && *at < 0x7F) {
-            out[length++] = (char)*at;
-        }
-    }
-    out[length] = 0;
-}
-
-static void draw_text(SDL_Renderer *renderer, float x, float y, const char *text, float scale) {
-    char ascii[TITLE_MAX * 2];
-    copy_ascii(ascii, sizeof ascii, text);
-    SDL_SetRenderScale(renderer, scale, scale);
-    SDL_RenderDebugText(renderer, floorf(x / scale), floorf(y / scale), ascii);
-    SDL_SetRenderScale(renderer, 1, 1);
-}
-
-static void draw_label(SDL_Renderer *renderer, const SDL_FRect *rect, const char *label, float scale) {
-    float width = (float)strlen(label) * SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale, height = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE * scale;
-    draw_text(renderer, rect->x + (rect->w - width) / 2, rect->y + (rect->h - height) / 2, label, scale);
-}
-
 static void draw_list(SDL_Renderer *renderer, const list_t *list) {
     fling(list);
     int width, height;
@@ -533,13 +690,12 @@ static void draw_list(SDL_Renderer *renderer, const list_t *list) {
     SDL_RenderFillRect(renderer, &(SDL_FRect){ 0, 0, (float)width, (float)height });
 
     float scale = display_scale();
-    float character = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE;
-    float text_scale = fmaxf(1, floorf(LIST_ROW_POINTS * scale * LIST_LABEL_HEIGHT / character));
-    float heading_scale = fmaxf(1, text_scale - 1);
+    float text_size = floorf(LIST_ROW_POINTS * scale * LIST_LABEL_HEIGHT);
+    float heading_size = floorf(text_size * HEADING_SIZE);
     SDL_Rect area = list_area();
     float top = list_top();
     float pad = floorf(LIST_PAD_POINTS * scale);
-    float mark = floorf(character * text_scale);
+    float mark = floorf(text_size * MARK_SIZE);
     float y = top - scroll;
     for (int i = 0; i < list->row_count; i++) {
         const row_t *row = &list->rows[i];
@@ -549,7 +705,7 @@ static void draw_list(SDL_Renderer *renderer, const list_t *list) {
             SDL_RenderFillRect(renderer, &(SDL_FRect){ area.x + pad, floorf(y + row_h / 2), area.w - 2 * pad, fmaxf(1, floorf(scale)) });
         } else if (row->kind == ROW_HEADING) {
             SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
-            draw_text(renderer, area.x + pad, y + row_h - character * heading_scale - floorf(4 * scale), row->title, heading_scale);
+            draw_text(renderer, area.x + pad, y + row_h - heading_size - floorf(4 * scale), row->title, heading_size);
         } else {
             if (row->checked) {
                 SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
@@ -557,17 +713,17 @@ static void draw_list(SDL_Renderer *renderer, const list_t *list) {
             }
             if (row->disabled) SDL_SetRenderDrawColor(renderer, 0x66, 0x66, 0x66, 0xFF);
             else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
-            draw_text(renderer, area.x + 2 * pad + mark, floorf(y + (row_h - character * text_scale) / 2), row->title, text_scale);
+            draw_text(renderer, area.x + 2 * pad + mark, floorf(y + (row_h - text_size) / 2), row->title, text_size);
         }
         y += row_h;
     }
 
     SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
     SDL_RenderFillRect(renderer, &(SDL_FRect){ 0, 0, (float)width, top });
-    float tab_scale = text_scale;
+    float tab_size = text_size;
     for (int i = 0; i < list->tab_count; i++) {
         SDL_FRect rect = tab_rect(i, list->tab_count);
-        tab_scale = fminf(tab_scale, fmaxf(1, floorf(rect.w * LABEL_WIDTH / (strlen(list->tabs[i]) * character))));
+        tab_size = fminf(tab_size, fit_size(renderer, &rect, list->tabs[i], LIST_LABEL_HEIGHT * 1.2f));
     }
     for (int i = 0; i < list->tab_count; i++) {
         SDL_FRect rect = tab_rect(i, list->tab_count);
@@ -577,7 +733,7 @@ static void draw_list(SDL_Renderer *renderer, const list_t *list) {
         SDL_RenderFillRect(renderer, &rect);
         if (lit) SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
         else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
-        draw_label(renderer, &rect, list->tabs[i], tab_scale);
+        draw_label(renderer, &rect, list->tabs[i], tab_size);
     }
 }
 
@@ -593,7 +749,7 @@ void menu_draw(SDL_Renderer *renderer) {
         SDL_RenderFillRect(renderer, rect);
         if (lit) SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
         else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
-        draw_label(renderer, rect, label_of(i), current.label_scale);
+        draw_label(renderer, rect, label_of(i), current.label_size);
     }
     if (panel_open) {
         list_t list;
@@ -731,5 +887,87 @@ dialog_manage_t dialog_manage_machines(SDL_Window *window, const char *const *na
             return tap.tab == 1 ? DIALOG_MANAGE_RESET : DIALOG_MANAGE_DELETE;
         }
         if (tap.tag >= CHOICE_MACHINE && tap.tag < CHOICE_MACHINE + count) selected = tap.tag - CHOICE_MACHINE;
+    }
+}
+
+void android_progress(const char *title, float fraction) {
+    SDL_Renderer *renderer = main_window ? SDL_GetRenderer(main_window) : NULL;
+    if (!renderer) return;
+    SDL_PumpEvents();
+    int width, height;
+    SDL_GetWindowSize(main_window, &width, &height);
+    float scale = display_scale();
+    float size = floorf(LIST_ROW_POINTS * scale * LIST_LABEL_HEIGHT);
+    SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
+    SDL_RenderClear(renderer);
+    float bar_w = floorf(width * PROGRESS_WIDTH), bar_h = floorf(8 * scale);
+    float x = floorf((width - bar_w) / 2), y = floorf(height / 2.0f);
+    SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
+    draw_text(renderer, floorf((width - text_width(renderer, title, size)) / 2), y - size - floorf(12 * scale), title, size);
+    SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
+    SDL_RenderFillRect(renderer, &(SDL_FRect){ x, y, bar_w, bar_h });
+    SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
+    if (fraction >= 0) {
+        SDL_RenderFillRect(renderer, &(SDL_FRect){ x, y, floorf(bar_w * fminf(fraction, 1)), bar_h });
+    } else {
+        float segment = floorf(bar_w / 4), phase = (float)(SDL_GetTicks() % 1500) / 1500.0f;
+        SDL_RenderFillRect(renderer, &(SDL_FRect){ x + floorf((bar_w - segment) * phase), y, segment, bar_h });
+    }
+    SDL_RenderPresent(renderer);
+}
+
+static int compare_names(const void *a, const void *b) {
+    return strcasecmp((const char *)a, (const char *)b);
+}
+
+static int list_folders(const char *path, char names[][TITLE_MAX], int max) {
+    DIR *dir = opendir(path);
+    if (!dir) return 0;
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) && count < max) {
+        if (entry->d_name[0] == '.') continue;
+        char full[1300];
+        struct stat info;
+        if (snprintf(full, sizeof full, "%s/%s", path, entry->d_name) >= (int)sizeof full || stat(full, &info) != 0 || !S_ISDIR(info.st_mode)) continue;
+        SDL_strlcpy(names[count++], entry->d_name, TITLE_MAX);
+    }
+    closedir(dir);
+    qsort(names, (size_t)count, TITLE_MAX, compare_names);
+    return count;
+}
+
+bool android_choose_folder(const char *title, const char *start, char *path, size_t size) {
+    enum { TAB_CANCEL, TAB_UP, TAB_CHOOSE };
+    static char names[ROW_MAX][TITLE_MAX];
+    char current[1024], shown[1100];
+    struct stat info;
+    SDL_strlcpy(current, start && stat(start, &info) == 0 && S_ISDIR(info.st_mode) ? start : STORAGE_ROOT, sizeof current);
+    list_reset();
+    for (;;) {
+        list_t list = { { "Cancel", "Up", "Choose" }, 3, -1, { { 0 } }, 0 };
+        bool at_root = !strcmp(current, STORAGE_ROOT);
+        if (!strncmp(current, STORAGE_ROOT, strlen(STORAGE_ROOT))) snprintf(shown, sizeof shown, "Phone%s", current + strlen(STORAGE_ROOT));
+        else SDL_strlcpy(shown, current, sizeof shown);
+        add_row(&list, ROW_HEADING, 0, title, false, false);
+        add_row(&list, ROW_ITEM, -1, shown, true, true);
+        int count = list_folders(current, names, ROW_MAX - 3);
+        for (int i = 0; i < count; i++) add_row(&list, ROW_ITEM, CHOICE_MACHINE + i, names[i], false, false);
+        tap_t tap = modal_step(&list, TAB_CANCEL);
+        if (!tap.tapped) continue;
+        if (tap.tab == TAB_CANCEL) return false;
+        if (tap.tab == TAB_CHOOSE) {
+            SDL_strlcpy(path, current, size);
+            return true;
+        }
+        if (tap.tab == TAB_UP && !at_root) {
+            char *slash = strrchr(current, '/');
+            if (slash && slash != current) *slash = 0;
+            list_reset();
+        } else if (tap.tag >= CHOICE_MACHINE && tap.tag < CHOICE_MACHINE + count) {
+            size_t length = strlen(current);
+            snprintf(current + length, sizeof current - length, "/%s", names[tap.tag - CHOICE_MACHINE]);
+            list_reset();
+        }
     }
 }
