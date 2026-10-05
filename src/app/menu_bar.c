@@ -706,6 +706,11 @@ int menu_bar_height(void) {
     return (int)BAR_HEIGHT;
 }
 
+void menu_insets(int *left, int *top, int *right, int *bottom) {
+    *left = *right = *bottom = 0;
+    *top = menu_bar_height();
+}
+
 bool menu_active(void) {
     return depth > 0;
 }

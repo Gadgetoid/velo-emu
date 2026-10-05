@@ -105,6 +105,11 @@ int menu_bar_height(void) {
     return 0;
 }
 
+void menu_insets(int *left, int *top, int *right, int *bottom) {
+    *left = *right = *bottom = 0;
+    *top = menu_bar_height();
+}
+
 bool menu_event(const SDL_Event *event) {
     (void)event;
     return false;

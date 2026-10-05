@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "app/android.h"
 #include "app/desktop.h"
 #include "app/dialog.h"
 #include "app/menu.h"
@@ -49,6 +50,7 @@
 #define BACKLIGHT_PRESS_SECONDS 0.1
 #define AUDIO_CHUNK 8192
 #define WINDOW_TITLE     "Philips Velo 1"
+#define ANDROID_UNLIT_LEVEL 0.5f
 
 #ifdef __APPLE__
 #define SCREENSHOT_FOLDER SDL_FOLDER_DESKTOP
@@ -338,11 +340,19 @@ static void serial_close(serial_t *serial, machine_t *machine) {
     machine_serial_connect(machine, false);
 }
 
+static void rapi_socket_path(char *path, size_t size) {
+#ifdef __ANDROID__
+    net_gateway_socket_path(path, size, "velo-rapi");
+#else
+    rapi_data_path("rapi.sock", path, size);
+#endif
+}
+
 static const char *serial_open(serial_t *serial, machine_t *machine, serial_mode_t mode) {
     serial_close(serial, machine);
     if (mode == SERIAL_NETWORK) {
         char rapi_socket[1024];
-        rapi_data_path("rapi.sock", rapi_socket, sizeof rapi_socket);
+        rapi_socket_path(rapi_socket, sizeof rapi_socket);
         net_gateway_options_t options = { serial->user_agent, rapi_socket };
         serial->gateway = net_gateway_create(serial_log, &options);
         if (!serial->gateway) return "built without libslirp";
@@ -435,6 +445,7 @@ typedef struct {
     pick_kind_t kind;
     int         count;
     char        paths[PICK_MAX][1024];
+    char        export_uri[1024];
 } picked_t;
 
 static Uint32 pick_event_type = 0;
@@ -446,6 +457,7 @@ static void pick_done(void *userdata, const char *const *files, int filter) {
     if (!picked) return;
     picked->kind = (pick_kind_t)(intptr_t)userdata;
     picked->count = 0;
+    picked->export_uri[0] = 0;
     while (files[picked->count] && picked->count < PICK_MAX) {
         snprintf(picked->paths[picked->count], sizeof picked->paths[0], "%s", files[picked->count]);
         picked->count++;
@@ -590,6 +602,50 @@ static void migrate_old_folders(void) {
     }
 #endif
 }
+
+#ifdef __ANDROID__
+static void localize_picked(picked_t *picked) {
+    if (picked->kind == PICK_NEW_DISK) return;
+    char folder[1100];
+    if (picked->kind == PICK_CARD || picked->kind == PICK_DISK) {
+        char base[1024];
+        data_folder(base, sizeof base);
+        snprintf(folder, sizeof folder, "%s/%s", base, picked->kind == PICK_CARD ? "cards" : "disks");
+    } else {
+        snprintf(folder, sizeof folder, "%s", getenv("TMPDIR") ? getenv("TMPDIR") : ".");
+    }
+    SDL_CreateDirectory(folder);
+    for (int i = 0; i < picked->count; i++) {
+        char uri[1024], path[1024];
+        snprintf(uri, sizeof uri, "%s", picked->paths[i]);
+        bool local;
+        if (picked->kind == PICK_SAVE_SNAPSHOT) {
+            local = android_local_path(uri, folder, path, sizeof path);
+            snprintf(picked->export_uri, sizeof picked->export_uri, "%s", uri);
+        } else {
+            local = android_import(uri, folder, path, sizeof path);
+        }
+        snprintf(picked->paths[i], sizeof picked->paths[i], "%s", local ? path : "");
+    }
+}
+
+static picked_t *new_disk_pick(void) {
+    picked_t *picked = calloc(1, sizeof *picked);
+    if (!picked) return NULL;
+    char base[1024], folder[1100], stamp[64];
+    data_folder(base, sizeof base);
+    snprintf(folder, sizeof folder, "%s/disks", base);
+    SDL_CreateDirectory(folder);
+    time_t now = time(NULL);
+    struct tm local;
+    localtime_r(&now, &local);
+    strftime(stamp, sizeof stamp, "%Y-%m-%d %H.%M.%S", &local);
+    picked->kind = PICK_NEW_DISK;
+    picked->count = 1;
+    snprintf(picked->paths[0], sizeof picked->paths[0], "%s/Velo Disk %s.img", folder, stamp);
+    return picked;
+}
+#endif
 
 static void snapshot_folder(char *path, size_t size) {
     char base[1024];
@@ -1236,6 +1292,17 @@ static const option_spec_t LAUNCH_SPEC = {
 
 int main(int argc, char **argv) {
     const char *rom_path = NULL;
+#ifdef __ANDROID__
+    const char *storage = SDL_GetAndroidExternalStoragePath();
+    if (storage) {
+        setenv("XDG_DATA_HOME", storage, 1);
+        setenv("XDG_CONFIG_HOME", storage, 1);
+    }
+    const char *cache = SDL_GetAndroidCachePath();
+    if (cache) setenv("TMPDIR", cache, 1);
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait");
+#endif
     migrate_old_folders();
     settings_t settings = settings_load();
     launch_t launch = { &settings, settings.connect_at_launch ? SERIAL_NETWORK : SERIAL_OFF, NULL, NULL, NULL, NULL, false, 0, NULL, NULL };
@@ -1293,6 +1360,10 @@ int main(int argc, char **argv) {
     SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, NULL) : NULL;
     if (!renderer) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetRenderVSync(renderer, 1);
+#ifdef __ANDROID__
+    SDL_SetWindowFullscreen(window, true);
+    lcd_set_unlit_level(ANDROID_UNLIT_LEVEL);
+#endif
 
     view_t *view = view_create(window, renderer, (view_display_t)settings.display, menu_bar_height());
 
@@ -1328,7 +1399,7 @@ int main(int argc, char **argv) {
     double since_port_scan = 0;
     static dropped_t dropped;
     picked_t *picked = NULL;
-    rapi_data_path("rapi.sock", rapi_socket, sizeof rapi_socket);
+    rapi_socket_path(rapi_socket, sizeof rapi_socket);
     rapi_data_path("sync-manifest.txt", sync_manifest, sizeof sync_manifest);
     desktop_t *desktop = desktop_create(rapi_socket, sync_manifest);
     uint64_t serial_reconnect_at = 0, serial_unplug_at = 0;
@@ -1379,7 +1450,11 @@ int main(int argc, char **argv) {
             }
             switch (event.type) {
             case SDL_EVENT_QUIT:
+            case SDL_EVENT_TERMINATING:
                 running = false;
+                break;
+            case SDL_EVENT_WILL_ENTER_BACKGROUND:
+                machine_save(machine, state, (int64_t)time(NULL));
                 break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP: {
@@ -1443,6 +1518,9 @@ int main(int argc, char **argv) {
                 if (pick_event_type && event.type == pick_event_type) {
                     free(picked);
                     picked = event.user.data1;
+#ifdef __ANDROID__
+                    localize_picked(picked);
+#endif
                 }
                 break;
             }
@@ -1637,6 +1715,11 @@ int main(int argc, char **argv) {
                 break;
             }
             case MENU_NEW_DISK: {
+#ifdef __ANDROID__
+                free(picked);
+                picked = new_disk_pick();
+                break;
+#endif
                 static const SDL_DialogFileFilter filters[] = { { "Disk images", "img" } };
                 SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_NEW_DISK, window, filters, 1, "Velo Disk.img");
                 break;
@@ -1772,6 +1855,12 @@ int main(int argc, char **argv) {
                 char path[1100];
                 snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".state") ? "" : ".state");
                 bool saved = machine_save(machine, path, (int64_t)time(NULL));
+#ifdef __ANDROID__
+                if (saved && picked->export_uri[0]) {
+                    saved = android_export(path, picked->export_uri);
+                    remove(path);
+                }
+#endif
                 snprintf(snapshot_notice, sizeof snapshot_notice, saved ? "saved snapshot %s" : "could not save %s", file_leaf_name(path));
                 notice = snapshot_notice;
                 notice_left = NOTICE_SECONDS * 2;
@@ -1925,9 +2014,15 @@ int main(int argc, char **argv) {
         }
         lcd_set_power(machine_lcd_enabled(machine));
         lcd_set_backlight(machine_backlight(machine));
+#ifdef __ANDROID__
+        android_update(machine_backlight(machine) && machine_lcd_enabled(machine), !machine_suspended(machine));
+#endif
         machine_screen(machine, lcd_framebuffer);
         bool lcd_on = machine_lcd_enabled(machine);
         SDL_UnlockMutex(runner.lock);
+        int inset_left, inset_top, inset_right, inset_bottom;
+        menu_insets(&inset_left, &inset_top, &inset_right, &inset_bottom);
+        view_set_insets(view, inset_left, inset_top, inset_right, inset_bottom);
         bool screen_changed = view_update(view, (float)elapsed, lcd_on);
         if (screen_changed || events_seen || menu_active()) {
             view_render(view);
