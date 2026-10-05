@@ -8,8 +8,7 @@
 #define KSEG_PA_MASK        0x1FFFFFFFu
 #define KDATA_PA            0x00001800u
 #define KDATA_SECTIONS      0xC0u
-#define PROCESS_STRIDE      0x8Cu
-#define PROCESS_SCAN_END    0x00080000u
+#define PROCESS_SCAN_END    0x00100000u
 #define BLOCK_PAGES         0x0Cu
 #define BLOCK_RESERVED      1u
 #define PAGE_VALID          (1u << 9)
@@ -21,6 +20,8 @@
 #define MODULE_SCAN_END     0x00080000u
 #define CE1_MODULE_TYPE     0x10u
 #define CE1_MODULE_MAGIC    0x4C444F4Du
+
+static const uint32_t PROCESS_STRIDES[] = { 0x8C, 0x9C };
 
 typedef struct {
     uint32_t vm_base;
@@ -63,11 +64,11 @@ static bool kernel_word(ce_t *ce, uint32_t va, uint32_t *value) {
     return physical_word(ce, va & KSEG_PA_MASK, value);
 }
 
-static bool slots_consistent(ce_t *ce, uint32_t vm_base_pa) {
+static bool slots_consistent(ce_t *ce, uint32_t vm_base_pa, uint32_t stride) {
     int used = 0;
     for (int process = 0; process < CE_PROCESS_MAX; process++) {
         uint32_t vm_base;
-        if (!physical_word(ce, vm_base_pa + (uint32_t)process * PROCESS_STRIDE, &vm_base)) return false;
+        if (!physical_word(ce, vm_base_pa + (uint32_t)process * stride, &vm_base)) return false;
         if (vm_base == SLOT_BASE(process)) used++;
         else if (vm_base || !process) return false;
     }
@@ -82,10 +83,14 @@ static bool process_array_valid(ce_t *ce) {
 static bool find_process_array(ce_t *ce) {
     for (uint32_t pa = 0; pa < PROCESS_SCAN_END; pa += 4) {
         uint32_t first, signature;
-        if (!physical_word(ce, pa, &first) || first != SLOT_BASE(0) || !slots_consistent(ce, pa)) continue;
-        ce->version = pa >= LAYOUTS[1].vm_base && physical_word(ce, pa - LAYOUTS[1].vm_base, &signature) && signature == CE1_SIGNATURE ? 1 : 2;
-        ce->process_array = pa - LAYOUTS[ce->version].vm_base;
-        return true;
+        if (!physical_word(ce, pa, &first) || first != SLOT_BASE(0)) continue;
+        for (size_t i = 0; i < sizeof PROCESS_STRIDES / sizeof PROCESS_STRIDES[0]; i++) {
+            if (!slots_consistent(ce, pa, PROCESS_STRIDES[i])) continue;
+            ce->version = pa >= LAYOUTS[1].vm_base && physical_word(ce, pa - LAYOUTS[1].vm_base, &signature) && signature == CE1_SIGNATURE ? 1 : 2;
+            ce->process_array = pa - LAYOUTS[ce->version].vm_base;
+            ce->process_stride = PROCESS_STRIDES[i];
+            return true;
+        }
     }
     return false;
 }
@@ -172,7 +177,7 @@ bool ce_read_word(ce_t *ce, uint32_t va, int process, uint32_t *value) {
 }
 
 static uint32_t process_entry(const ce_t *ce, int process) {
-    return ce->process_array + (uint32_t)process * PROCESS_STRIDE;
+    return ce->process_array + (uint32_t)process * ce->process_stride;
 }
 
 bool ce_process_name(ce_t *ce, int process, char *name, size_t size) {

@@ -15,6 +15,7 @@ typedef struct {
     machine_t *machine;
     int        version;
     uint32_t   process_array;
+    uint32_t   process_stride;
     uint32_t   module_list;
 } ce_t;
 
