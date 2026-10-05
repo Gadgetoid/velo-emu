@@ -354,6 +354,10 @@ int main(int argc, char **argv) {
     if (run.net_at > latest) latest = run.net_at;
     if (run.replug_at >= 0 && run.replug_at + 2 > latest) latest = run.replug_at + 2;
     if (latest >= run.seconds) fprintf(stderr, "headless: an event at %.2f s is at or after --seconds=%.2f and won't happen\n", latest, run.seconds);
+    if (run.agent_socket && !(agent = agent_create(run.agent_socket, log_stderr))) {
+        fprintf(stderr, "cannot listen on agent socket %s\n", run.agent_socket);
+        return 1;
+    }
     size_t rom_size;
     uint8_t *rom = file_read(run.rom_path, &rom_size);
     if (!rom) { fprintf(stderr, "cannot read %s\n", run.rom_path); return 1; }
@@ -378,10 +382,6 @@ int main(int argc, char **argv) {
     if (run.gdb_process && !run.gdb_port) {
         fprintf(stderr, "headless: --gdb-process needs --gdb\n");
         return 2;
-    }
-    if (run.agent_socket && !(agent = agent_create(run.agent_socket, log_stderr))) {
-        fprintf(stderr, "cannot listen on agent socket %s\n", run.agent_socket);
-        return 1;
     }
     if (run.gdb_port) {
         debugger = gdb_create(machine, run.gdb_port, log_stderr);
