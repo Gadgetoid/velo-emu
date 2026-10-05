@@ -106,6 +106,9 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_DISPLAY_SIMULATED, "Simulated LCD", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_DISPLAY_SHARP, "Sharp Pixels", 0, 0 },
+#ifdef __ANDROID__
+    { MENU_ENTRY_ITEM, MENU_FULL_BRIGHTNESS, "Full Brightness with Backlight", 0, 0 },
+#endif
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_FULL_SCREEN, "Full Screen", 'f', MENU_KEY_PRIMARY | MENU_KEY_CONTROL },
     { MENU_ENTRY_END, 0, NULL, 0, 0 },

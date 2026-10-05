@@ -28,7 +28,7 @@ ifeq ($(MENU),macos)
 SRC_MENU  = src/app/menu_macos.m src/app/dialog_macos.m
 LDFLAGS  += -framework Cocoa
 else ifeq ($(MENU),android)
-SRC_MENU  = src/app/menu_android.c src/app/android.c
+SRC_MENU  = src/app/menu_android.c src/app/android.c src/vendor/truetype.c
 else
 SRC_MENU  = src/app/menu_bar.c src/vendor/truetype.c
 endif
@@ -62,7 +62,7 @@ $(PROG): $(OBJ_APP)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 $(BUILD)/libmain.so: $(OBJ_APP)
-	$(CC) -shared -o $@ $^ $(LDFLAGS)
+	$(CC) -shared -Wl,--no-undefined -o $@ $^ $(LDFLAGS)
 
 $(HEADLESS): $(OBJ_HEADLESS)
 	$(CC) -o $@ $^ -lm -lz $(NET_LIBS) $(THREAD_LIBS)
