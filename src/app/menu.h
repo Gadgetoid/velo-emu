@@ -57,6 +57,7 @@ enum {
     MENU_DISPLAY_SHARP,
     MENU_SHOW_DEBUG_OUTPUT,
     MENU_QUIT,
+    MENU_IMPORT,
     MENU_COUNT,
 };
 

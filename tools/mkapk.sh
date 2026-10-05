@@ -16,6 +16,11 @@ version=${VERSION:-$(git describe --always --dirty 2>/dev/null || echo unknown)}
 work=${BUILD:-build}/android
 icons=${ICONS:-build/icons}
 
+jdk=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+if [ -z "$JAVA_HOME" ] && [ -d "$jdk" ]; then
+    export JAVA_HOME="$jdk" PATH="$jdk/bin:$PATH"
+fi
+
 build_tools=$(ls -d "$sdk"/build-tools/* | sort -V | tail -1)
 android_jar=$sdk/platforms/android-$target_api/android.jar
 toolchain=$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/bin | head -1)
