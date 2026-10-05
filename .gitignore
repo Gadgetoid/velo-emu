@@ -19,3 +19,4 @@ docs/philips/
 /hash.py
 /hash.sh
 /Windows_CE_Files.txt
+*.jks
