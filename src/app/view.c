@@ -103,10 +103,10 @@ static bool layout(view_t *view) {
     view->dest.h = source_h * scale;
     view->dest.x = left + floorf((area_w - view->dest.w) / 2);
 #ifdef __ANDROID__
-    view->dest.y = top;
-#else
-    view->dest.y = top + floorf((area_h - view->dest.h) / 2);
+    if (output_h > output_w) view->dest.y = top;
+    else
 #endif
+    view->dest.y = top + floorf((area_h - view->dest.h) / 2);
     return true;
 }
 

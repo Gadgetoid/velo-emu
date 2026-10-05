@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "app/android.h"
 #include "app/desktop.h"
 #include "app/dialog.h"
 #include "app/menu.h"
@@ -49,6 +50,7 @@
 #define BACKLIGHT_PRESS_SECONDS 0.1
 #define AUDIO_CHUNK 8192
 #define WINDOW_TITLE     "Philips Velo 1"
+#define ANDROID_UNLIT_LEVEL 0.5f
 
 #ifdef __APPLE__
 #define SCREENSHOT_FOLDER SDL_FOLDER_DESKTOP
@@ -1303,6 +1305,7 @@ int main(int argc, char **argv) {
     SDL_SetRenderVSync(renderer, 1);
 #ifdef __ANDROID__
     SDL_SetWindowFullscreen(window, true);
+    lcd_set_unlit_level(ANDROID_UNLIT_LEVEL);
 #endif
 
     view_t *view = view_create(window, renderer, (view_display_t)settings.display, menu_bar_height());
@@ -1940,6 +1943,9 @@ int main(int argc, char **argv) {
         }
         lcd_set_power(machine_lcd_enabled(machine));
         lcd_set_backlight(machine_backlight(machine));
+#ifdef __ANDROID__
+        android_update(machine_backlight(machine) && machine_lcd_enabled(machine), !machine_suspended(machine));
+#endif
         machine_screen(machine, lcd_framebuffer);
         bool lcd_on = machine_lcd_enabled(machine);
         SDL_UnlockMutex(runner.lock);

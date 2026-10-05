@@ -2,10 +2,14 @@ package org.velo_emu.velo;
 
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.view.WindowManager;
 import java.io.File;
 import org.libsdl.app.SDLActivity;
 
 public class VeloActivity extends SDLActivity {
+    private static final int COMMAND_BRIGHTNESS = COMMAND_USER;
+    private static final int COMMAND_KEEP_SCREEN_ON = COMMAND_USER + 1;
+
     private File developmentLibrary() {
         if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) == 0) return null;
         File library = new File(getFilesDir(), "libmain.so");
@@ -33,5 +37,22 @@ public class VeloActivity extends SDLActivity {
     protected String getMainSharedObject() {
         File library = developmentLibrary();
         return library != null ? library.getAbsolutePath() : super.getMainSharedObject();
+    }
+
+    @Override
+    protected boolean onUnhandledMessage(int command, Object param) {
+        int value = param instanceof Integer ? (Integer) param : 0;
+        if (command == COMMAND_BRIGHTNESS) {
+            WindowManager.LayoutParams attributes = getWindow().getAttributes();
+            attributes.screenBrightness = value < 0 ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE : value / 1000.0f;
+            getWindow().setAttributes(attributes);
+            return true;
+        }
+        if (command == COMMAND_KEEP_SCREEN_ON) {
+            if (value != 0) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            return true;
+        }
+        return super.onUnhandledMessage(command, param);
     }
 }
