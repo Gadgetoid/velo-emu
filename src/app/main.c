@@ -48,6 +48,7 @@
 #define BACKUP_KEEP      10
 #define NOTICE_SECONDS   2
 #define SPEED_SETTLE_SECONDS 10ull
+#define SOFT_RESET_REPLUG_SECONDS 2ull
 #define POWER_PRESS_SECONDS 0.2
 #define BACKLIGHT_PRESS_SECONDS 0.1
 #define AUDIO_CHUNK 8192
@@ -1695,7 +1696,10 @@ int main(int argc, char **argv) {
                 power_release_at = machine_cycles(machine) + (uint64_t)(POWER_PRESS_SECONDS * MACHINE_CLOCK_HZ);
                 break;
             case MENU_PAUSE: paused = !paused; break;
-            case MENU_SOFT_RESET: machine_soft_reset(machine); break;
+            case MENU_SOFT_RESET:
+                machine_soft_reset(machine);
+                if (serial.mode == SERIAL_NETWORK) serial_unplug_at = machine_cycles(machine) + SOFT_RESET_REPLUG_SECONDS * MACHINE_CLOCK_HZ;
+                break;
             case MENU_NEW_MACHINE: {
                 static dialog_rom_t rom_list[32];
                 int rom_count = list_roms(rom_list, 32);
