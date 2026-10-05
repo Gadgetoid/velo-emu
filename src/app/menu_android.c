@@ -475,28 +475,8 @@ static void draw_panel(SDL_Renderer *renderer) {
     float text_scale = fmaxf(1, floorf(LIST_ROW_POINTS * scale * LIST_LABEL_HEIGHT / SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE));
     float heading_scale = fmaxf(1, text_scale - 1);
     float character = SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE;
-    int starts[PAGE_MAX];
-    int pages = page_entries(starts);
-    float tab_scale = text_scale;
-    for (int i = 0; i <= pages; i++) {
-        SDL_FRect rect = tab_rect(i, pages + 1);
-        const char *title = i == pages ? "Close" : MENU_ENTRIES[starts[i]].title;
-        tab_scale = fminf(tab_scale, fmaxf(1, floorf(rect.w * LABEL_WIDTH / (strlen(title) * character))));
-    }
-    for (int i = 0; i <= pages; i++) {
-        SDL_FRect rect = tab_rect(i, pages + 1);
-        bool lit = i == page;
-        if (lit) SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
-        else SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
-        SDL_RenderFillRect(renderer, &rect);
-        if (lit) SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
-        else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
-        draw_label(renderer, &rect, i == pages ? "Close" : MENU_ENTRIES[starts[i]].title, tab_scale);
-    }
-
     SDL_Rect area = panel_area();
     float top = list_top();
-    SDL_SetRenderClipRect(renderer, &(SDL_Rect){ area.x, (int)top, area.w, area.y + area.h - (int)top });
     float pad = floorf(LIST_PAD_POINTS * scale);
     float mark = floorf(character * text_scale);
     float y = top - scroll;
@@ -522,7 +502,27 @@ static void draw_panel(SDL_Renderer *renderer) {
         }
         y += height;
     }
-    SDL_SetRenderClipRect(renderer, NULL);
+
+    SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
+    SDL_RenderFillRect(renderer, &(SDL_FRect){ 0, 0, (float)width, top });
+    int starts[PAGE_MAX];
+    int pages = page_entries(starts);
+    float tab_scale = text_scale;
+    for (int i = 0; i <= pages; i++) {
+        SDL_FRect rect = tab_rect(i, pages + 1);
+        const char *title = i == pages ? "Close" : MENU_ENTRIES[starts[i]].title;
+        tab_scale = fminf(tab_scale, fmaxf(1, floorf(rect.w * LABEL_WIDTH / (strlen(title) * character))));
+    }
+    for (int i = 0; i <= pages; i++) {
+        SDL_FRect rect = tab_rect(i, pages + 1);
+        bool lit = i == page;
+        if (lit) SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
+        else SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
+        SDL_RenderFillRect(renderer, &rect);
+        if (lit) SDL_SetRenderDrawColor(renderer, 0x10, 0x10, 0x10, 0xFF);
+        else SDL_SetRenderDrawColor(renderer, 0xEE, 0xEE, 0xEE, 0xFF);
+        draw_label(renderer, &rect, i == pages ? "Close" : MENU_ENTRIES[starts[i]].title, tab_scale);
+    }
 }
 
 void menu_draw(SDL_Renderer *renderer) {
