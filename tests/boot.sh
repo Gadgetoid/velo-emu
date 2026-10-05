@@ -56,6 +56,9 @@ if pkg-config --exists slirp; then
     RECONNECT="--tap=6:396:229:0.08 --tap=6.12:396:229:0.08 --tap=8:330:154 --tap=10:15:227:0.1 --tap=11:70:93:0.1 --tap=14:115:72:0.08 --tap=14.12:115:72:0.08 --tap=17:190:72:0.08 --tap=17.12:190:72:0.08"
     ./headless "$ROM" --seconds=24 --load="$OUT/desktop.state" --net=1 $RECONNECT > "$OUT/reconnect.log" 2>&1
     if [ "$(grep -c "IPCP up" "$OUT/reconnect.log")" = 2 ]; then echo "ok   ppp_reconnect"; else echo "FAIL ppp_reconnect"; exit 1; fi
+    POWER_CYCLE="--power=6 --power=10 --tap=13:15:227:0.1 --tap=14:70:93:0.1 --tap=17:115:72:0.08 --tap=17.12:115:72:0.08 --tap=20:190:72:0.08 --tap=20.12:190:72:0.08"
+    ./headless "$ROM" --seconds=24 --load="$OUT/desktop.state" --net=1 $POWER_CYCLE > "$OUT/power_cycle.log" 2>&1
+    if [ "$(grep -c "IPCP up" "$OUT/power_cycle.log")" = 2 ]; then echo "ok   ppp_power_cycle"; else echo "FAIL ppp_power_cycle"; exit 1; fi
 fi
 if pkg-config --exists slirp libcurl; then
     PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
