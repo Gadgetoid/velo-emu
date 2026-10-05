@@ -18,6 +18,7 @@ With the CE 2.0 upgrade's applications, a library of period software on a PC Car
 
 - **macOS (Apple silicon):** `Velo.app`, from a release or `make app` (see Building). It isn't notarised, so macOS blocks a downloaded copy the first time it opens: allow it in System Settings > Privacy & Security > Open Anyway, or run `xattr -dr com.apple.quarantine Velo.app`. A copy built with `make app` opens normally. `velo-rapi` and `velo-state` are inside it, in `Velo.app/Contents/MacOS`.
 - **Debian 13 and Ubuntu:** the `.deb`, from a release or `tools/mkdeb.sh`. It installs `velo`, `velo-headless`, `velo-rapi` and `velo-state`, with a desktop entry.
+- **Android (arm64, Android 9 or later):** `make apk` builds `dist/velo.apk`, a debug build. Its first run asks for ROMs and card images and copies them into the app. Controls run down both sides of the screen in landscape and across the top in portrait: Menu opens the full menu, Kbd the phone's keyboard, and Ctrl, Alt and Shift stay down until tapped again. With the Velo's backlight on, the phone runs at full brightness.
 - **From source:** see Building.
 
 ### ROMs
@@ -120,6 +121,8 @@ velo --card=card.img
 
 It uses `hdiutil` on macOS and `sfdisk`, `mkfs.fat` and `mtools` on Linux. Insert it with Devices > Insert Card Image… or `--card=IMAGE`; the image path is kept in the saved state. Inserting over a card ejects the old one and inserts the new one a second later. To change its contents on the host, eject it first; on macOS `hdiutil attach -imagekey diskimage-class=CRawDiskImage card.img` mounts it, and on Linux `mcopy -i card.img@@512` copies to and from it.
 
+A new machine's first boot inserts the Velo Software Library card from the `cards` folder in the data folder (`~/Library/Application Support/Velo/cards`, `~/.local/share/velo-emu/cards`): the one with a `VELOLIB` folder for CE 1.0, or `VELOLIB2` for CE 2.0. After that the machine keeps whatever card it has.
+
 ### Paravirtual disk (experimental)
 
 A disk separate from the PC Card slot, backed by an image file you can swap while the Velo runs. It's emulator-only hardware (a few registers and a sector buffer at physical `0x10800000`) with a small driver, `guest/vdisk`, that registers a disk with CE's FATFS when an image is inserted and removes it when it's ejected.
@@ -220,7 +223,7 @@ Machine > New Machine… picks the name (left blank, it's made from the other se
 
 A machine made with the clock set from the host gets the host's time at a cold boot. CE starts at noon on 1 January (1996 for CE 1.0, 1997 for CE 2.0) in its default time zone, Pacific; with the option on, the emulator gives it the host's time in Pacific time, so once you pick your home city the clock is right. After that the clock keeps running while the emulator is closed, and survives a soft reset.
 
-Memory is the machine's RAM, or `--memory=` for a ROM given on the command line. CE uses at most 16 MB of built-in RAM; 20 MB and 32 MB add a 16 MB DRAM Miniature Card, the Velo's own memory expansion, which CE maps as a second RAM region (20,348 KB and 32,636 KB in Control Panel > System). CE 2.0 needs 12 MB, so give it 20 or 32. A saved machine keeps the memory it was booted with.
+Memory is the machine's RAM, or `--memory=` for a ROM given on the command line. CE uses at most 16 MB of built-in RAM; 20 MB and 32 MB add a 16 MB DRAM Miniature Card, the Velo's own memory expansion, which CE maps as a second RAM region (20,348 KB and 32,636 KB in Control Panel > System). CE 2.0 needs 12 MB, so give it 20 or 32; CE 2.0 machines get 32 MB unless New Machine says otherwise. A saved machine keeps the memory it was booted with.
 
 Screen is the machine's display size, or `--screen=WxH` for a ROM given on the command line. The emulator patches the display setup in the loaded ROM (the kernel's LCD controller setup and GWES's or the display driver's size, stride and framebuffer), keeping the original refresh rate, and moves the framebuffer out of the way of the larger image. CE 1.0 runs at any of the sizes; the merged CE 2.0 image at up to 640 x 480; the CE 2.0 upgrade ROM on its own at 640 x 240, as its display driver faults at taller sizes. Sizes a ROM can't run are greyed out in New Machine. The ROM files aren't changed, and a saved machine keeps the screen it was booted with. Some of CE's own dialogs, such as the setup wizard's, keep their 480 x 240 layout.
 
@@ -316,6 +319,9 @@ brew install sdl3 libslirp
 make            # velo, velo-rapi and velo-state
 make headless
 make app        # Velo.app, with its icon, its Homebrew libraries bundled and an ad-hoc signature
+make apk        # dist/velo.apk for Android, with the NDK, SDK and a JDK from Homebrew
+make apk-install # install it on the phone over adb, and start it
+make apk-push   # replace a debug install's native code without reinstalling
 ```
 
 Debian 13 or Ubuntu:
