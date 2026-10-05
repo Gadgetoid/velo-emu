@@ -1600,6 +1600,10 @@ int main(int argc, char **argv) {
                 break;
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 find_roms(&roms);
+#ifdef __ANDROID__
+                SDL_SetWindowFullscreen(window, false);
+                SDL_SetWindowFullscreen(window, true);
+#endif
                 break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 release_keys(&input, machine, held, -1);
