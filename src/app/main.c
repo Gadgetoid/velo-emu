@@ -2164,6 +2164,9 @@ int main(int argc, char **argv) {
             if (notice_left <= 0) notice = NULL;
         }
         set_title(window, current.name, notice, paused, machine_suspended(machine));
+#ifdef __ANDROID__
+        if (android_toast(notice ? notice : paused ? "Paused" : NULL)) events_seen = true;
+#endif
         since_autosave += elapsed;
         if (!paused) since_backup += elapsed;
         since_port_scan -= elapsed;

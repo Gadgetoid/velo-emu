@@ -13,4 +13,5 @@ bool android_all_files_access(void);
 void android_request_all_files_access(void);
 
 void android_progress(const char *title, float fraction);
+bool android_toast(const char *text);
 bool android_choose_folder(const char *title, const char *start, char *path, size_t size);
