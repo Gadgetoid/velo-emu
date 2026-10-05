@@ -15,7 +15,11 @@ cmake_android="-DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake -
 
 mkdir -p "$sources" "$prefix"
 fetch() {
-    [ -d "$sources/$2" ] || curl -sL "$1" | tar x -C "$sources"
+    if [ ! -d "$sources/$2" ]; then
+        curl -sfL -o "$sources/download" "$1"
+        tar xf "$sources/download" -C "$sources"
+        rm "$sources/download"
+    fi
 }
 
 cross=$work/meson-cross.txt

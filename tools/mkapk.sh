@@ -13,6 +13,11 @@ min_api=28
 target_api=35
 sdl_version=3.4.16
 version=${VERSION:-$(git describe --always --dirty 2>/dev/null || echo unknown)}
+version_code=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+debug_mode=--debug-mode
+if [ -n "$APK_KEYSTORE" ]; then
+    debug_mode=
+fi
 work=${BUILD:-build}/android
 icons=${ICONS:-build/icons}
 
@@ -87,22 +92,24 @@ javac -nowarn -source 11 -target 11 -Xlint:-options -cp "$android_jar" -d "$stag
 
 "$build_tools/aapt2" compile --dir "$stage/res" -o "$stage/res.zip"
 "$build_tools/aapt2" link -o "$stage/unsigned.apk" -I "$android_jar" --manifest "$stage/AndroidManifest.xml" \
-    --min-sdk-version $min_api --target-sdk-version $target_api --version-code 1 --version-name "$version" \
-    --debug-mode "$stage/res.zip"
+    --min-sdk-version $min_api --target-sdk-version $target_api --version-code "$version_code" --version-name "$version" \
+    $debug_mode "$stage/res.zip"
 
 "$toolchain/llvm-strip" -o "$stage/apk/lib/arm64-v8a/libSDL3.so" "$work/sdl/lib/libSDL3.so"
 "$toolchain/llvm-strip" -o "$stage/apk/lib/arm64-v8a/libmain.so" "$work/obj/libmain.so"
 cp "$stage/dex/classes.dex" "$stage/apk/"
 (cd "$stage/apk" && zip -qr ../unsigned.apk classes.dex lib)
 
-keystore=$HOME/.android/debug.keystore
+keystore=${APK_KEYSTORE:-$HOME/.android/debug.keystore}
+export store_password=${APK_KEYSTORE_PASSWORD:-android}
+key_alias=${APK_KEY_ALIAS:-androiddebugkey}
 if [ ! -f "$keystore" ]; then
     mkdir -p "$(dirname "$keystore")"
     keytool -genkeypair -keystore "$keystore" -storepass android -keypass android -alias androiddebugkey \
         -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
 fi
 "$build_tools/zipalign" -f -p 4 "$stage/unsigned.apk" "$stage/aligned.apk"
-"$build_tools/apksigner" sign --ks "$keystore" --ks-pass pass:android --out "$out" "$stage/aligned.apk"
+"$build_tools/apksigner" sign --ks "$keystore" --ks-pass env:store_password --ks-key-alias "$key_alias" --out "$out" "$stage/aligned.apk"
 echo "$out"
 
 if [ $mode = install ]; then

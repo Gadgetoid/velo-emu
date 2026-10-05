@@ -332,7 +332,7 @@ make && make headless
 sh tools/mkdeb.sh dist    # the .deb, with dependencies from dpkg-shlibdeps
 ```
 
-libslirp 4.8 and 4.9 both work. GitHub Actions builds `Velo.app` and the Debian 13 `.deb` for each push to `main` and each pull request, runs `make check`, and attaches both to a release for each `v*` tag.
+libslirp 4.8 and 4.9 both work. GitHub Actions builds `Velo.app`, the Debian 13 `.deb` and the Android `.apk` for each push to `main` and each pull request, runs `make check`, and attaches them to a release for each `v*` tag. The APK is signed with the release key in the `ANDROID_KEYSTORE` (base64), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` secrets, or with a throwaway debug key without them. `make apk` takes the same key from `APK_KEYSTORE`, `APK_KEYSTORE_PASSWORD` and `APK_KEY_ALIAS`.
 
 Tests:
 
