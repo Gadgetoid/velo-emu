@@ -55,6 +55,8 @@
 #define PROXY_PORT 8080
 #define DESKTOP_PORT 5679
 #define DESKTOP_CLIENTS 4
+#define RAPI_RELAYS     4
+#define RELAY_BUFFER    16384
 #define DCCM_PING 0x12345678u
 #define DCCM_PACKET_MAX 512
 #define DCCM_PING_MS 1000
@@ -83,6 +85,12 @@ typedef struct {
 } desktop_client_t;
 
 typedef struct {
+    int      client, upstream;
+    uint8_t  to_upstream[RELAY_BUFFER], to_client[RELAY_BUFFER];
+    size_t   upstream_length, client_length;
+} rapi_relay_t;
+
+typedef struct {
     bool     used;
     int64_t  expire_ms;
     SlirpTimerId id;
@@ -99,6 +107,8 @@ struct net_gateway {
     struct sockaddr_un desktop_address;
     bool     desktop_connected;
     char     rapi_socket[sizeof ((struct sockaddr_un *)0)->sun_path];
+    int      rapi_listener;
+    rapi_relay_t rapi_relays[RAPI_RELAYS];
     bool     ppp;
     char     handshake[64];
     size_t   handshake_length;
@@ -685,6 +695,89 @@ static void start_rapi(net_gateway_t *gateway, const char *path) {
 #endif
 }
 
+static void start_rapi_port(net_gateway_t *gateway, int port) {
+    gateway->rapi_listener = -1;
+    for (int i = 0; i < RAPI_RELAYS; i++) gateway->rapi_relays[i].client = gateway->rapi_relays[i].upstream = -1;
+    if (port <= 0) return;
+    if (!gateway->rapi_socket[0]) {
+        char path[sizeof gateway->rapi_socket];
+        if (net_gateway_socket_path(path, sizeof path, "velo-rapi-relay")) start_rapi(gateway, path);
+    }
+    if (!gateway->rapi_socket[0]) return;
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    int on = 1;
+    if (listener >= 0) setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr.s_addr = htonl(INADDR_ANY) };
+    if (listener < 0 || bind(listener, (struct sockaddr *)&address, sizeof address) != 0 || listen(listener, RAPI_RELAYS) != 0) {
+        if (listener >= 0) close(listener);
+        gateway_log(gateway, "rapi: could not listen on port %d: %s\n", port, strerror(errno));
+        return;
+    }
+    fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK);
+    gateway->rapi_listener = listener;
+    gateway_log(gateway, "rapi: listening on all interfaces, port %d\n", port);
+}
+
+static void close_relay(rapi_relay_t *relay) {
+    if (relay->client >= 0) close(relay->client);
+    if (relay->upstream >= 0) close(relay->upstream);
+    relay->client = relay->upstream = -1;
+    relay->upstream_length = relay->client_length = 0;
+}
+
+static bool relay_pump(int from, int to, uint8_t *buffer, size_t *length) {
+    if (*length < RELAY_BUFFER) {
+        ssize_t got = recv(from, buffer + *length, RELAY_BUFFER - *length, MSG_DONTWAIT);
+        if (got == 0) return false;
+        if (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return false;
+        if (got > 0) *length += (size_t)got;
+    }
+    if (*length) {
+        ssize_t sent = send(to, buffer, *length, MSG_DONTWAIT);
+        if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return false;
+        if (sent > 0) {
+            memmove(buffer, buffer + sent, *length - (size_t)sent);
+            *length -= (size_t)sent;
+        }
+    }
+    return true;
+}
+
+static void poll_rapi_relays(net_gateway_t *gateway) {
+    if (gateway->rapi_listener < 0) return;
+    int client;
+    while ((client = accept(gateway->rapi_listener, NULL, NULL)) >= 0) {
+        rapi_relay_t *relay = NULL;
+        for (int i = 0; i < RAPI_RELAYS && !relay; i++) {
+            if (gateway->rapi_relays[i].client < 0) relay = &gateway->rapi_relays[i];
+        }
+        struct sockaddr_un address = { .sun_family = AF_UNIX };
+        snprintf(address.sun_path, sizeof address.sun_path, "%s", gateway->rapi_socket);
+        int upstream = relay ? socket(AF_UNIX, SOCK_STREAM, 0) : -1;
+        if (upstream < 0 || connect(upstream, (struct sockaddr *)&address, sizeof address) != 0) {
+            if (upstream >= 0) close(upstream);
+            close(client);
+            continue;
+        }
+        fcntl(client, F_SETFL, fcntl(client, F_GETFL) | O_NONBLOCK);
+        fcntl(upstream, F_SETFL, fcntl(upstream, F_GETFL) | O_NONBLOCK);
+        relay->client = client;
+        relay->upstream = upstream;
+    }
+    for (int i = 0; i < RAPI_RELAYS; i++) {
+        rapi_relay_t *relay = &gateway->rapi_relays[i];
+        if (relay->client < 0) continue;
+        if (!relay_pump(relay->client, relay->upstream, relay->to_upstream, &relay->upstream_length) ||
+            !relay_pump(relay->upstream, relay->client, relay->to_client, &relay->client_length)) close_relay(relay);
+    }
+}
+
+static void stop_rapi_relays(net_gateway_t *gateway) {
+    if (gateway->rapi_listener >= 0) close(gateway->rapi_listener);
+    gateway->rapi_listener = -1;
+    for (int i = 0; i < RAPI_RELAYS; i++) close_relay(&gateway->rapi_relays[i]);
+}
+
 net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_options_t *options) {
     signal(SIGPIPE, SIG_IGN);
     net_gateway_t *gateway = calloc(1, sizeof *gateway);
@@ -708,6 +801,7 @@ net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_opti
     start_proxy(gateway, options ? options->user_agent : NULL);
     start_desktop(gateway);
     start_rapi(gateway, options ? options->rapi_socket : NULL);
+    start_rapi_port(gateway, options ? options->rapi_port : 0);
     net_gateway_reset(gateway);
     return gateway;
 }
@@ -717,6 +811,7 @@ void net_gateway_destroy(net_gateway_t *gateway) {
     slirp_cleanup(gateway->slirp);
     web_proxy_stop(gateway->proxy);
     stop_desktop(gateway);
+    stop_rapi_relays(gateway);
     if (gateway->rapi_socket[0]) unlink(gateway->rapi_socket);
     free(gateway);
 }
@@ -833,6 +928,7 @@ void net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms) {
     }
     web_proxy_poll(gateway->proxy);
     poll_desktop(gateway, (int64_t)guest_ms);
+    poll_rapi_relays(gateway);
     int64_t now_ms = slirp_clock_ns(gateway) / 1000000;
     for (int i = 0; i < MAX_TIMERS; i++) {
         net_gateway_timer_t *timer = &gateway->timers[i];

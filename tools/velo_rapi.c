@@ -14,7 +14,7 @@
 #define REMOTE_HOME "\\My Documents"
 
 static const char *usage =
-    "usage: velo-rapi [--socket=PATH] [--timeout=SECONDS] COMMAND [ARGUMENTS]\n"
+    "usage: velo-rapi [--socket=PATH | --connect=HOST:PORT] [--timeout=SECONDS] COMMAND [ARGUMENTS]\n"
     "Talks to a running Velo over RAPI (the emulator with Network (PPP) connected, or headless --net --rapi).\n"
     "\n"
     "  info                     OS version and storage\n"
@@ -34,7 +34,7 @@ static const char *usage =
     "  reg set KEY NAME dword|string VALUE\n"
     "\n"
     "Velo paths are relative to \\My Documents unless they start with / or \\; / and \\ both separate folders.\n"
-    "--socket=PATH picks another RAPI socket (default rapi.sock in the data folder); --timeout=SECONDS is how long to wait for the Velo once connected (default 30); --help and --version as usual.\n";
+    "--socket=PATH picks another RAPI socket (default rapi.sock in the data folder); --connect=HOST:PORT uses an emulator's RAPI over the Network instead; --timeout=SECONDS is how long to wait for the Velo once connected (default 30); --help and --version as usual.\n";
 
 static void velo_path(const char *path, char *out, size_t size) {
     if (path[0] == '/' || path[0] == '\\') snprintf(out, size, "%s", path);
@@ -232,7 +232,7 @@ static int sync_folder(rapi_t *rapi, const char *folder) {
 }
 
 int main(int argc, char **argv) {
-    char socket_path[1024];
+    char socket_path[1024], connect_to[300] = "";
     rapi_data_path("rapi.sock", socket_path, sizeof socket_path);
     long timeout = 0;
     int first = 1;
@@ -249,6 +249,15 @@ int main(int argc, char **argv) {
         }
         if (!strncmp(option, "--socket=", 9)) snprintf(socket_path, sizeof socket_path, "%s", option + 9);
         else if (!strcmp(option, "--socket") && first + 1 < argc) snprintf(socket_path, sizeof socket_path, "%s", argv[++first]);
+        else if (!strncmp(option, "--connect=", 10) || (!strcmp(option, "--connect") && first + 1 < argc)) {
+            const char *value = option[9] == '=' ? option + 10 : argv[++first];
+            const char *colon = strrchr(value, ':');
+            if (!colon || colon == value || !colon[1] || strlen(value) >= sizeof connect_to) {
+                fprintf(stderr, "velo-rapi: --connect wants HOST:PORT, got %s\n", value);
+                return 2;
+            }
+            snprintf(connect_to, sizeof connect_to, "%s", value);
+        }
         else if (!strncmp(option, "--timeout=", 10) || (!strcmp(option, "--timeout") && first + 1 < argc)) {
             const char *value = option[9] == '=' ? option + 10 : argv[++first];
             if (!option_integer(value, 10, &timeout) || timeout <= 0 || timeout > 3600) {
@@ -268,7 +277,14 @@ int main(int argc, char **argv) {
     int count = argc - first - 1;
     char **args = argv + first + 1;
     char error[1200];
-    rapi_t *rapi = rapi_connect(socket_path, error, sizeof error);
+    rapi_t *rapi;
+    if (connect_to[0]) {
+        char *colon = strrchr(connect_to, ':');
+        *colon = 0;
+        rapi = rapi_connect_tcp(connect_to, colon + 1, error, sizeof error);
+    } else {
+        rapi = rapi_connect(socket_path, error, sizeof error);
+    }
     if (!rapi) {
         fprintf(stderr, "velo-rapi: %s\n", error);
         return 1;

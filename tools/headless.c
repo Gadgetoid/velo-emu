@@ -149,7 +149,7 @@ typedef struct {
 enum {
     OPT_HEADING_RUN, OPT_SECONDS, OPT_LOAD, OPT_SAVE, OPT_CARD, OPT_DISK, OPT_MEMORY, OPT_SCREEN, OPT_SPEED, OPT_REALTIME, OPT_HOST_TIME,
     OPT_HEADING_INPUT, OPT_TAP, OPT_KEY, OPT_TYPE, OPT_POWER, OPT_BACKLIGHT, OPT_SOFT_RESET, OPT_INSERT_DISK, OPT_EJECT_DISK,
-    OPT_HEADING_NET, OPT_NET, OPT_RAPI, OPT_AGENT, OPT_USER_AGENT, OPT_REPLUG, OPT_CABLE, OPT_CABLE_SEND,
+    OPT_HEADING_NET, OPT_NET, OPT_RAPI, OPT_RAPI_PORT, OPT_AGENT, OPT_USER_AGENT, OPT_REPLUG, OPT_CABLE, OPT_CABLE_SEND,
     OPT_HEADING_OUTPUT, OPT_PGM, OPT_PNG, OPT_PNG_CELL, OPT_PNG_BACKLIGHT, OPT_WAV, OPT_TRACE_PC, OPT_WATCH_PC, OPT_DEBUG_OUTPUT, OPT_GDB,
     OPT_GDB_PROCESS,
 };
@@ -179,6 +179,7 @@ static const option_t OPTIONS[] = {
     [OPT_NET] = { "net", "SECONDS", "connect COM1 to the PPP gateway and web proxy", 0 },
     [OPT_AGENT] = { "agent", "SOCKET", "pass messages between a guest agent's break 0x51CE mailbox and one client on this Unix socket", 0 },
     [OPT_RAPI] = { "rapi", "SOCKET", "expose the Velo's RAPI port on a Unix socket, for velo-rapi --socket", 0 },
+    [OPT_RAPI_PORT] = { "rapi-port", "PORT", "expose the Velo's RAPI port on this TCP port on all interfaces, for velo-rapi --connect", 0 },
     [OPT_USER_AGENT] = { "user-agent", "TEXT", "the web proxy's user agent", 0 },
     [OPT_REPLUG] = { "replug", "SECONDS", "unplug the --net cable and plug it back in 2 seconds later, as the app does after a speed change", 0 },
     [OPT_CABLE] = { "cable", "SECONDS", "connect a bare serial cable, with nothing at the other end", 0 },
@@ -284,6 +285,12 @@ static bool parse_option(void *context, int option, const char *value, char *err
         return true;
     case OPT_NET: return option_number(value, &run->net_at) && run->net_at >= 0;
     case OPT_RAPI: run->net_options.rapi_socket = value; return true;
+    case OPT_RAPI_PORT: {
+        long port;
+        if (!option_integer(value, 10, &port) || port < 1 || port > 65535) return false;
+        run->net_options.rapi_port = (int)port;
+        return true;
+    }
     case OPT_AGENT: run->agent_socket = value; return true;
     case OPT_USER_AGENT: run->net_options.user_agent = value; return true;
     case OPT_REPLUG: return option_number(value, &run->replug_at) && run->replug_at >= 0;
@@ -328,7 +335,7 @@ static const option_spec_t SPEC = {
 int main(int argc, char **argv) {
     static run_t run;
     run = (run_t){ .seconds = 5, .png_cell = 4, .png_backlight = -1, .soft_reset_at = -1, .cable_at = -1, .net_at = -1, .replug_at = -1,
-                   .net_options = { NET_GATEWAY_DEFAULT_USER_AGENT, NULL } };
+                   .net_options = { NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0 } };
     net_gateway_t *gateway = NULL;
     const char *positional[1];
     int positional_count;
@@ -384,7 +391,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (run.gdb_port) {
-        debugger = gdb_create(machine, run.gdb_port, log_stderr);
+        debugger = gdb_create(machine, run.gdb_port, false, log_stderr);
         if (!debugger) { fprintf(stderr, "cannot listen for GDB on port %d\n", run.gdb_port); return 1; }
         if (run.gdb_process && !gdb_set_process(debugger, run.gdb_process)) fprintf(stderr, "gdb: waiting for %s to start\n", run.gdb_process);
         fprintf(stderr, "gdb: waiting for a connection: target remote :%d\n", run.gdb_port);
