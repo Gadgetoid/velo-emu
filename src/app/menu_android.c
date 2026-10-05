@@ -15,6 +15,8 @@
 #define LIST_SEP_POINTS   12.0f
 #define LIST_PAD_POINTS   16.0f
 #define DRAG_POINTS       8.0f
+#define FLING_DECAY       4.0f
+#define FLING_STOP_POINTS 20.0f
 #define LABEL_WIDTH       0.85f
 #define LABEL_HEIGHT      0.4f
 #define LIST_LABEL_HEIGHT 0.33f
@@ -90,6 +92,8 @@ static int   page;
 static float scroll;
 static bool  touching, dragging;
 static float touch_x, touch_y, touch_scroll;
+static float velocity, last_motion_y;
+static uint64_t last_motion_ns, last_frame_ns;
 
 static float display_scale(void) {
     float scale = main_window ? SDL_GetWindowDisplayScale(main_window) : 1.0f;
@@ -295,6 +299,7 @@ static void release(void) {
 static void open_panel(bool open) {
     panel_open = open;
     touching = dragging = false;
+    velocity = 0;
     if (open) {
         release();
         if (SDL_ScreenKeyboardShown(main_window)) SDL_StopTextInput(main_window);
@@ -355,21 +360,33 @@ static bool panel_event(const SDL_Event *event) {
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         touching = true;
         dragging = false;
+        velocity = 0;
         touch_x = event->button.x;
         touch_y = event->button.y;
         touch_scroll = scroll;
         break;
-    case SDL_EVENT_MOUSE_MOTION:
+    case SDL_EVENT_MOUSE_MOTION: {
         if (!touching) break;
-        if (!dragging && fabsf(event->motion.y - touch_y) > threshold && touch_y >= list_top()) dragging = true;
-        if (dragging) {
-            scroll = touch_scroll - (event->motion.y - touch_y);
-            clamp_scroll();
+        if (!dragging && fabsf(event->motion.y - touch_y) > threshold && touch_y >= list_top()) {
+            dragging = true;
+            touch_y = last_motion_y = event->motion.y;
+            touch_scroll = scroll;
+            last_motion_ns = event->motion.timestamp;
         }
+        if (!dragging) break;
+        scroll = touch_scroll - (event->motion.y - touch_y);
+        clamp_scroll();
+        float seconds = (float)(event->motion.timestamp - last_motion_ns) / SDL_NS_PER_SECOND;
+        if (seconds > 0) velocity = velocity * 0.5f + (last_motion_y - event->motion.y) / seconds * 0.5f;
+        last_motion_y = event->motion.y;
+        last_motion_ns = event->motion.timestamp;
         break;
+    }
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (touching && !dragging) panel_tap(touch_x, touch_y);
+        if (!dragging || (float)(event->button.timestamp - last_motion_ns) / SDL_NS_PER_SECOND > 0.1f) velocity = 0;
         touching = dragging = false;
+        last_frame_ns = SDL_GetTicksNS();
         break;
     case SDL_EVENT_KEY_DOWN:
         if (event->key.key == SDLK_AC_BACK || event->key.key == SDLK_ESCAPE) open_panel(false);
@@ -464,7 +481,20 @@ static void draw_label(SDL_Renderer *renderer, const SDL_FRect *rect, const char
     draw_text(renderer, rect->x + (rect->w - width) / 2, rect->y + (rect->h - height) / 2, label, scale);
 }
 
+static void fling(void) {
+    uint64_t now = SDL_GetTicksNS();
+    float seconds = last_frame_ns ? (float)(now - last_frame_ns) / SDL_NS_PER_SECOND : 0;
+    last_frame_ns = now;
+    if (touching || velocity == 0 || seconds <= 0) return;
+    float before = scroll;
+    scroll += velocity * seconds;
+    clamp_scroll();
+    velocity *= expf(-FLING_DECAY * seconds);
+    if (scroll == before || fabsf(velocity) < FLING_STOP_POINTS * display_scale()) velocity = 0;
+}
+
 static void draw_panel(SDL_Renderer *renderer) {
+    fling();
     int width, height;
     SDL_GetWindowSize(main_window, &width, &height);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
