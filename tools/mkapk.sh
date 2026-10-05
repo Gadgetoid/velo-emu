@@ -102,6 +102,8 @@ echo "$out"
 
 if [ $mode = install ]; then
     adb push "$out" /data/local/tmp/velo.apk > /dev/null
+    adb shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME > /dev/null
+    sleep 3
     adb shell pm install -r -i com.android.vending /data/local/tmp/velo.apk
     adb shell rm /data/local/tmp/velo.apk
     adb shell am start -n $package/.VeloActivity > /dev/null
