@@ -245,6 +245,18 @@ static void maybe_open_ipcp(net_gateway_t *gateway) {
     send_arp(gateway, gateway_mac, 1, no_mac, guest_ip);
 }
 
+static void restart_ipcp(net_gateway_t *gateway) {
+    gateway->ipcp_open = gateway->ipcp_peer_acked = gateway->ipcp_we_acked = false;
+    gateway->ipcp_request_id = 0;
+}
+
+static void restart_lcp(net_gateway_t *gateway) {
+    gateway->lcp_open = gateway->lcp_peer_acked = gateway->lcp_we_acked = false;
+    gateway->lcp_request_id = 0;
+    gateway->tx_accm = gateway->negotiated_accm = 0xFFFFFFFFu;
+    restart_ipcp(gateway);
+}
+
 static void lcp_request(net_gateway_t *gateway, uint8_t id, const uint8_t *options, size_t length) {
     uint8_t reject[FRAME_MAX];
     size_t rejected = 0;
@@ -318,6 +330,13 @@ static void control_packet(net_gateway_t *gateway, uint16_t protocol, const uint
     bool lcp = protocol == PROTO_LCP;
     switch (code) {
         case CONF_REQ:
+            if (lcp && gateway->lcp_open) {
+                restart_lcp(gateway);
+                gateway_log(gateway, "ppp: LCP restarted by guest\n");
+            } else if (!lcp && gateway->ipcp_open) {
+                restart_ipcp(gateway);
+                gateway_log(gateway, "ppp: IPCP restarted by guest\n");
+            }
             if (lcp) {
                 lcp_request(gateway, id, data, data_length);
                 if (!gateway->lcp_request_id) send_lcp_request(gateway);
@@ -720,6 +739,17 @@ void net_gateway_reset(net_gateway_t *gateway) {
     gateway->out_head = gateway->out_count = 0;
 }
 
+#define HANDSHAKE        "CLIENT"
+#define HANDSHAKE_LENGTH 6
+
+static void handshake_reply(net_gateway_t *gateway) {
+    static const char reply[] = "CLIENTSERVER";
+    for (size_t i = 0; i < sizeof reply - 1; i++) out_byte(gateway, (uint8_t)reply[i]);
+    gateway_log(gateway, "ppp: direct connection handshake\n");
+    gateway->handshake_length = 0;
+    gateway->ppp = true;
+}
+
 static void handshake_byte(net_gateway_t *gateway, uint8_t byte) {
     if (byte == HDLC_FLAG) {
         gateway->ppp = true;
@@ -729,13 +759,7 @@ static void handshake_byte(net_gateway_t *gateway, uint8_t byte) {
         gateway->handshake[gateway->handshake_length++] = (char)byte;
         gateway->handshake[gateway->handshake_length] = 0;
     }
-    if (strstr(gateway->handshake, "CLIENT")) {
-        static const char reply[] = "CLIENTSERVER";
-        for (size_t i = 0; i < sizeof reply - 1; i++) out_byte(gateway, (uint8_t)reply[i]);
-        gateway_log(gateway, "ppp: direct connection handshake\n");
-        gateway->handshake_length = 0;
-        gateway->ppp = true;
-    }
+    if (strstr(gateway->handshake, HANDSHAKE)) handshake_reply(gateway);
 }
 
 void net_gateway_from_guest(net_gateway_t *gateway, const uint8_t *data, size_t length) {
@@ -761,6 +785,10 @@ void net_gateway_from_guest(net_gateway_t *gateway, const uint8_t *data, size_t 
         if (byte == HDLC_ESCAPE) { gateway->escaped = true; continue; }
         if (gateway->escaped) { byte ^= 0x20; gateway->escaped = false; }
         if (gateway->frame_length < FRAME_MAX) gateway->frame[gateway->frame_length++] = byte;
+        if (gateway->frame_length == HANDSHAKE_LENGTH && !memcmp(gateway->frame, HANDSHAKE, HANDSHAKE_LENGTH)) {
+            reset_negotiation(gateway);
+            handshake_reply(gateway);
+        }
     }
 }
 
