@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 mode=apk
-if [ "$1" = push ]; then
-    mode=push
+if [ "$1" = push ] || [ "$1" = install ]; then
+    mode=$1
     shift
 fi
 out=${1:-dist/velo.apk}
@@ -99,3 +99,10 @@ fi
 "$build_tools/zipalign" -f -p 4 "$stage/unsigned.apk" "$stage/aligned.apk"
 "$build_tools/apksigner" sign --ks "$keystore" --ks-pass pass:android --out "$out" "$stage/aligned.apk"
 echo "$out"
+
+if [ $mode = install ]; then
+    adb push "$out" /data/local/tmp/velo.apk > /dev/null
+    adb shell pm install -r -i com.android.vending /data/local/tmp/velo.apk
+    adb shell rm /data/local/tmp/velo.apk
+    adb shell am start -n $package/.VeloActivity > /dev/null
+fi
