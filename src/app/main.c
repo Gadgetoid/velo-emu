@@ -51,6 +51,7 @@
 #define AUDIO_CHUNK 8192
 #define WINDOW_TITLE     "Philips Velo 1"
 #define ANDROID_UNLIT_LEVEL 0.5f
+#define CE2_DEFAULT_MEMORY 32
 
 #ifdef __APPLE__
 #define SCREENSHOT_FOLDER SDL_FOLDER_DESKTOP
@@ -1076,7 +1077,7 @@ static void migrate_profiles(profiles_t *profiles, const rom_set_t *roms, const 
     static const char *NAMES[] = { "", "Windows CE 1.0", "Windows CE 2.0" };
     for (int system = 1; system <= 2; system++) {
         if (!roms->path[system][0]) continue;
-        profile_t profile = { .memory = settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
+        profile_t profile = { .memory = system == 2 ? CE2_DEFAULT_MEMORY : settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
         snprintf(profile.name, sizeof profile.name, "%s", NAMES[system]);
         snprintf(profile.rom, sizeof profile.rom, "%s", roms->path[system]);
         if (!legacy_state_path(profile.rom, profile.state, sizeof profile.state)) continue;
@@ -1540,7 +1541,7 @@ int main(int argc, char **argv) {
             case MENU_NEW_MACHINE: {
                 static dialog_rom_t rom_list[32];
                 int rom_count = list_roms(rom_list, 32);
-                dialog_machine_t chosen = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = settings.host_time != 0 };
+                dialog_machine_t chosen = { .memory = profile_system(&current) == 2 ? CE2_DEFAULT_MEMORY : 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = settings.host_time != 0 };
                 if (rom_count) snprintf(chosen.rom, sizeof chosen.rom, "%s", current.rom);
                 events_seen = true;
                 if (!dialog_new_machine(window, rom_list, rom_count, probe_rom, &chosen)) break;
