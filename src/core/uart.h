@@ -2,8 +2,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef UART_WIRE_SIZE
 #define UART_WIRE_SIZE 65536
+#endif
+#ifndef UART_TX_SIZE
 #define UART_TX_SIZE   65536
+#endif
 
 typedef struct {
     uint32_t ctl1;

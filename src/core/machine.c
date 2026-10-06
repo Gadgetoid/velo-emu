@@ -112,7 +112,9 @@ static const char STATE_MAGIC[16] = "VELO1 STATE v2";
 #define STATUS1_SND0_5 (1u << 22)
 #define STATUS1_SND1_0 (1u << 21)
 #define SOUND_MAX_BYTES 0x4000u
+#ifndef AUDIO_RING
 #define AUDIO_RING 65536
+#endif
 
 #define UCB_IO_DATA   0x00
 #define UCB_IE_FAL    0x03
@@ -360,10 +362,22 @@ static uint64_t periodic_period(const machine_t *m) {
     return ((uint64_t)m->perval + 1) * 32;
 }
 
+#define RTC_CYCLES_PER_TICK (MACHINE_CLOCK_HZ / 32768u)
+_Static_assert(MACHINE_CLOCK_HZ % 32768u == 0, "the RTC tick must be a whole number of cycles");
+
 static uint64_t rtc_count(const machine_t *m) {
     if (m->timer_ctl & TIMER_RTCCLR) return 0;
     uint64_t elapsed = m->cpu.cycles - m->rtc_anchor;
-    return (m->rtc_base + elapsed * 32768u / MACHINE_CLOCK_HZ) & 0xFFFFFFFFFFull;
+    uint64_t ticks = elapsed >> 32 ? elapsed / RTC_CYCLES_PER_TICK : (uint32_t)elapsed / RTC_CYCLES_PER_TICK;
+    return (m->rtc_base + ticks) & 0xFFFFFFFFFFull;
+}
+
+static void rtc_fold(machine_t *m) {
+    uint64_t elapsed = m->cpu.cycles - m->rtc_anchor;
+    if ((m->timer_ctl & TIMER_RTCCLR) || elapsed < (1ull << 31)) return;
+    uint64_t ticks = elapsed / RTC_CYCLES_PER_TICK;
+    m->rtc_base = (m->rtc_base + ticks) & 0xFFFFFFFFFFull;
+    m->rtc_anchor += ticks * RTC_CYCLES_PER_TICK;
 }
 
 static void alarm_schedule(machine_t *m) {
@@ -1431,6 +1445,7 @@ void machine_run(machine_t *m, uint64_t cycles) {
             reset_machine(m, true);
             continue;
         }
+        rtc_fold(m);
         uint64_t until = next_event(m);
         if (until > target) until = target;
         if (m->cpu_stopped) {
