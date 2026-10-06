@@ -233,6 +233,7 @@ struct machine {
     char     debug_line[256];
     size_t   debug_length;
     spin_t   rtc_spin, line_spin;
+    uint64_t run_target;
     uint64_t alarm;
     bool     alarm_armed;
     uint64_t alarm_next;
@@ -394,7 +395,7 @@ static void rtc_fold(machine_t *m) {
 
 static uint64_t next_event(const machine_t *m);
 
-static bool spinning(machine_t *m, spin_t *spin, uint32_t value) {
+static bool spinning_after(machine_t *m, spin_t *spin, uint32_t value, uint32_t reads) {
     bool repeat = value == spin->value && m->cpu.cycles - spin->at < SPIN_WINDOW;
     spin->value = value;
     spin->at = m->cpu.cycles;
@@ -402,14 +403,19 @@ static bool spinning(machine_t *m, spin_t *spin, uint32_t value) {
         spin->repeats = 0;
         return false;
     }
-    if (++spin->repeats < SPIN_READS) return false;
+    if (++spin->repeats < reads) return false;
     spin->repeats = 0;
     return true;
+}
+
+static bool spinning(machine_t *m, spin_t *spin, uint32_t value) {
+    return spinning_after(m, spin, value, SPIN_READS);
 }
 
 static void stall_until(machine_t *m, uint64_t when) {
     uint64_t limit = next_event(m);
     if (limit < when) when = limit;
+    if (m->run_target < when) when = m->run_target;
     if (when != NO_EVENT && when > m->cpu.cycles) m->cpu.cycles = when;
 }
 
@@ -424,13 +430,45 @@ static uint32_t rtc_low_read(machine_t *m) {
     return value;
 }
 
+#define LCD_LINE_SHIFT 22
+#define LCD_SPIN_READS 8
+#define LCD_MS_PER_FRAME 15
+
+static uint64_t lcd_frame_cycles(const machine_t *m);
+static uint64_t lcd_line_cycles(const machine_t *m);
+
+static uint32_t lcd_line(const machine_t *m) {
+    uint32_t lineval = m->regs[0x2C / 4] & 0x3FFu;
+    uint64_t frame = lcd_frame_cycles(m), line = lcd_line_cycles(m);
+    if (m->lcd_next == NO_EVENT || !frame || !line || m->lcd_next < m->cpu.cycles) return 0;
+    uint64_t remaining = m->lcd_next - m->cpu.cycles;
+    uint64_t elapsed = remaining >= frame ? 0 : (frame - remaining) / line;
+    return elapsed >= lineval ? 0 : lineval - (uint32_t)elapsed;
+}
+
+static uint32_t lcd_millisecond(const machine_t *m, uint32_t line) {
+    uint32_t lines = (m->regs[0x2C / 4] & 0x3FFu) + 1;
+    return (lines - line) * LCD_MS_PER_FRAME / lines;
+}
+
+static uint64_t lcd_next_millisecond(const machine_t *m) {
+    uint32_t line = lcd_line(m), millisecond = lcd_millisecond(m, line);
+    uint64_t line_cycles = lcd_line_cycles(m), at = m->cpu.cycles;
+    uint64_t into_line = line_cycles ? (lcd_frame_cycles(m) - (m->lcd_next - at)) % line_cycles : 0;
+    at += line_cycles - into_line;
+    while (line > 0 && lcd_millisecond(m, --line) == millisecond) at += line_cycles;
+    return line > 0 || lcd_millisecond(m, line) != millisecond ? at : m->lcd_next;
+}
+
 static uint32_t lcd_control_read(machine_t *m) {
-    uint32_t value = m->regs[0x28 / 4];
-    if (m->fast && spinning(m, &m->line_spin, value)) {
-        stall_until(m, NO_EVENT);
+    uint32_t line = lcd_line(m);
+    if (m->fast && m->lcd_next != NO_EVENT && m->lcd_next >= m->cpu.cycles && lcd_line_cycles(m)
+        && spinning_after(m, &m->line_spin, lcd_millisecond(m, line), LCD_SPIN_READS)) {
+        stall_until(m, lcd_next_millisecond(m));
         m->line_spin.at = m->cpu.cycles;
+        line = lcd_line(m);
     }
-    return value;
+    return m->regs[0x28 / 4] | line << LCD_LINE_SHIFT;
 }
 
 static void alarm_schedule(machine_t *m) {
@@ -1486,6 +1524,7 @@ static void reset_machine(machine_t *m, bool keep_ram);
 
 void machine_run(machine_t *m, uint64_t cycles) {
     uint64_t target = m->cpu.cycles + cycles;
+    m->run_target = target;
     while (m->cpu.cycles < target) {
         if (m->suspended) {
             run_suspended(m, target);
