@@ -1550,6 +1550,20 @@ int main(int argc, char **argv) {
     char state[1100];
     const char *startup_notice = NULL;
     machine_t *machine = start_machine(&current, settings.speed, state_file, fresh, state, sizeof state, &startup_notice);
+    if (!machine && current_index >= 0 && !launch.machine) {
+        static char fallback_notice[1600];
+        snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", current.name, startup_notice);
+        fprintf(stderr, "%s\n", fallback_notice);
+        for (int i = 0; i < profiles.count && !machine; i++) {
+            if (i == current_index) continue;
+            current = profiles.entries[i];
+            machine = start_machine(&current, settings.speed, NULL, false, state, sizeof state, &startup_notice);
+            if (machine) {
+                current_index = i;
+                startup_notice = fallback_notice;
+            }
+        }
+    }
     if (!machine) { fprintf(stderr, "%s\n", startup_notice); return 1; }
     if (current_index >= 0) {
         snprintf(settings.machine, sizeof settings.machine, "%s", current.id);
