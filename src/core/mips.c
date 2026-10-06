@@ -179,6 +179,15 @@ static translate_result_t translate(mips_cpu_t *cpu, uint32_t va, bool write, ui
     return TRANSLATE_OK;
 }
 
+void mips_return(mips_cpu_t *cpu, uint32_t value) {
+    cpu->gpr[2] = value;
+    cpu->pc = cpu->gpr[31];
+    cpu->next_pc = cpu->pc + 4;
+    cpu->next_in_delay_slot = false;
+    cpu->fault = true;
+    cpu->epoch++;
+}
+
 bool mips_translate(mips_cpu_t *cpu, uint32_t va, bool write, uint32_t *pa) {
     return translate(cpu, va, write, pa) == TRANSLATE_OK;
 }

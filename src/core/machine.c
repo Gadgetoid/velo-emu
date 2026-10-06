@@ -7,6 +7,7 @@
 #include <time.h>
 #include <zlib.h>
 
+#include "core/accel.h"
 #include "core/ce.h"
 #include "core/mailbox.h"
 #include "core/mips.h"
@@ -175,6 +176,8 @@ struct machine {
     uint32_t rom2_size;
     uint32_t rom2_pa;
     bool     in_place;
+    bool     fast;
+    uint32_t accel_decode_va, accel_encode_va;
     uint32_t entry_va;
     uint64_t rom_hash;
     uint64_t rom_base_hash;
@@ -1272,7 +1275,8 @@ static machine_t *machine_build(rom_region_t regions[2], int region_count, uint3
     machine_power_on(m);
     m->set_time_va = find_set_real_time(m);
     find_debug_output(m);
-    uint32_t hooks[] = { m->set_time_va, m->debug_string_va, m->debug_print_va };
+    accel_ce1_find(m->rom, m->rom_pa, m->rom_size, &m->accel_decode_va, &m->accel_encode_va);
+    uint32_t hooks[] = { m->set_time_va, m->debug_string_va, m->debug_print_va, m->accel_decode_va, m->accel_encode_va };
     for (size_t i = 0; i < sizeof hooks / sizeof hooks[0]; i++) {
         if (!hooks[i]) continue;
         m->cpu.watch[m->cpu.watch_count++] = hooks[i];
@@ -1978,7 +1982,8 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     uint32_t rom_size = m->rom_size, rom_pa = m->rom_pa, entry_va = m->entry_va;
     uint8_t *rom2 = m->rom2;
     uint32_t rom2_size = m->rom2_size, rom2_pa = m->rom2_pa;
-    bool in_place = m->in_place;
+    bool in_place = m->in_place, fast = m->fast;
+    uint32_t accel_decode_va = m->accel_decode_va, accel_encode_va = m->accel_encode_va;
     uint64_t rom_hash = m->rom_hash, rom_base_hash = m->rom_base_hash;
     screen_size_t screen = m->screen, screen_next = m->screen_next;
     screen_patch_t screen_patch = m->screen_patch;
@@ -2026,6 +2031,9 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     m->rom2_size = rom2_size;
     m->rom2_pa = rom2_pa;
     m->in_place = in_place;
+    m->fast = fast;
+    m->accel_decode_va = accel_decode_va;
+    m->accel_encode_va = accel_encode_va;
     m->entry_va = entry_va;
     m->rom_hash = rom_hash;
     m->rom_base_hash = rom_base_hash;
@@ -2100,6 +2108,9 @@ void machine_set_speed(machine_t *m, uint32_t multiplier) {
 }
 
 uint32_t machine_speed(machine_t *m) { return m->cpu.speed ? m->cpu.speed : 1; }
+
+void machine_set_fast(machine_t *m, bool fast) { m->fast = fast; }
+bool machine_fast(machine_t *m) { return m->fast; }
 
 size_t machine_audio(machine_t *m, int16_t *samples, size_t max, uint32_t *rate) {
     size_t count = m->audio_count < max ? m->audio_count : max;
@@ -2277,8 +2288,27 @@ static void capture_debug_string(machine_t *m, uint32_t va) {
     for (uint32_t i = 0; i < length; i++) debug_character(m, text[i]);
 }
 
+static uint8_t *accel_map(void *context, uint32_t va, bool write) {
+    machine_t *m = context;
+    uint32_t pa;
+    if (!mips_translate(&m->cpu, va, write, &pa)) return NULL;
+    if (pa < DRAM_DECODE_END) return m->dram + (pa & (m->dram_size - 1));
+    if (pa < BANK1_DECODE_END) return m->card_dram_size ? m->card_dram + (pa & (m->card_dram_size - 1)) : NULL;
+    if (write) return NULL;
+    if (pa >= m->rom_pa && pa - m->rom_pa < m->rom_size) return m->rom + (pa - m->rom_pa);
+    if (m->rom2 && pa >= m->rom2_pa && pa - m->rom2_pa < m->rom2_size) return m->rom2 + (pa - m->rom2_pa);
+    return NULL;
+}
+
 static void on_watch(void *context, uint32_t pc) {
     machine_t *m = context;
+    if (pc == m->accel_decode_va || pc == m->accel_encode_va) {
+        if (!m->fast) return;
+        accel_memory_t memory = { m, accel_map };
+        if (pc == m->accel_decode_va) accel_ce1_decode(&m->cpu, &memory);
+        else accel_ce1_encode(&m->cpu, &memory);
+        return;
+    }
     if (pc == m->set_time_va) apply_host_time(m);
     else if (pc == m->debug_string_va) capture_debug_string(m, m->cpu.gpr[4]);
     else if (pc == m->debug_print_va) {

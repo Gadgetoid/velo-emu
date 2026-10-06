@@ -1,5 +1,7 @@
 #include "core/screen.h"
 
+#include "core/lzw.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,9 +16,6 @@ const int SCREEN_PRESET_COUNT = (int)(sizeof SCREEN_PRESETS / sizeof SCREEN_PRES
 
 #define PLAN_MAX       64
 #define KSEG_PA_MASK   0x1FFFFFFFu
-#define LZW_CODES      4096
-#define LZW_CLEAR      256
-#define LZW_FIRST_CODE 257
 
 enum { AT = 1, V0 = 2, A0 = 4, T1 = 9, T3 = 11, T4 = 12, T5 = 13, T6 = 14, T7 = 15, T8 = 24, T9 = 25 };
 
@@ -97,104 +96,9 @@ static uint32_t page_round(uint32_t bytes) {
     return (bytes + 0xFFF) & ~0xFFFu;
 }
 
-static size_t lzw_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size) {
-    static uint16_t prefix[LZW_CODES], length[LZW_CODES];
-    static uint8_t suffix[LZW_CODES], first[LZW_CODES];
-    for (int i = 0; i < 256; i++) {
-        prefix[i] = 0xFFFF;
-        suffix[i] = first[i] = (uint8_t)i;
-        length[i] = 1;
-    }
-    size_t bit = 0, produced = 0, total_bits = in_size * 8;
-    int next = LZW_FIRST_CODE, width = 9, previous = -1;
-    while (bit + (size_t)width <= total_bits && produced < out_size) {
-        int code = 0;
-        for (int k = 0; k < width; k++, bit++) code |= ((in[bit >> 3] >> (bit & 7)) & 1) << k;
-        if (code == LZW_CLEAR) {
-            next = LZW_FIRST_CODE;
-            width = 9;
-            previous = -1;
-            continue;
-        }
-        int entry;
-        uint8_t entry_first;
-        if (code < next) {
-            entry = code;
-            entry_first = first[code];
-        } else if (code == next && previous >= 0) {
-            entry = previous;
-            entry_first = first[previous];
-        } else {
-            return 0;
-        }
-        size_t entry_length = length[entry] + (code == next ? 1u : 0u);
-        if (produced + entry_length > out_size) return 0;
-        size_t position = produced + length[entry];
-        for (int c = entry; c != 0xFFFF; c = prefix[c]) out[--position] = suffix[c];
-        if (code == next) out[produced + length[entry]] = entry_first;
-        produced += entry_length;
-        if (previous >= 0 && next < LZW_CODES) {
-            prefix[next] = (uint16_t)previous;
-            suffix[next] = entry_first;
-            first[next] = first[previous];
-            length[next] = (uint16_t)(length[previous] + 1);
-            next++;
-        }
-        previous = code;
-        if (next >= (1 << width) && width < 12) width++;
-    }
-    return produced;
-}
 
-typedef struct {
-    uint8_t *out;
-    size_t   size, bit;
-    bool     overflow;
-} bit_writer_t;
 
-static void emit_code(bit_writer_t *writer, int code, int width) {
-    for (int k = 0; k < width; k++, writer->bit++) {
-        size_t byte = writer->bit >> 3;
-        if (byte >= writer->size) {
-            writer->overflow = true;
-            return;
-        }
-        if ((code >> k) & 1) writer->out[byte] |= (uint8_t)(1u << (writer->bit & 7));
-    }
-}
 
-static size_t lzw_encode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size) {
-    enum { SLOTS = 8192 };
-    static int32_t keys[SLOTS];
-    static uint16_t codes[SLOTS];
-    memset(keys, 0xFF, sizeof keys);
-    memset(out, 0, out_size);
-    bit_writer_t writer = { out, out_size, 0, false };
-    int next = LZW_FIRST_CODE, width = 9, current = -1;
-    for (size_t i = 0; i < in_size; i++) {
-        uint8_t byte = in[i];
-        if (current < 0) {
-            current = byte;
-            continue;
-        }
-        int32_t key = current << 8 | byte;
-        uint32_t slot = ((uint32_t)key * 2654435761u) % SLOTS;
-        while (keys[slot] >= 0 && keys[slot] != key) slot = (slot + 1) % SLOTS;
-        if (keys[slot] == key) {
-            current = codes[slot];
-            continue;
-        }
-        emit_code(&writer, current, width);
-        if (next < LZW_CODES) {
-            keys[slot] = key;
-            codes[slot] = (uint16_t)next++;
-        }
-        if (next > (1 << width) && width < 12) width++;
-        current = byte;
-    }
-    if (current >= 0) emit_code(&writer, current, width);
-    return writer.overflow ? 0 : (writer.bit + 7) / 8;
-}
 
 #define CE1_GWES_DATA       0x9F454C10u
 #define CE1_GWES_DATA_SIZE  0x28Fu
@@ -225,7 +129,7 @@ static void plan_ce1(plan_t *plan, screen_size_t size) {
         uint32_t stride = (uint32_t)size.width * 2 / 32;
         memcpy(data + 0x404, &stride, sizeof stride);
     }
-    size_t repacked_length = matches ? lzw_encode(data, length, repacked, CE1_GWES_DATA_SIZE) : 0;
+    size_t repacked_length = matches ? lzw_encode(data, length, 1, repacked, CE1_GWES_DATA_SIZE, false) : 0;
     free(data);
     if (!repacked_length) {
         free(repacked);
