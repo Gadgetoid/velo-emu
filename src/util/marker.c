@@ -3,25 +3,24 @@
 #include <string.h>
 
 #define MARKER       "velo-emu-ce-2.0\nversion="
-#define SETS_KEY     "\npatch_sets="
 #define MARKER_BYTES 4096
 
-bool marker_patch_sets(const uint8_t *image, size_t size, char *sets, size_t sets_size) {
-    size_t marker_length = strlen(MARKER), key_length = strlen(SETS_KEY);
+bool marker_value(const uint8_t *image, size_t size, const char *key, char *value, size_t value_size) {
+    size_t marker_length = strlen(MARKER), key_length = strlen(key);
     for (size_t at = 0; at + marker_length <= size; at++) {
         const uint8_t *found = memchr(image + at, 'v', size - at);
         if (!found) return false;
         at = (size_t)(found - image);
         if (at + marker_length > size || memcmp(found, MARKER, marker_length)) continue;
         size_t end = at + MARKER_BYTES < size ? at + MARKER_BYTES : size;
-        for (size_t line = at; line + key_length <= end; line++) {
+        for (size_t line = at; line + key_length + 2 <= end; line++) {
             if (image[line] == 0) break;
-            if (memcmp(image + line, SETS_KEY, key_length)) continue;
-            size_t start = line + key_length, length = 0;
+            if (image[line] != '\n' || memcmp(image + line + 1, key, key_length) || image[line + 1 + key_length] != '=') continue;
+            size_t start = line + key_length + 2, length = 0;
             while (start + length < end && image[start + length] != '\n' && image[start + length] != 0) length++;
-            if (length >= sets_size) return false;
-            memcpy(sets, image + start, length);
-            sets[length] = 0;
+            if (length >= value_size) return false;
+            memcpy(value, image + start, length);
+            value[length] = 0;
             return true;
         }
         return false;

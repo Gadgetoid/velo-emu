@@ -227,6 +227,8 @@ struct machine {
     int      debug_refill_tries;
     char     debug_line[256];
     size_t   debug_length;
+    uint32_t rtc_last_low;
+    uint32_t rtc_repeats;
     uint64_t alarm;
     bool     alarm_armed;
     uint64_t alarm_next;
@@ -381,6 +383,29 @@ static void rtc_fold(machine_t *m) {
     uint64_t ticks = elapsed / RTC_CYCLES_PER_TICK;
     m->rtc_base = (m->rtc_base + ticks) & 0xFFFFFFFFFFull;
     m->rtc_anchor += ticks * RTC_CYCLES_PER_TICK;
+}
+
+#define RTC_SPIN_READS 4
+
+static uint64_t next_event(const machine_t *m);
+
+static uint32_t rtc_low_read(machine_t *m) {
+    uint32_t value = (uint32_t)rtc_count(m);
+    if (!m->fast || (m->timer_ctl & TIMER_RTCCLR)) return value;
+    if (value != m->rtc_last_low) {
+        m->rtc_last_low = value;
+        m->rtc_repeats = 0;
+        return value;
+    }
+    if (++m->rtc_repeats < RTC_SPIN_READS) return value;
+    uint64_t elapsed = m->cpu.cycles - m->rtc_anchor;
+    uint64_t next_tick = m->cpu.cycles + (RTC_CYCLES_PER_TICK - elapsed % RTC_CYCLES_PER_TICK);
+    uint64_t limit = next_event(m);
+    if (limit < next_tick) next_tick = limit;
+    if (next_tick > m->cpu.cycles) m->cpu.cycles = next_tick;
+    m->rtc_repeats = 0;
+    m->rtc_last_low = value = (uint32_t)rtc_count(m);
+    return value;
 }
 
 static void alarm_schedule(machine_t *m) {
@@ -646,7 +671,7 @@ static uint32_t soc_read(machine_t *m, uint32_t offset, int size) {
             return m->intc_enable[(offset - 0x118) / 4];
         case 0x12C: return m->intc_enable6;
         case 0x140: return (uint32_t)(rtc_count(m) >> 32);
-        case 0x144: return (uint32_t)rtc_count(m);
+        case 0x144: return rtc_low_read(m);
         case 0x148: return (uint32_t)(m->alarm >> 32);
         case 0x14C: return (uint32_t)m->alarm;
         case 0x150: return m->timer_ctl;

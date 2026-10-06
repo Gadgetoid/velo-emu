@@ -33,7 +33,7 @@ Two systems are supported:
 - **Windows CE 1.0:** the 7,799,876-byte `nk.bin` from CERF's `philips_velo_1_ce1` bundle.
 - **Windows CE 2.0:** the Velo's CE 2.0 upgrade was a ROM Miniature Card, with its applications (Pocket Word, Pocket Excel and the rest) on a CompactFlash card in the PC Card slot. A merged image puts those applications in ROM too, which leaves the PC Card slot free for apps and games. The upgrade's ROM on its own, from CERF's `philips_velo_1_ce2` bundle (4,185,248 bytes), also runs, with the applications on a CompactFlash card image (see PC Card storage).
 
-Each file is identified by its contents. With more than one CE 2.0 image, a merged image built by velo-emu-ce-2.0 with its patch sets is used first (one with `pc-link-115k` ahead of one without; its `\Windows\velo-emu-ce-2.0.txt` lists them), then the larger image, so a merged image wins over the upgrade's ROM on its own. New Machine marks the patched images. With no ROMs in the folder, a dialog shows its location, with a button to open it.
+Each file is identified by its contents. With more than one image for a system, one built by velo-emu-ce-2.0 with its patch sets is used first (for CE 2.0, one with `pc-link-115k` ahead of one without; its `\Windows\velo-emu-ce-2.0.txt` lists the sets and the system, and only counts when that system matches the ROM's own), then the larger image, so a merged image wins over the upgrade's ROM on its own. New Machine marks the patched images. With no ROMs in the folder, a dialog shows its location, with a button to open it.
 
 ### First run
 
