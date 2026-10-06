@@ -140,6 +140,11 @@ static const char STATE_MAGIC[16] = "VELO1 STATE v2";
 
 typedef struct { uint32_t set; uint32_t mask; } high_priority_term_t;
 
+typedef struct {
+    uint32_t value, repeats;
+    uint64_t at;
+} spin_t;
+
 static const high_priority_term_t high_priority[16][2] = {
     { { 0, 0 }, { 0, 0 } },
     { { 4, (1u << 7) | (1u << 0) }, { 0, 0 } },
@@ -227,8 +232,7 @@ struct machine {
     int      debug_refill_tries;
     char     debug_line[256];
     size_t   debug_length;
-    uint32_t rtc_last_low;
-    uint32_t rtc_repeats;
+    spin_t   rtc_spin, line_spin;
     uint64_t alarm;
     bool     alarm_armed;
     uint64_t alarm_next;
@@ -385,26 +389,47 @@ static void rtc_fold(machine_t *m) {
     m->rtc_anchor += ticks * RTC_CYCLES_PER_TICK;
 }
 
-#define RTC_SPIN_READS 4
+#define SPIN_READS  4
+#define SPIN_WINDOW 4096
 
 static uint64_t next_event(const machine_t *m);
 
+static bool spinning(machine_t *m, spin_t *spin, uint32_t value) {
+    bool repeat = value == spin->value && m->cpu.cycles - spin->at < SPIN_WINDOW;
+    spin->value = value;
+    spin->at = m->cpu.cycles;
+    if (!repeat) {
+        spin->repeats = 0;
+        return false;
+    }
+    if (++spin->repeats < SPIN_READS) return false;
+    spin->repeats = 0;
+    return true;
+}
+
+static void stall_until(machine_t *m, uint64_t when) {
+    uint64_t limit = next_event(m);
+    if (limit < when) when = limit;
+    if (when != NO_EVENT && when > m->cpu.cycles) m->cpu.cycles = when;
+}
+
 static uint32_t rtc_low_read(machine_t *m) {
     uint32_t value = (uint32_t)rtc_count(m);
-    if (!m->fast || (m->timer_ctl & TIMER_RTCCLR)) return value;
-    if (value != m->rtc_last_low) {
-        m->rtc_last_low = value;
-        m->rtc_repeats = 0;
-        return value;
-    }
-    if (++m->rtc_repeats < RTC_SPIN_READS) return value;
+    if (!m->fast || (m->timer_ctl & TIMER_RTCCLR) || !spinning(m, &m->rtc_spin, value)) return value;
     uint64_t elapsed = m->cpu.cycles - m->rtc_anchor;
-    uint64_t next_tick = m->cpu.cycles + (RTC_CYCLES_PER_TICK - elapsed % RTC_CYCLES_PER_TICK);
-    uint64_t limit = next_event(m);
-    if (limit < next_tick) next_tick = limit;
-    if (next_tick > m->cpu.cycles) m->cpu.cycles = next_tick;
-    m->rtc_repeats = 0;
-    m->rtc_last_low = value = (uint32_t)rtc_count(m);
+    stall_until(m, m->cpu.cycles + (RTC_CYCLES_PER_TICK - elapsed % RTC_CYCLES_PER_TICK));
+    value = (uint32_t)rtc_count(m);
+    m->rtc_spin.value = value;
+    m->rtc_spin.at = m->cpu.cycles;
+    return value;
+}
+
+static uint32_t lcd_control_read(machine_t *m) {
+    uint32_t value = m->regs[0x28 / 4];
+    if (m->fast && spinning(m, &m->line_spin, value)) {
+        stall_until(m, NO_EVENT);
+        m->line_spin.at = m->cpu.cycles;
+    }
     return value;
 }
 
@@ -672,6 +697,7 @@ static uint32_t soc_read(machine_t *m, uint32_t offset, int size) {
         case 0x12C: return m->intc_enable6;
         case 0x140: return (uint32_t)(rtc_count(m) >> 32);
         case 0x144: return rtc_low_read(m);
+        case 0x028: return lcd_control_read(m);
         case 0x148: return (uint32_t)(m->alarm >> 32);
         case 0x14C: return (uint32_t)m->alarm;
         case 0x150: return m->timer_ctl;
