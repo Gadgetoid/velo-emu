@@ -2291,7 +2291,11 @@ static void capture_debug_string(machine_t *m, uint32_t va) {
 static uint8_t *accel_map(void *context, uint32_t va, bool write) {
     machine_t *m = context;
     uint32_t pa;
-    if (!mips_translate(&m->cpu, va, write, &pa)) return NULL;
+    if (!mips_translate(&m->cpu, va, write, &pa)) {
+        ce_t ce;
+        ce_init(&ce, m);
+        if (!ce_translate(&ce, va, CE_CURRENT, write, &pa)) return NULL;
+    }
     if (pa < DRAM_DECODE_END) return m->dram + (pa & (m->dram_size - 1));
     if (pa < BANK1_DECODE_END) return m->card_dram_size ? m->card_dram + (pa & (m->card_dram_size - 1)) : NULL;
     if (write) return NULL;

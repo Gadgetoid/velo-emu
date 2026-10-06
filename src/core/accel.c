@@ -76,20 +76,47 @@ static bool guest_word(const accel_memory_t *memory, uint32_t va, uint32_t *valu
     return true;
 }
 
+static bool guest_writable_strided(const accel_memory_t *memory, uint32_t va, uint32_t count, uint32_t stride) {
+    if (!count) return true;
+    uint32_t last = va + (count - 1) * stride;
+    if (stride == 1) return guest_writable(memory, va, count);
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t at = va + i * stride;
+        if ((i == 0 || (at & ~(PAGE - 1)) != ((at - stride) & ~(PAGE - 1))) && !memory->map(memory->context, at, true)) return false;
+    }
+    return last >= va;
+}
+
 bool accel_ce1_decode(mips_cpu_t *cpu, const accel_memory_t *memory) {
     static uint8_t input[CODEC_MAX], output[CODEC_MAX];
+    static uint16_t runs[CODEC_MAX];
     uint32_t source = cpu->gpr[4], length = cpu->gpr[5], destination = cpu->gpr[6], capacity_va = cpu->gpr[7];
     uint32_t skip, stride, capacity;
     if (!guest_word(memory, cpu->gpr[29] + 16, &skip) || !guest_word(memory, cpu->gpr[29] + 20, &stride)) return false;
     if (!guest_word(memory, capacity_va, &capacity)) return false;
-    if (skip || stride != 1 || !destination || !length || length > CODEC_MAX || !capacity || capacity > CODEC_MAX) return false;
+    if (!destination || !stride || stride > CODEC_MAX || !length || length > CODEC_MAX || !capacity || capacity > CODEC_MAX) return false;
     if (!guest_read(memory, source, input, length)) return false;
-    size_t produced = lzw_decode(input, length, output, sizeof output);
-    if (!produced || produced > capacity) return false;
-    if (!guest_writable(memory, destination, (uint32_t)produced) || !guest_writable(memory, capacity_va, 4)) return false;
-    guest_write(memory, destination, output, (uint32_t)produced);
-    uint8_t written[4] = { (uint8_t)produced, (uint8_t)(produced >> 8), (uint8_t)(produced >> 16), (uint8_t)(produced >> 24) };
-    guest_write(memory, capacity_va, written, 4);
+    size_t run_count = 0;
+    size_t produced = lzw_decode_runs(input, length, output, sizeof output, runs, &run_count, CODEC_MAX);
+    if (!produced) return false;
+    uint32_t remaining = capacity, skipping = skip, written = 0;
+    for (size_t i = 0; i < run_count; i++) {
+        if (runs[i] > remaining) return false;
+        uint32_t skipped = skipping < runs[i] ? skipping : runs[i];
+        skipping -= skipped;
+        remaining -= runs[i] - skipped;
+        written += runs[i] - skipped;
+    }
+    if (written > CODEC_MAX || (uint64_t)written * stride > CODEC_MAX * 2u) return false;
+    if (!guest_writable_strided(memory, destination, written, stride) || !guest_writable(memory, capacity_va, 4)) return false;
+    const uint8_t *from = output + (produced - written);
+    if (stride == 1) {
+        guest_write(memory, destination, from, written);
+    } else {
+        for (uint32_t i = 0; i < written; i++) guest_write(memory, destination + i * stride, from + i, 1);
+    }
+    uint8_t count[4] = { (uint8_t)written, (uint8_t)(written >> 8), (uint8_t)(written >> 16), (uint8_t)(written >> 24) };
+    guest_write(memory, capacity_va, count, 4);
     mips_return(cpu, 0);
     return true;
 }
@@ -101,7 +128,7 @@ bool accel_ce1_encode(mips_cpu_t *cpu, const accel_memory_t *memory) {
     uint8_t capacity_bytes[2];
     if (!guest_word(memory, cpu->gpr[29] + 16, &stride_word) || !guest_read(memory, capacity_va, capacity_bytes, 2)) return false;
     uint32_t stride = stride_word & 0xFFFF, capacity = (uint32_t)capacity_bytes[0] | (uint32_t)capacity_bytes[1] << 8;
-    if (!destination || !stride || !length || !capacity) return false;
+    if (!stride || !length || !capacity) return false;
     uint32_t span = (length - 1) * stride + 1;
     if (span > CODEC_MAX || !guest_read(memory, source, input, span)) return false;
     bool all_zero = true;
@@ -109,8 +136,8 @@ bool accel_ce1_encode(mips_cpu_t *cpu, const accel_memory_t *memory) {
     if (all_zero) return false;
     size_t produced = lzw_encode(input, length, stride, output, capacity, true);
     if (!produced || produced >= capacity) return false;
-    if (!guest_writable(memory, destination, (uint32_t)produced) || !guest_writable(memory, capacity_va, 2)) return false;
-    guest_write(memory, destination, output, (uint32_t)produced);
+    if ((destination && !guest_writable(memory, destination, (uint32_t)produced)) || !guest_writable(memory, capacity_va, 2)) return false;
+    if (destination) guest_write(memory, destination, output, (uint32_t)produced);
     uint8_t written[2] = { (uint8_t)produced, (uint8_t)(produced >> 8) };
     guest_write(memory, capacity_va, written, 2);
     mips_return(cpu, 0);

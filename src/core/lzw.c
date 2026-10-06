@@ -6,7 +6,7 @@
 #define LZW_CLEAR      256
 #define LZW_FIRST_CODE 257
 
-size_t lzw_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size) {
+size_t lzw_decode_runs(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size, uint16_t *runs, size_t *run_count, size_t max_runs) {
     static uint16_t prefix[LZW_CODES], length[LZW_CODES];
     static uint8_t suffix[LZW_CODES], first[LZW_CODES];
     for (int i = 0; i < 256; i++) {
@@ -42,6 +42,10 @@ size_t lzw_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_si
         for (int c = entry; c != 0xFFFF; c = prefix[c]) out[--position] = suffix[c];
         if (code == next) out[produced + length[entry]] = entry_first;
         produced += entry_length;
+        if (runs) {
+            if (*run_count == max_runs) return 0;
+            runs[(*run_count)++] = (uint16_t)entry_length;
+        }
         if (previous >= 0 && next < LZW_CODES) {
             prefix[next] = (uint16_t)previous;
             suffix[next] = entry_first;
@@ -53,6 +57,10 @@ size_t lzw_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_si
         if (next >= (1 << width) && width < 12) width++;
     }
     return produced;
+}
+
+size_t lzw_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_size) {
+    return lzw_decode_runs(in, in_size, out, out_size, NULL, NULL, 0);
 }
 
 typedef struct {
