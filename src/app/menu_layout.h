@@ -73,6 +73,7 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_OPTIMISATIONS, "Optimisations", 0, 0 },
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
+    { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SHOW_DEBUG_OUTPUT, "Show Debug Output", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_GDB_SERVER, "GDB Server", 0, 0 },
 #ifndef __APPLE__
