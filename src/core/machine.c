@@ -181,7 +181,7 @@ struct machine {
     uint32_t rom2_size;
     uint32_t rom2_pa;
     bool     in_place;
-    bool     fast;
+    bool     optimisations;
     accel_hooks_t accel;
     uint32_t entry_va;
     uint64_t rom_hash;
@@ -421,7 +421,7 @@ static void stall_until(machine_t *m, uint64_t when) {
 
 static uint32_t rtc_low_read(machine_t *m) {
     uint32_t value = (uint32_t)rtc_count(m);
-    if (!m->fast || (m->timer_ctl & TIMER_RTCCLR) || !spinning(m, &m->rtc_spin, value)) return value;
+    if (!m->optimisations || (m->timer_ctl & TIMER_RTCCLR) || !spinning(m, &m->rtc_spin, value)) return value;
     uint64_t elapsed = m->cpu.cycles - m->rtc_anchor;
     stall_until(m, m->cpu.cycles + (RTC_CYCLES_PER_TICK - elapsed % RTC_CYCLES_PER_TICK));
     value = (uint32_t)rtc_count(m);
@@ -462,7 +462,7 @@ static uint64_t lcd_next_millisecond(const machine_t *m) {
 
 static uint32_t lcd_control_read(machine_t *m) {
     uint32_t line = lcd_line(m);
-    if (m->fast && m->lcd_next != NO_EVENT && m->lcd_next >= m->cpu.cycles && lcd_line_cycles(m)
+    if (m->optimisations && m->lcd_next != NO_EVENT && m->lcd_next >= m->cpu.cycles && lcd_line_cycles(m)
         && spinning_after(m, &m->line_spin, lcd_millisecond(m, line), LCD_SPIN_READS)) {
         stall_until(m, lcd_next_millisecond(m));
         m->line_spin.at = m->cpu.cycles;
@@ -2079,7 +2079,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     uint32_t rom_size = m->rom_size, rom_pa = m->rom_pa, entry_va = m->entry_va;
     uint8_t *rom2 = m->rom2;
     uint32_t rom2_size = m->rom2_size, rom2_pa = m->rom2_pa;
-    bool in_place = m->in_place, fast = m->fast;
+    bool in_place = m->in_place, fast = m->optimisations;
     accel_hooks_t accel = m->accel;
     uint64_t rom_hash = m->rom_hash, rom_base_hash = m->rom_base_hash;
     screen_size_t screen = m->screen, screen_next = m->screen_next;
@@ -2128,7 +2128,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     m->rom2_size = rom2_size;
     m->rom2_pa = rom2_pa;
     m->in_place = in_place;
-    m->fast = fast;
+    m->optimisations = fast;
     m->accel = accel;
     m->entry_va = entry_va;
     m->rom_hash = rom_hash;
@@ -2205,8 +2205,8 @@ void machine_set_speed(machine_t *m, uint32_t multiplier) {
 
 uint32_t machine_speed(machine_t *m) { return m->cpu.speed ? m->cpu.speed : 1; }
 
-void machine_set_fast(machine_t *m, bool fast) { m->fast = fast; }
-bool machine_fast(machine_t *m) { return m->fast; }
+void machine_set_optimisations(machine_t *m, bool optimisations) { m->optimisations = optimisations; }
+bool machine_optimisations(machine_t *m) { return m->optimisations; }
 
 size_t machine_audio(machine_t *m, int16_t *samples, size_t max, uint32_t *rate) {
     size_t count = m->audio_count < max ? m->audio_count : max;
@@ -2403,7 +2403,7 @@ static uint8_t *accel_map(void *context, uint32_t va, bool write) {
 static void on_watch(void *context, uint32_t pc) {
     machine_t *m = context;
     if (m->accel.system && (pc == m->accel.decode_va || pc == m->accel.encode_va)) {
-        if (!m->fast) return;
+        if (!m->optimisations) return;
         accel_memory_t memory = { m, accel_map };
         bool decode = pc == m->accel.decode_va;
         if (m->accel.system == 1) decode ? accel_ce1_decode(&m->cpu, &memory) : accel_ce1_encode(&m->cpu, &memory);

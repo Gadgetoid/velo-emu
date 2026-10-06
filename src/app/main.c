@@ -59,6 +59,11 @@
 #define WINDOW_TITLE     "Philips Velo 1"
 #define ANDROID_UNLIT_LEVEL 0.5f
 #define CE2_DEFAULT_MEMORY 32
+#ifdef __ANDROID__
+#define DEFAULT_OPTIMISATIONS 1
+#else
+#define DEFAULT_OPTIMISATIONS 0
+#endif
 #define GDB_DEFAULT_PORT  1234
 #define RAPI_DEFAULT_PORT 9990
 
@@ -782,6 +787,7 @@ typedef struct {
     uint32_t memory;
     screen_size_t screen;
     uint32_t speed;
+    uint32_t optimisations;
     uint32_t host_time;
     uint32_t scale;
     uint32_t connect_at_launch;
@@ -827,7 +833,7 @@ static void copy_setting(char *destination, size_t size, const char *value) {
 }
 
 static settings_t settings_load(void) {
-    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1, .gdb_port = GDB_DEFAULT_PORT, .rapi_port = RAPI_DEFAULT_PORT };
+    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .optimisations = DEFAULT_OPTIMISATIONS, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1, .gdb_port = GDB_DEFAULT_PORT, .rapi_port = RAPI_DEFAULT_PORT };
     char path[1100];
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "r");
@@ -842,6 +848,7 @@ static settings_t settings_load(void) {
             screen_parse(size, &settings.screen);
         }
         else if (sscanf(line, "speed=%u", &value) == 1) settings.speed = value;
+        else if (sscanf(line, "optimisations=%u", &value) == 1) settings.optimisations = value != 0;
         else if (sscanf(line, "host_time=%u", &value) == 1) settings.host_time = value;
         else if (sscanf(line, "scale=%u", &value) == 1 && scale_index(value) >= 0) settings.scale = value;
         else if (sscanf(line, "connect_at_launch=%u", &value) == 1) settings.connect_at_launch = value;
@@ -866,6 +873,7 @@ static void settings_save(const settings_t *settings) {
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "w");
     if (!file) return;
+    fprintf(file, "optimisations=%u\n", settings->optimisations);
     fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\nfull_brightness=%u\ngdb_server=%u\ngdb_port=%u\nnetwork_rapi=%u\nrapi_port=%u\n", settings->memory,
             settings->screen.width, settings->screen.height, settings->speed, settings->host_time, settings->scale, settings->display, settings->connect_at_launch, settings->system, settings->machine, settings->serial_device,
             settings->user_agent, settings->shared_folder, settings->full_brightness, settings->gdb_server, settings->gdb_port,
@@ -1269,7 +1277,7 @@ static void migrate_profiles(profiles_t *profiles, const rom_set_t *roms, const 
     }
 }
 
-static machine_t *start_machine(const profile_t *profile, uint32_t speed, const char *state_file, bool fresh,
+static machine_t *start_machine(const profile_t *profile, uint32_t speed, bool optimisations, const char *state_file, bool fresh,
                                 char *state, size_t state_size, const char **notice) {
     const char *rom_path = profile->rom;
     static char message[1400];
@@ -1293,6 +1301,7 @@ static machine_t *start_machine(const profile_t *profile, uint32_t speed, const 
     machine_set_memory(machine, profile->memory);
     machine_set_screen(machine, profile->screen);
     machine_set_speed(machine, speed);
+    machine_set_optimisations(machine, optimisations);
     machine_set_host_clock(machine, profile->host_time);
     machine_set_debug_output(machine, print_debug_line, NULL);
     start_debug_log(rom_path);
@@ -1415,7 +1424,7 @@ typedef struct {
 } launch_t;
 
 enum {
-    LAUNCH_HEADING_MACHINE, LAUNCH_MACHINE, LAUNCH_STATE, LAUNCH_FRESH, LAUNCH_CARD, LAUNCH_DISK, LAUNCH_MEMORY, LAUNCH_SCREEN, LAUNCH_SPEED,
+    LAUNCH_HEADING_MACHINE, LAUNCH_MACHINE, LAUNCH_STATE, LAUNCH_FRESH, LAUNCH_CARD, LAUNCH_DISK, LAUNCH_MEMORY, LAUNCH_SCREEN, LAUNCH_SPEED, LAUNCH_OPTIMISATIONS,
     LAUNCH_HEADING_CONNECTIONS, LAUNCH_SERIAL, LAUNCH_USER_AGENT, LAUNCH_AGENT,
     LAUNCH_HEADING_DEBUGGING, LAUNCH_VERBOSE, LAUNCH_DEBUG_OUTPUT, LAUNCH_GDB, LAUNCH_GDB_PROCESS,
 };
@@ -1430,6 +1439,7 @@ static const option_t LAUNCH_OPTIONS[] = {
     [LAUNCH_MEMORY] = { "memory", "MB", "RAM for a ROM given on the command line: 4, 8, 16, 20 or 32", 0 },
     [LAUNCH_SCREEN] = { "screen", "WxH", "screen for a ROM given on the command line: 480x240, 640x240, 640x480 or 800x600, where the ROM supports it", 0 },
     [LAUNCH_SPEED] = { "speed", "N", "CPU speed multiple: 1, 2, 4 or 8", 0 },
+    [LAUNCH_OPTIMISATIONS] = { "optimisations", "on|off", "run CE's ROM compression natively and skip busy-waits on the clock", 0 },
     [LAUNCH_HEADING_CONNECTIONS] = { NULL, NULL, "Connections", 0 },
     [LAUNCH_SERIAL] = { "serial", "net|pty|off|PORT", "COM1 on the PPP network, a pseudo-terminal, nothing, or a host serial port such as /dev/cu.usbserial-1", 0 },
     [LAUNCH_USER_AGENT] = { "user-agent", "TEXT", "the web proxy's user agent", 0 },
@@ -1461,6 +1471,10 @@ static bool launch_option(void *context, int option, const char *value, char *er
     case LAUNCH_SPEED:
         if (!option_integer(value, 10, &integer) || (integer != 1 && integer != 2 && integer != 4 && integer != 8)) return false;
         settings->speed = (uint32_t)integer;
+        return true;
+    case LAUNCH_OPTIMISATIONS:
+        if (strcmp(value, "on") && strcmp(value, "off")) return false;
+        settings->optimisations = !strcmp(value, "on");
         return true;
     case LAUNCH_SERIAL:
         if (!strcmp(value, "net")) launch->serial_mode = SERIAL_NETWORK;
@@ -1549,7 +1563,7 @@ int main(int argc, char **argv) {
     }
     char state[1100];
     const char *startup_notice = NULL;
-    machine_t *machine = start_machine(&current, settings.speed, state_file, fresh, state, sizeof state, &startup_notice);
+    machine_t *machine = start_machine(&current, settings.speed, settings.optimisations != 0, state_file, fresh, state, sizeof state, &startup_notice);
     if (!machine && current_index >= 0 && !launch.machine) {
         static char fallback_notice[1600];
         snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", current.name, startup_notice);
@@ -1557,7 +1571,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < profiles.count && !machine; i++) {
             if (i == current_index) continue;
             current = profiles.entries[i];
-            machine = start_machine(&current, settings.speed, NULL, false, state, sizeof state, &startup_notice);
+            machine = start_machine(&current, settings.speed, settings.optimisations != 0, NULL, false, state, sizeof state, &startup_notice);
             if (machine) {
                 current_index = i;
                 startup_notice = fallback_notice;
@@ -1952,6 +1966,11 @@ int main(int argc, char **argv) {
                 machine_set_speed(machine, settings.speed);
                 settings_save(&settings);
                 break;
+            case MENU_OPTIMISATIONS:
+                settings.optimisations = !settings.optimisations;
+                machine_set_optimisations(machine, settings.optimisations);
+                settings_save(&settings);
+                break;
             case MENU_INSERT_CARD: {
                 static const SDL_DialogFileFilter filters[] = { { "Card images", "img;bin;raw" }, { "All files", "*" } };
                 SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_CARD, window, filters, 2, NULL, false);
@@ -2098,7 +2117,7 @@ int main(int argc, char **argv) {
                 const char *switch_notice = NULL;
                 char next_state[sizeof state];
                 profile_t next_profile = profiles.entries[switch_to];
-                machine_t *next = start_machine(&next_profile, settings.speed, NULL, false, next_state, sizeof next_state, &switch_notice);
+                machine_t *next = start_machine(&next_profile, settings.speed, settings.optimisations != 0, NULL, false, next_state, sizeof next_state, &switch_notice);
                 if (!next) {
                     notice = switch_notice;
                     notice_left = NOTICE_SECONDS * 2;
@@ -2268,6 +2287,7 @@ int main(int argc, char **argv) {
         menu_set_checked(MENU_SPEED_2, machine_speed(machine) == 2);
         menu_set_checked(MENU_SPEED_4, machine_speed(machine) == 4);
         menu_set_checked(MENU_SPEED_8, machine_speed(machine) == 8);
+        menu_set_checked(MENU_OPTIMISATIONS, machine_optimisations(machine));
 
         uint64_t now = SDL_GetPerformanceCounter();
         double elapsed = (double)(now - last) / frequency;

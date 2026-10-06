@@ -59,7 +59,7 @@ On macOS the menus are in the menu bar. On Linux they're in a bar along the top 
 | Machine | Soft Reset (restarts CE, keeping RAM and the object store, like the reset button) | Cmd-R |
 | Machine | Machines: the machine list (switching saves the current machine and opens the other), New Machine…, Manage Machines… (Reset… back to the factory state, Delete…) | |
 | Machine | Pause | Cmd-P |
-| Machine | CPU Speed: 1x (original), 2x, 4x, 8x | |
+| Machine | CPU Speed: 1x (original), 2x, 4x, 8x, and Optimisations | |
 | Machine | Show Debug Output | |
 | State | Save State, Load State | Cmd-S, Cmd-L |
 | State | Save Snapshot…, Load Snapshot… | Cmd-Ctrl-S, Cmd-Ctrl-L |
@@ -248,6 +248,13 @@ Memory is the machine's RAM, or `--memory=` for a ROM given on the command line.
 Screen is the machine's display size, or `--screen=WxH` for a ROM given on the command line. The emulator patches the display setup in the loaded ROM (the kernel's LCD controller setup and GWES's or the display driver's size, stride and framebuffer), keeping the original refresh rate, and moves the framebuffer out of the way of the larger image. CE 1.0 runs at any of the sizes; the merged CE 2.0 image at up to 640 x 480; the CE 2.0 upgrade ROM on its own at 640 x 240, as its display driver faults at taller sizes. Sizes a ROM can't run are greyed out in New Machine. The ROM files aren't changed, and a saved machine keeps the screen it was booted with. Some of CE's own dialogs, such as the setup wizard's, keep their 480 x 240 layout.
 
 CPU Speed runs that many instructions per 36.864 MHz clock tick; `--speed=` does the same. Timers, the RTC, the LCD, sound and serial stay on the real clock, so only the CPU gets faster.
+
+CPU Speed > Optimisations (`--optimisations=on`, on by default on Android) does some of CE's work natively and skips work that only waits for time to pass:
+
+- CE 1.0's LZW and CE 2.0's LZ ROM compression run natively, with the same results as CE's own code. CE uses them to load programs and files from ROM and for its RAM object store.
+- When CE keeps polling the RTC or `GetTickCount` until the time changes, the CPU waits for the next tick instead. This never skips past an interrupt or input.
+
+With it off, the emulation matches the original instruction for instruction.
 
 ## Headless
 

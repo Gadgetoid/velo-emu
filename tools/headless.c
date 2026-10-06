@@ -108,7 +108,7 @@ typedef struct {
     double   seconds;
     const char *png, *pgm, *load, *save, *wav, *card, *disk;
     int      png_cell, png_backlight;
-    bool     trace_pc, host_time, fast;
+    bool     trace_pc, host_time, optimisations;
     double   key_times[32];
     unsigned key_codes[32][4];
     int      key_lengths[32];
@@ -147,7 +147,7 @@ typedef struct {
 } run_t;
 
 enum {
-    OPT_HEADING_RUN, OPT_SECONDS, OPT_LOAD, OPT_SAVE, OPT_CARD, OPT_DISK, OPT_MEMORY, OPT_SCREEN, OPT_SPEED, OPT_REALTIME, OPT_HOST_TIME, OPT_FAST,
+    OPT_HEADING_RUN, OPT_SECONDS, OPT_LOAD, OPT_SAVE, OPT_CARD, OPT_DISK, OPT_MEMORY, OPT_SCREEN, OPT_SPEED, OPT_REALTIME, OPT_HOST_TIME, OPT_OPTIMISATIONS,
     OPT_HEADING_INPUT, OPT_TAP, OPT_KEY, OPT_TYPE, OPT_POWER, OPT_BACKLIGHT, OPT_SOFT_RESET, OPT_INSERT_DISK, OPT_EJECT_DISK,
     OPT_HEADING_NET, OPT_NET, OPT_RAPI, OPT_RAPI_PORT, OPT_AGENT, OPT_USER_AGENT, OPT_REPLUG, OPT_CABLE, OPT_CABLE_SEND,
     OPT_HEADING_OUTPUT, OPT_PGM, OPT_PNG, OPT_PNG_CELL, OPT_PNG_BACKLIGHT, OPT_WAV, OPT_TRACE_PC, OPT_WATCH_PC, OPT_DEBUG_OUTPUT, OPT_GDB,
@@ -166,7 +166,7 @@ static const option_t OPTIONS[] = {
     [OPT_SPEED] = { "speed", "N", "CPU speed multiple: 1, 2, 4 or 8", 0 },
     [OPT_REALTIME] = { "realtime", "[N]", "pace emulated time at N times real time (default 1), for RAPI clients", 0 },
     [OPT_HOST_TIME] = { "host-time", NULL, "set the clock from this computer at a cold boot", 0 },
-    [OPT_FAST]      = { "fast", NULL, "run CE's ROM compression natively (experimental)", 0 },
+    [OPT_OPTIMISATIONS] = { "optimisations", NULL, "run CE's ROM compression natively and skip busy-waits on the clock", 0 },
     [OPT_HEADING_INPUT] = { NULL, NULL, "Input, at emulated times in seconds", 0 },
     [OPT_TAP] = { "tap", "SECONDS:X:Y[:HOLD]", "hold the pen at a screen position, for 0.5 s by default (0.08 for double taps)", 32 },
     [OPT_KEY] = { "key", "SECONDS:SCANCODE[+SCANCODE]", "press Velo scancodes (hex) together for 50 ms; the backlight key is 5E", 32 },
@@ -233,7 +233,7 @@ static bool parse_option(void *context, int option, const char *value, char *err
         run->realtime = 1;
         return !value || (option_number(value, &run->realtime) && run->realtime > 0);
     case OPT_HOST_TIME: run->host_time = true; return true;
-    case OPT_FAST: run->fast = true; return true;
+    case OPT_OPTIMISATIONS: run->optimisations = true; return true;
     case OPT_TAP: {
         int n = run->tap_count;
         if (!option_timed(value, &run->tap_times[n], &rest)) return false;
@@ -381,7 +381,7 @@ int main(int argc, char **argv) {
     }
     if (run.speed) machine_set_speed(machine, run.speed);
     machine_set_host_clock(machine, run.host_time);
-    machine_set_fast(machine, run.fast);
+    machine_set_optimisations(machine, run.optimisations);
     print_debug_output = run.debug_output;
     if (run.debug_output || run.gdb_port) machine_set_debug_output(machine, print_debug_line, NULL);
     if (run.load && !machine_load(machine, run.load, NULL)) { fprintf(stderr, "cannot load state %s\n", run.load); return 1; }
