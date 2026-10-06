@@ -1005,13 +1005,18 @@ static int rom_system(const char *path, uint32_t *screens, int *rank) {
     size_t size;
     uint8_t *rom = file_read(path, &size);
     if (!rom) return 0;
-    char sets[512];
-    if (marker_patch_sets(rom, size, sets, sizeof sets)) *rank = marker_has_set(sets, "pc-link-115k") ? ROM_PATCHED_115K : ROM_PATCHED;
+    char sets[512], os[16];
+    int marked = ROM_UNMARKED, marked_system = 0;
+    if (marker_value(rom, size, "patch_sets", sets, sizeof sets)) {
+        marked = marker_has_set(sets, "pc-link-115k") ? ROM_PATCHED_115K : ROM_PATCHED;
+        marked_system = !marker_value(rom, size, "os", os, sizeof os) || !strcmp(os, "ce2") ? 2 : !strcmp(os, "ce1") ? 1 : 0;
+    }
     char error[256];
     machine_t *machine = machine_create(rom, size, error, sizeof error);
     free(rom);
     if (!machine) return 0;
     int system = machine_rom_system(machine);
+    if (system == marked_system) *rank = marked;
     for (int i = 0; i < SCREEN_PRESET_COUNT; i++) {
         if (machine_screen_supported(machine, SCREEN_PRESETS[i])) *screens |= 1u << i;
     }

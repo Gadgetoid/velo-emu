@@ -989,13 +989,14 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
         budget += cpu->run_stash;
         cpu->run_stash = 0;
         sync_out(cpu, &flow, current, current_delay, budget);
+        uint64_t cycles_before = cpu->cycles;
         if (result == FAST_BUS) {
             uint32_t value = access.value;
             bool ok = access.write ? cpu->bus.write(cpu->bus.context, access.pa, (int)access.size, value)
                                    : cpu->bus.read(cpu->bus.context, access.pa, (int)access.size, &value);
             if (ok && !access.write) cpu->gpr[access.reg] = access.sign ? (access.size == 1 ? (uint32_t)(int8_t)value : (uint32_t)(int16_t)value) : value;
             cpu->gpr[0] = 0;
-            if (ok && cpu->pc == flow.pc) {
+            if (ok && cpu->pc == flow.pc && cpu->cycles == cycles_before) {
                 cpu->run_stash = budget;
                 budget = 0;
                 continue;
