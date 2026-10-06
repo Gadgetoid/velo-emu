@@ -2225,6 +2225,10 @@ static void cancel_pending_card(machine_t *m) {
 bool machine_insert_card(machine_t *m, const char *path) {
     FILE *image = fopen(path, "r+b");
     if (!image) return false;
+    return machine_insert_card_file(m, image, path);
+}
+
+bool machine_insert_card_file(machine_t *m, FILE *image, const char *path) {
     cancel_pending_card(m);
     bool recently_lost = m->card_lost && m->cpu.cycles - m->card_lost_at < CARD_SWAP_CYCLES;
     m->card_lost = false;

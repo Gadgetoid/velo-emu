@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 #include "core/key_text.h"
@@ -51,6 +52,7 @@ bool machine_suspended(machine_t *machine);
 size_t machine_audio(machine_t *machine, int16_t *samples, size_t max, uint32_t *rate);
 
 bool machine_insert_card(machine_t *machine, const char *path);
+bool machine_insert_card_file(machine_t *machine, FILE *image, const char *name);
 void machine_eject_card(machine_t *machine);
 bool machine_card_inserted(machine_t *machine);
 
