@@ -69,6 +69,7 @@ typedef struct {
 typedef struct {
     uint32_t tag;
     uint8_t *page;
+    bool     watched;
 } mips_fetch_cache_t;
 #define MIPS_SLOT_SIZE 0x02000000u
 

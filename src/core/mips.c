@@ -93,6 +93,7 @@ static void tlb_write(mips_cpu_t *cpu, uint32_t index) {
 }
 
 static void tlb_read(mips_cpu_t *cpu) {
+    cpu->epoch++;
     const mips_tlb_entry_t *entry = &cpu->tlb[(cpu->cp0[CP0_INDEX] >> INDEX_SHIFT) & INDEX_MASK];
     cpu->cp0[CP0_ENTRYHI] = entry->vpn | (entry->pid << ENTRYHI_PID_SHIFT);
     cpu->cp0[CP0_ENTRYLO] = entry->pfn
@@ -266,6 +267,15 @@ void mips_raise_tlb_store_miss(mips_cpu_t *cpu, uint32_t va) {
     tlb_fault(cpu, MIPS_EXC_TLBS, va);
 }
 
+static bool page_watched(const mips_cpu_t *cpu, uint32_t pc) {
+    for (int w = 0; w < cpu->watch_count; w++) {
+        uint32_t va = cpu->watch[w];
+        if ((va >> 12) == (pc >> 12)) return true;
+        if (va < MIPS_SLOT_SIZE && pc < 0x80000000u && (va >> 12) == ((pc & (MIPS_SLOT_SIZE - 1)) >> 12)) return true;
+    }
+    return false;
+}
+
 static bool fetch(mips_cpu_t *cpu, uint32_t va, uint32_t *instruction) {
     if (va & 3) { address_fault(cpu, MIPS_EXC_ADEL, va); return false; }
     uint32_t user = (cpu->cp0[CP0_STATUS] & STATUS_KUC) != 0;
@@ -283,6 +293,7 @@ static bool fetch(mips_cpu_t *cpu, uint32_t va, uint32_t *instruction) {
             return true;
         }
         cached->tag = tag;
+        cached->watched = page_watched(cpu, va);
         cached->page = page;
     }
     memcpy(instruction, cached->page + (va & 0xFFFu), 4);
@@ -687,7 +698,7 @@ static ALWAYS_INLINE bool fast_translate(const mips_cpu_t *cpu, uint32_t va, uin
     return true;
 }
 
-typedef enum { FAST_SLOW, FAST_DONE, FAST_BUS } fast_result_t;
+typedef enum { FAST_SLOW, FAST_DONE, FAST_BUS, FAST_SETTLE } fast_result_t;
 
 typedef struct {
     uint32_t pa, size, value, reg;
@@ -810,6 +821,33 @@ static ALWAYS_INLINE fast_result_t execute_fast(mips_cpu_t *cpu, flow_t *hot, ui
     case 0x0D: r[rt] = r[rs] | (op & 0xFFFFu); break;
     case 0x0E: r[rt] = r[rs] ^ (op & 0xFFFFu); break;
     case 0x0F: r[rt] = op << 16; break;
+    case 0x10: {
+        uint32_t status = cpu->cp0[CP0_STATUS];
+        if ((status & STATUS_KUC) && !(status & STATUS_CU0)) return FAST_SLOW;
+        if (op & (1u << 25)) {
+            switch (op & 63) {
+            case 0x01: tlb_read(cpu); return FAST_SETTLE;
+            case 0x02: tlb_write(cpu, (cpu->cp0[CP0_INDEX] >> INDEX_SHIFT) & INDEX_MASK); return FAST_SETTLE;
+            case 0x06: tlb_write(cpu, tlb_random_index(cpu)); return FAST_SETTLE;
+            case 0x08: tlb_probe(cpu); return FAST_DONE;
+            case 0x10:
+                cpu->cp0[CP0_STATUS] = (status & ~0xFu) | ((status >> 2) & 0xFu);
+                cpu->epoch++;
+                return FAST_SETTLE;
+            default: return FAST_SLOW;
+            }
+        }
+        if (rs == 0x00) {
+            if (rt) r[rt] = read_cp0(cpu, (int)rd);
+            r[0] = 0;
+            return FAST_DONE;
+        }
+        if (rs == 0x04) {
+            write_cp0(cpu, (int)rd, r[rt]);
+            return FAST_SETTLE;
+        }
+        return FAST_SLOW;
+    }
     case 0x14: flow_branch_likely(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
     case 0x15: flow_branch_likely(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
     case 0x16: flow_branch_likely(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
@@ -873,7 +911,7 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
     cpu->run_window_epoch = cpu->epoch - 1;
     uint32_t current = cpu->current_pc;
     uint32_t budget = sync_in(cpu, &flow);
-    uint32_t window_low = 0, window_words = 0;
+    uint32_t window_low = 0, window_words = 0, tag_bits = 0;
     const uint8_t *window = NULL;
     for (;;) {
         if (budget == 0) {
@@ -887,7 +925,11 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
                 if (budget == 0) break;
             }
             if (cpu->yield) break;
-            if (cpu->epoch != cpu->run_window_epoch) window_words = 0;
+            if (cpu->epoch != cpu->run_window_epoch) {
+                window_words = 0;
+                tag_bits = fetch_tag(cpu, 0);
+                cpu->run_window_epoch = cpu->epoch;
+            }
             if (interrupt_pending(cpu)) {
                 current = flow.pc;
                 sync_out(cpu, &flow, current, (flow.flags & FLAG_DELAY) != 0, budget - 1);
@@ -900,8 +942,15 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
         current = flow.pc;
         uint32_t instruction;
         uint32_t window_offset = current - window_low;
+        const mips_fetch_cache_t *entry;
         if (rotate_right_2(window_offset) < window_words) {
             memcpy(&instruction, window + window_offset, 4);
+        } else if (!(current & 3) && (entry = &cpu->fetch_cache[(current >> 12) & (MIPS_FETCH_CACHE - 1)])->tag == ((current & ENTRYHI_VPN_MASK) | tag_bits)
+                   && !entry->watched) {
+            window_low = current & ENTRYHI_VPN_MASK;
+            window_words = 0x1000u / 4;
+            window = entry->page;
+            memcpy(&instruction, window + (current & 0xFFFu), 4);
         } else {
             sync_out(cpu, &flow, current, (flow.flags & FLAG_DELAY) != 0, budget);
             bool fetched = fetch(cpu, current, &instruction) && (!cpu->watch_count || run_watches(cpu, current));
@@ -913,7 +962,6 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
                 window_bounds(cpu, current, &window_low, &high);
                 window_words = high > window_low ? (high - window_low) / 4 : 0;
                 window = cached->page + (window_low & 0xFFFu);
-                cpu->run_window_epoch = cpu->epoch;
             }
         }
         flow.pc = flow.next_pc;
@@ -922,6 +970,12 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
         bus_access_t access;
         fast_result_t result = execute_fast(cpu, &flow, current, instruction, &access);
         if (result == FAST_DONE) continue;
+        if (result == FAST_SETTLE) {
+            cpu->gpr[0] = 0;
+            cpu->run_stash += budget;
+            budget = 0;
+            continue;
+        }
         bool current_delay = (flow.flags & FLAG_WAS_DELAY) != 0;
         budget += cpu->run_stash;
         cpu->run_stash = 0;

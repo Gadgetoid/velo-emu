@@ -2295,5 +2295,6 @@ bool machine_watch_pc(machine_t *m, uint32_t va) {
     if (m->cpu.watch_count == MIPS_WATCH_MAX) return false;
     m->cpu.watch[m->cpu.watch_count++] = va;
     m->cpu.on_watch = on_watch;
+    mips_flush_translations(&m->cpu);
     return true;
 }
