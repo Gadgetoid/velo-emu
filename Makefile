@@ -49,7 +49,7 @@ else
 SRC_NET  = src/net/net_gateway_none.c src/net/web_proxy_none.c
 endif
 
-SRC_MACHINE = src/core/mips.c src/core/machine.c src/core/ce.c src/core/gdb.c src/core/mailbox.c src/core/agent.c src/core/screen.c src/core/lzw.c src/core/accel.c src/core/vdisk.c src/core/pccard.c src/core/uart.c src/core/key_text.c src/util/options.c src/util/file.c
+SRC_MACHINE = src/core/mips.c src/core/machine.c src/core/ce.c src/core/gdb.c src/core/mailbox.c src/core/agent.c src/core/screen.c src/core/lzw.c src/core/lz.c src/core/accel.c src/core/vdisk.c src/core/pccard.c src/core/uart.c src/core/key_text.c src/util/options.c src/util/file.c
 SRC_RAPI    = src/rapi/rapi.c src/rapi/rapi_load.c src/rapi/rapi_setup.c src/rapi/rapi_sync.c
 SRC_APP     = $(SRC_MACHINE) $(SRC_NET) $(SRC_RAPI) src/app/desktop.c src/core/lcd.c src/util/png.c src/app/typer.c src/app/view.c src/app/profiles.c src/util/fat.c src/util/marker.c src/app/main.c $(SRC_MENU)
 

@@ -182,7 +182,7 @@ struct machine {
     uint32_t rom2_pa;
     bool     in_place;
     bool     fast;
-    uint32_t accel_decode_va, accel_encode_va;
+    accel_hooks_t accel;
     uint32_t entry_va;
     uint64_t rom_hash;
     uint64_t rom_base_hash;
@@ -1324,6 +1324,13 @@ static bool raw_rom_region(const uint8_t *rom, size_t rom_size, rom_region_t *re
     return true;
 }
 
+static const uint8_t *rom_at(void *context, uint32_t pa, uint32_t length) {
+    machine_t *m = context;
+    if (pa >= m->rom_pa && pa - m->rom_pa <= m->rom_size && length <= m->rom_size - (pa - m->rom_pa)) return m->rom + (pa - m->rom_pa);
+    if (m->rom2 && pa >= m->rom2_pa && pa - m->rom2_pa <= m->rom2_size && length <= m->rom2_size - (pa - m->rom2_pa)) return m->rom2 + (pa - m->rom2_pa);
+    return NULL;
+}
+
 static machine_t *machine_build(rom_region_t regions[2], int region_count, uint32_t start, const uint8_t *rom, size_t rom_size,
                                 uint8_t *dram, uint32_t dram_size, bool in_place) {
     machine_t *m = calloc(1, sizeof *m);
@@ -1364,8 +1371,8 @@ static machine_t *machine_build(rom_region_t regions[2], int region_count, uint3
     machine_power_on(m);
     m->set_time_va = find_set_real_time(m);
     find_debug_output(m);
-    accel_ce1_find(m->rom, m->rom_pa, m->rom_size, &m->accel_decode_va, &m->accel_encode_va);
-    uint32_t hooks[] = { m->set_time_va, m->debug_string_va, m->debug_print_va, m->accel_decode_va, m->accel_encode_va };
+    accel_find(rom_at, m, &m->accel);
+    uint32_t hooks[] = { m->set_time_va, m->debug_string_va, m->debug_print_va, m->accel.decode_va, m->accel.encode_va };
     for (size_t i = 0; i < sizeof hooks / sizeof hooks[0]; i++) {
         if (!hooks[i]) continue;
         m->cpu.watch[m->cpu.watch_count++] = hooks[i];
@@ -2073,7 +2080,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     uint8_t *rom2 = m->rom2;
     uint32_t rom2_size = m->rom2_size, rom2_pa = m->rom2_pa;
     bool in_place = m->in_place, fast = m->fast;
-    uint32_t accel_decode_va = m->accel_decode_va, accel_encode_va = m->accel_encode_va;
+    accel_hooks_t accel = m->accel;
     uint64_t rom_hash = m->rom_hash, rom_base_hash = m->rom_base_hash;
     screen_size_t screen = m->screen, screen_next = m->screen_next;
     screen_patch_t screen_patch = m->screen_patch;
@@ -2122,8 +2129,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     m->rom2_pa = rom2_pa;
     m->in_place = in_place;
     m->fast = fast;
-    m->accel_decode_va = accel_decode_va;
-    m->accel_encode_va = accel_encode_va;
+    m->accel = accel;
     m->entry_va = entry_va;
     m->rom_hash = rom_hash;
     m->rom_base_hash = rom_base_hash;
@@ -2396,11 +2402,12 @@ static uint8_t *accel_map(void *context, uint32_t va, bool write) {
 
 static void on_watch(void *context, uint32_t pc) {
     machine_t *m = context;
-    if (pc == m->accel_decode_va || pc == m->accel_encode_va) {
+    if (m->accel.system && (pc == m->accel.decode_va || pc == m->accel.encode_va)) {
         if (!m->fast) return;
         accel_memory_t memory = { m, accel_map };
-        if (pc == m->accel_decode_va) accel_ce1_decode(&m->cpu, &memory);
-        else accel_ce1_encode(&m->cpu, &memory);
+        bool decode = pc == m->accel.decode_va;
+        if (m->accel.system == 1) decode ? accel_ce1_decode(&m->cpu, &memory) : accel_ce1_encode(&m->cpu, &memory);
+        else decode ? accel_ce2_decode(&m->cpu, &memory) : accel_ce2_encode(&m->cpu, &memory);
         return;
     }
     if (pc == m->set_time_va) apply_host_time(m);
