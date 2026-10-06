@@ -95,6 +95,8 @@ struct mips_cpu {
     uint32_t current_pc;
     bool     current_in_delay_slot;
     uint32_t epoch;
+    uint64_t run_until, run_base_cycles;
+    uint32_t run_base_count, run_base_budget, run_stash, run_window_epoch;
     uint32_t cp0[32];
     uint32_t external_ip;
     mips_tlb_entry_t tlb[MIPS_TLB_ENTRIES];

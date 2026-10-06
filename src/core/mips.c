@@ -72,9 +72,15 @@ static uint32_t tlb_random_index(mips_cpu_t *cpu) {
     return RANDOM_FIRST + (cpu->random_state >> 16) % (MIPS_TLB_ENTRIES - RANDOM_FIRST);
 }
 
+static void forget_page(mips_cpu_t *cpu, uint32_t vpn) {
+    memset(&cpu->page_cache[(vpn >> 12) & (MIPS_PAGE_CACHE - 1)], 0, sizeof cpu->page_cache[0]);
+    memset(&cpu->fetch_cache[(vpn >> 12) & (MIPS_FETCH_CACHE - 1)], 0, sizeof cpu->fetch_cache[0]);
+}
+
 static void tlb_write(mips_cpu_t *cpu, uint32_t index) {
     mips_tlb_entry_t *entry = &cpu->tlb[index & INDEX_MASK];
     uint32_t entrylo = cpu->cp0[CP0_ENTRYLO];
+    forget_page(cpu, entry->vpn);
     entry->vpn = cpu->cp0[CP0_ENTRYHI] & ENTRYHI_VPN_MASK;
     entry->pid = tlb_pid(cpu);
     entry->pfn = entrylo & ENTRYLO_PFN_MASK;
@@ -82,7 +88,8 @@ static void tlb_write(mips_cpu_t *cpu, uint32_t index) {
     entry->valid = (entrylo & ENTRYLO_V) != 0;
     entry->dirty = (entrylo & ENTRYLO_D) != 0;
     entry->noncache = (entrylo & ENTRYLO_N) != 0;
-    mips_flush_translations(cpu);
+    forget_page(cpu, entry->vpn);
+    cpu->epoch++;
 }
 
 static void tlb_read(mips_cpu_t *cpu) {
@@ -608,53 +615,60 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "guest memory is acces
 
 #define WINDOW_NONE 1u
 #define WINDOW_MATCH_MASK 0xFFFFF003u
+#define BUDGET_MAX 0x7FFFFFFFu
+#define FLAG_DELAY     1u
+#define FLAG_WAS_DELAY 2u
+#define ALWAYS_INLINE  inline __attribute__((always_inline))
 
 typedef struct {
-    uint32_t pc, next_pc;
-    bool     delay, was_delay;
-    uint32_t current;
-    bool     current_delay;
-    uint64_t cycles;
-    uint32_t speed_count;
-} hot_t;
+    uint32_t pc, next_pc, flags;
+} flow_t;
 
-static inline void hot_save(mips_cpu_t *cpu, const hot_t *hot) {
-    cpu->pc = hot->pc;
-    cpu->next_pc = hot->next_pc;
-    cpu->next_in_delay_slot = hot->delay;
-    cpu->in_delay_slot = hot->was_delay;
-    cpu->current_pc = hot->current;
-    cpu->current_in_delay_slot = hot->current_delay;
-    cpu->cycles = hot->cycles;
-    cpu->speed_count = hot->speed_count;
+static void __attribute__((noinline)) sync_out(mips_cpu_t *cpu, const flow_t *flow, uint32_t current, bool current_delay, uint32_t budget) {
+    uint32_t speed = cpu->speed ? cpu->speed : 1;
+    uint32_t total = cpu->run_base_count + (cpu->run_base_budget - budget - cpu->run_stash);
+    cpu->pc = flow->pc;
+    cpu->next_pc = flow->next_pc;
+    cpu->next_in_delay_slot = (flow->flags & FLAG_DELAY) != 0;
+    cpu->in_delay_slot = (flow->flags & FLAG_WAS_DELAY) != 0;
+    cpu->current_pc = current;
+    cpu->current_in_delay_slot = current_delay;
+    cpu->cycles = cpu->run_base_cycles + total / speed;
+    cpu->speed_count = total % speed;
+    cpu->run_stash = 0;
     cpu->fault = false;
 }
 
-static inline void hot_load(const mips_cpu_t *cpu, hot_t *hot) {
-    hot->pc = cpu->pc;
-    hot->next_pc = cpu->next_pc;
-    hot->delay = cpu->next_in_delay_slot;
-    hot->was_delay = cpu->in_delay_slot;
-    hot->cycles = cpu->cycles;
-    hot->speed_count = cpu->speed_count;
+static uint32_t __attribute__((noinline)) sync_in(mips_cpu_t *cpu, flow_t *flow) {
+    uint32_t speed = cpu->speed ? cpu->speed : 1;
+    flow->pc = cpu->pc;
+    flow->next_pc = cpu->next_pc;
+    flow->flags = (cpu->next_in_delay_slot ? FLAG_DELAY : 0) | (cpu->in_delay_slot ? FLAG_WAS_DELAY : 0);
+    cpu->run_base_cycles = cpu->cycles;
+    cpu->run_base_count = cpu->speed_count;
+    uint64_t budget = 0;
+    if (cpu->cycles < cpu->run_until) budget = (cpu->run_until - cpu->cycles) * speed - cpu->speed_count;
+    cpu->run_base_budget = budget > BUDGET_MAX ? BUDGET_MAX : (uint32_t)budget;
+    cpu->run_stash = cpu->run_base_budget;
+    return 0;
 }
 
-static inline void hot_branch(hot_t *hot, bool taken, uint32_t target) {
-    if (taken) hot->next_pc = target;
-    hot->delay = true;
+static ALWAYS_INLINE void flow_branch(flow_t *flow, bool taken, uint32_t target) {
+    if (taken) flow->next_pc = target;
+    flow->flags |= FLAG_DELAY;
 }
 
-static inline void hot_branch_likely(hot_t *hot, bool taken, uint32_t target) {
+static ALWAYS_INLINE void flow_branch_likely(flow_t *flow, bool taken, uint32_t target) {
     if (taken) {
-        hot->next_pc = target;
-        hot->delay = true;
+        flow->next_pc = target;
+        flow->flags |= FLAG_DELAY;
     } else {
-        hot->pc = hot->next_pc;
-        hot->next_pc = hot->pc + 4;
+        flow->pc = flow->next_pc;
+        flow->next_pc = flow->pc + 4;
     }
 }
 
-static inline bool fast_translate(const mips_cpu_t *cpu, uint32_t va, uint32_t size, bool write, uint32_t *pa) {
+static ALWAYS_INLINE bool fast_translate(const mips_cpu_t *cpu, uint32_t va, uint32_t size, bool write, uint32_t *pa) {
     if (va & (size - 1)) return false;
     if (va >= 0x80000000u) {
         if (cpu->cp0[CP0_STATUS] & STATUS_KUC) return false;
@@ -670,25 +684,24 @@ static inline bool fast_translate(const mips_cpu_t *cpu, uint32_t va, uint32_t s
     return true;
 }
 
-static inline bool fast_load(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t *value) {
+static ALWAYS_INLINE bool fast_load(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t *value) {
     uint32_t pa;
     if (!fast_translate(cpu, va, size, false, &pa) || pa >= cpu->bus.dram_end) return false;
     *value = read_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size);
     return true;
 }
 
-static inline bool fast_store(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t value) {
+static ALWAYS_INLINE bool fast_store(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t value) {
     uint32_t pa;
     if (!fast_translate(cpu, va, size, true, &pa) || pa >= cpu->bus.dram_end) return false;
     write_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size, value);
     return true;
 }
 
-static inline bool execute_fast(mips_cpu_t *cpu, hot_t *hot, uint32_t op) {
+static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc, uint32_t op) {
     uint32_t *r = cpu->gpr;
     uint32_t rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31;
     uint32_t simm = (uint32_t)sign16(op);
-    uint32_t pc = hot->current;
     uint32_t value;
 
     switch (op >> 26) {
@@ -700,8 +713,8 @@ static inline bool execute_fast(mips_cpu_t *cpu, hot_t *hot, uint32_t op) {
         case 0x04: r[rd] = r[rt] << (r[rs] & 31); break;
         case 0x06: r[rd] = r[rt] >> (r[rs] & 31); break;
         case 0x07: r[rd] = (uint32_t)((int32_t)r[rt] >> (r[rs] & 31)); break;
-        case 0x08: hot_branch(hot, true, r[rs]); break;
-        case 0x09: { uint32_t target = r[rs]; r[rd] = pc + 8; hot_branch(hot, true, target); break; }
+        case 0x08: flow_branch(hot, true, r[rs]); break;
+        case 0x09: { uint32_t target = r[rs]; r[rd] = pc + 8; flow_branch(hot, true, target); break; }
         case 0x10: r[rd] = cpu->hi; break;
         case 0x11: cpu->hi = r[rs]; break;
         case 0x12: r[rd] = cpu->lo; break;
@@ -746,24 +759,24 @@ static inline bool execute_fast(mips_cpu_t *cpu, hot_t *hot, uint32_t op) {
         uint32_t target = pc + 4 + (simm << 2);
         bool less = (int32_t)r[rs] < 0;
         switch (rt) {
-        case 0x00: hot_branch(hot, less, target); break;
-        case 0x01: hot_branch(hot, !less, target); break;
-        case 0x02: hot_branch_likely(hot, less, target); break;
-        case 0x03: hot_branch_likely(hot, !less, target); break;
-        case 0x10: r[31] = pc + 8; hot_branch(hot, less, target); break;
-        case 0x11: r[31] = pc + 8; hot_branch(hot, !less, target); break;
-        case 0x12: r[31] = pc + 8; hot_branch_likely(hot, less, target); break;
-        case 0x13: r[31] = pc + 8; hot_branch_likely(hot, !less, target); break;
+        case 0x00: flow_branch(hot, less, target); break;
+        case 0x01: flow_branch(hot, !less, target); break;
+        case 0x02: flow_branch_likely(hot, less, target); break;
+        case 0x03: flow_branch_likely(hot, !less, target); break;
+        case 0x10: r[31] = pc + 8; flow_branch(hot, less, target); break;
+        case 0x11: r[31] = pc + 8; flow_branch(hot, !less, target); break;
+        case 0x12: r[31] = pc + 8; flow_branch_likely(hot, less, target); break;
+        case 0x13: r[31] = pc + 8; flow_branch_likely(hot, !less, target); break;
         default: return false;
         }
         break;
     }
-    case 0x02: hot_branch(hot, true, ((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
-    case 0x03: r[31] = pc + 8; hot_branch(hot, true, ((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
-    case 0x04: hot_branch(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
-    case 0x05: hot_branch(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
-    case 0x06: hot_branch(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
-    case 0x07: hot_branch(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
+    case 0x02: flow_branch(hot, true, ((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
+    case 0x03: r[31] = pc + 8; flow_branch(hot, true, ((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
+    case 0x04: flow_branch(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
+    case 0x05: flow_branch(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
+    case 0x06: flow_branch(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
+    case 0x07: flow_branch(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
     case 0x08: {
         uint32_t sum = r[rs] + simm;
         if (~(r[rs] ^ simm) & (r[rs] ^ sum) & 0x80000000u) return false;
@@ -777,10 +790,10 @@ static inline bool execute_fast(mips_cpu_t *cpu, hot_t *hot, uint32_t op) {
     case 0x0D: r[rt] = r[rs] | (op & 0xFFFFu); break;
     case 0x0E: r[rt] = r[rs] ^ (op & 0xFFFFu); break;
     case 0x0F: r[rt] = op << 16; break;
-    case 0x14: hot_branch_likely(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
-    case 0x15: hot_branch_likely(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
-    case 0x16: hot_branch_likely(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
-    case 0x17: hot_branch_likely(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
+    case 0x14: flow_branch_likely(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
+    case 0x15: flow_branch_likely(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
+    case 0x16: flow_branch_likely(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
+    case 0x17: flow_branch_likely(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
     case 0x20: if (!fast_load(cpu, r[rs] + simm, 1, &value)) return false; r[rt] = (uint32_t)(int8_t)value; break;
     case 0x21: if (!fast_load(cpu, r[rs] + simm, 2, &value)) return false; r[rt] = (uint32_t)(int16_t)value; break;
     case 0x23: if (!fast_load(cpu, r[rs] + simm, 4, &value)) return false; r[rt] = value; break;
@@ -809,78 +822,75 @@ static uint32_t fetch_tag(const mips_cpu_t *cpu, uint32_t va) {
     return (va & ENTRYHI_VPN_MASK) | tlb_pid(cpu) << 2 | user << 1 | 1;
 }
 
-static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
-    uint32_t speed = cpu->speed ? cpu->speed : 1;
-    hot_t hot;
-    hot_load(cpu, &hot);
-    uint32_t window_va = WINDOW_NONE, window_epoch = 0;
-    const uint8_t *window = NULL;
-    bool window_watched = false;
-    bool settled = false, interrupt = false;
-    while (hot.cycles < until_cycle) {
-        if (!settled) {
-            if (cpu->yield) break;
-            interrupt = interrupt_pending(cpu);
-            if (cpu->epoch != window_epoch) window_va = WINDOW_NONE;
-            settled = true;
+static bool run_watches(mips_cpu_t *cpu, uint32_t pc) {
+    uint32_t bit = watch_bit(pc);
+    bool faulted = false;
+    for (int w = 0; (cpu->watch_filter[bit >> 5] >> (bit & 31) & 1) && w < cpu->watch_count; w++) {
+        uint32_t va = cpu->watch[w];
+        bool slot_relative = va < MIPS_SLOT_SIZE && pc < 0x80000000u;
+        if (slot_relative ? (pc & (MIPS_SLOT_SIZE - 1)) == va : pc == va) {
+            cpu->on_watch(cpu->bus.context, pc);
+            faulted = faulted || cpu->fault;
         }
-        if (++hot.speed_count >= speed) {
-            hot.speed_count = 0;
-            hot.cycles++;
-        }
-        hot.current = hot.pc;
-        hot.current_delay = hot.delay;
-        if (interrupt) {
-            hot_save(cpu, &hot);
-            raise_exception(cpu, MIPS_EXC_INT, hot.current, hot.current_delay);
-            hot_load(cpu, &hot);
-            settled = false;
-            continue;
-        }
-        uint32_t instruction;
-        if ((hot.current & WINDOW_MATCH_MASK) == window_va) {
-            memcpy(&instruction, window + (hot.current & 0xFFFu), 4);
-        } else {
-            hot_save(cpu, &hot);
-            bool fetched = fetch(cpu, hot.current, &instruction);
-            hot_load(cpu, &hot);
-            settled = false;
-            if (!fetched) continue;
-            const mips_fetch_cache_t *cached = &cpu->fetch_cache[(hot.current >> 12) & (MIPS_FETCH_CACHE - 1)];
-            if (cached->tag == fetch_tag(cpu, hot.current) && cached->page) {
-                window_va = hot.current & ENTRYHI_VPN_MASK;
-                window = cached->page;
-                window_epoch = cpu->epoch;
-                window_watched = page_watched(cpu, hot.current);
-            }
-        }
-        if (window_watched) {
-            uint32_t bit = watch_bit(hot.current);
-            bool faulted = false;
-            for (int w = 0; (cpu->watch_filter[bit >> 5] >> (bit & 31) & 1) && w < cpu->watch_count; w++) {
-                uint32_t va = cpu->watch[w];
-                bool slot_relative = va < MIPS_SLOT_SIZE && hot.current < 0x80000000u;
-                if (slot_relative ? (hot.current & (MIPS_SLOT_SIZE - 1)) == va : hot.current == va) {
-                    hot_save(cpu, &hot);
-                    cpu->on_watch(cpu->bus.context, hot.current);
-                    faulted = faulted || cpu->fault;
-                    hot_load(cpu, &hot);
-                    settled = false;
-                }
-            }
-            if (faulted) continue;
-        }
-        hot.pc = hot.next_pc;
-        hot.next_pc = hot.pc + 4;
-        hot.delay = false;
-        hot.was_delay = hot.current_delay;
-        if (execute_fast(cpu, &hot, instruction)) continue;
-        hot_save(cpu, &hot);
-        execute(cpu, instruction);
-        hot_load(cpu, &hot);
-        settled = false;
     }
-    hot_save(cpu, &hot);
+    return !faulted;
+}
+
+static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
+    flow_t flow;
+    cpu->run_until = until_cycle;
+    cpu->run_window_epoch = cpu->epoch - 1;
+    uint32_t current = cpu->current_pc;
+    uint32_t budget = sync_in(cpu, &flow);
+    uint32_t window_va = WINDOW_NONE;
+    const uint8_t *window = NULL;
+    for (;;) {
+        if (budget == 0) {
+            budget = cpu->run_stash;
+            cpu->run_stash = 0;
+            if (budget == 0) {
+                sync_out(cpu, &flow, current, (flow.flags & FLAG_WAS_DELAY) != 0, 0);
+                sync_in(cpu, &flow);
+                budget = cpu->run_stash;
+                cpu->run_stash = 0;
+                if (budget == 0) break;
+            }
+            if (cpu->yield) break;
+            if (cpu->epoch != cpu->run_window_epoch) window_va = WINDOW_NONE;
+            if (interrupt_pending(cpu)) {
+                current = flow.pc;
+                sync_out(cpu, &flow, current, (flow.flags & FLAG_DELAY) != 0, budget - 1);
+                raise_exception(cpu, MIPS_EXC_INT, current, (flow.flags & FLAG_DELAY) != 0);
+                budget = sync_in(cpu, &flow);
+                continue;
+            }
+        }
+        budget--;
+        current = flow.pc;
+        uint32_t instruction;
+        if ((current & WINDOW_MATCH_MASK) == window_va) {
+            memcpy(&instruction, window + (current & 0xFFFu), 4);
+        } else {
+            sync_out(cpu, &flow, current, (flow.flags & FLAG_DELAY) != 0, budget);
+            bool fetched = fetch(cpu, current, &instruction) && (!cpu->watch_count || run_watches(cpu, current));
+            budget = sync_in(cpu, &flow);
+            if (!fetched) continue;
+            const mips_fetch_cache_t *cached = &cpu->fetch_cache[(current >> 12) & (MIPS_FETCH_CACHE - 1)];
+            if (cached->tag == fetch_tag(cpu, current) && cached->page && !page_watched(cpu, current)) {
+                window_va = current & ENTRYHI_VPN_MASK;
+                window = cached->page;
+                cpu->run_window_epoch = cpu->epoch;
+            }
+        }
+        flow.pc = flow.next_pc;
+        flow.next_pc = flow.pc + 4;
+        flow.flags = (flow.flags & FLAG_DELAY) << 1;
+        if (execute_fast(cpu, &flow, current, instruction)) continue;
+        sync_out(cpu, &flow, current, (flow.flags & FLAG_WAS_DELAY) != 0, budget);
+        execute(cpu, instruction);
+        budget = sync_in(cpu, &flow);
+    }
+    sync_out(cpu, &flow, current, (flow.flags & FLAG_WAS_DELAY) != 0, budget);
 }
 
 void mips_run(mips_cpu_t *cpu, uint64_t until_cycle) {
