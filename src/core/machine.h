@@ -13,10 +13,16 @@
 
 typedef struct machine machine_t;
 
+typedef struct {
+    uint32_t base, stride, width, height, bpp;
+    uint8_t  shades[16];
+} machine_lcd_t;
+
 typedef void (*machine_log_fn)(const char *message);
 typedef void (*machine_debug_fn)(void *context, const char *line);
 
 machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size_t error_size);
+machine_t *machine_create_in_place(const uint8_t *rom, size_t rom_size, uint8_t *dram, uint32_t dram_size, char *error, size_t error_size);
 void       machine_destroy(machine_t *machine);
 void       machine_set_log(machine_t *machine, machine_log_fn log);
 void       machine_run(machine_t *machine, uint64_t cycles);
@@ -31,6 +37,7 @@ bool machine_lcd_enabled(machine_t *machine);
 bool machine_backlight(machine_t *machine);
 void machine_backlight_button(machine_t *machine, bool down);
 bool machine_screen(machine_t *machine, uint8_t *levels);
+bool machine_lcd_format(machine_t *machine, machine_lcd_t *lcd);
 screen_size_t machine_screen_size(machine_t *machine);
 screen_size_t machine_screen_next(machine_t *machine);
 bool          machine_screen_supported(machine_t *machine, screen_size_t size);

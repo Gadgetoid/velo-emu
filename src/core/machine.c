@@ -172,6 +172,7 @@ struct machine {
     uint8_t *rom2;
     uint32_t rom2_size;
     uint32_t rom2_pa;
+    bool     in_place;
     uint32_t entry_va;
     uint64_t rom_hash;
     uint64_t rom_base_hash;
@@ -1203,39 +1204,25 @@ static bool on_break(void *context, uint32_t code) {
 
 mailbox_t *machine_mailbox(machine_t *m) { return &m->mailbox; }
 
-machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size_t error_size) {
-    rom_region_t regions[2] = { { 0 } };
-    int region_count;
-    uint32_t start = ENTRY_VA;
-    if (rom_size >= 15 && !memcmp(rom, "B000FF\n", 7)) {
-        region_count = load_b000ff(rom, rom_size, regions, &start, error, error_size);
-        if (region_count < 0) {
-            for (int i = 0; i < 2; i++) free(regions[i].data);
-            return NULL;
-        }
-        uint32_t entry_pa = start & KSEG_PA_MASK;
-        if (region_count == 2 && !(entry_pa >= regions[0].pa && entry_pa < regions[0].pa + regions[0].size)) {
-            rom_region_t swap = regions[0];
-            regions[0] = regions[1];
-            regions[1] = swap;
-        }
-    } else {
-        uint32_t window_end = ROM_WINDOW_END;
-        if (rom_size >= 16 && find_image_start(rom, rom_size, &start)) window_end = ROM_CARD_END;
-        uint32_t rom_pa = start & KSEG_PA_MASK;
-        bool placeable = (rom_pa >= ROM_PA && rom_pa < ROM_WINDOW_END) || (rom_pa >= ROM_CARD_PA && rom_pa < ROM_CARD_END);
-        if (rom_size < 16 || !placeable || rom_size > window_end - rom_pa) {
-            snprintf(error, error_size, "ROM size %zu is not a Velo 1 nk.bin", rom_size);
-            return NULL;
-        }
-        regions[0].pa = rom_pa;
-        regions[0].size = (uint32_t)((rom_size + 4095) & ~(size_t)4095);
-        regions[0].data = malloc(regions[0].size);
-        memset(regions[0].data, 0xFF, regions[0].size);
-        memcpy(regions[0].data, rom, rom_size);
-        region_count = 1;
+static bool raw_rom_region(const uint8_t *rom, size_t rom_size, rom_region_t *region, uint32_t *start, char *error, size_t error_size) {
+    uint32_t window_end = ROM_WINDOW_END;
+    if (rom_size >= 16 && find_image_start(rom, rom_size, start)) window_end = ROM_CARD_END;
+    uint32_t rom_pa = *start & KSEG_PA_MASK;
+    bool placeable = (rom_pa >= ROM_PA && rom_pa < ROM_WINDOW_END) || (rom_pa >= ROM_CARD_PA && rom_pa < ROM_CARD_END);
+    if (rom_size < 16 || !placeable || rom_size > window_end - rom_pa) {
+        snprintf(error, error_size, "ROM size %zu is not a Velo 1 nk.bin", rom_size);
+        return false;
     }
+    region->pa = rom_pa;
+    region->size = (uint32_t)rom_size;
+    return true;
+}
+
+static machine_t *machine_build(rom_region_t regions[2], int region_count, uint32_t start, const uint8_t *rom, size_t rom_size,
+                                uint8_t *dram, uint32_t dram_size, bool in_place) {
     machine_t *m = calloc(1, sizeof *m);
+    if (!m) return NULL;
+    m->in_place = in_place;
     m->rom_pa = regions[0].pa;
     m->rom_size = regions[0].size;
     m->rom = regions[0].data;
@@ -1245,17 +1232,21 @@ machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size
         m->rom2 = regions[1].data;
     }
     m->entry_va = start;
-    m->dram_size = m->dram_size_next = DRAM_SIZE;
+    m->dram_size = m->dram_size_next = dram_size;
     m->eeprom_scl = m->eeprom_sda = m->eeprom_sda_out = true;
-    m->dram = calloc(1, m->dram_size);
+    m->dram = dram;
     m->rom_base_hash = 0xCBF29CE484222325ull;
     for (size_t i = 0; i < rom_size; i++) m->rom_base_hash = (m->rom_base_hash ^ rom[i]) * 0x100000001B3ull;
     m->rom_hash = m->rom_base_hash;
     m->screen = m->screen_next = (screen_size_t){ SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT };
     static const char shadowed_keyboard[] = "keybddr.dll.rom";
     m->key_layout = memmem(rom, rom_size, shadowed_keyboard, sizeof shadowed_keyboard - 1) ? KEY_LAYOUT_UPGRADE_CD : KEY_LAYOUT_ROM;
-    apply_rom_patches(m);
-    m->screen_supported = find_supported_screens(m);
+    if (in_place) {
+        m->screen_supported = 1u << screen_preset_index(m->screen);
+    } else {
+        apply_rom_patches(m);
+        m->screen_supported = find_supported_screens(m);
+    }
     m->cpu.bus.context = m;
     m->cpu.bus.read = bus_read;
     m->cpu.on_break = on_break;
@@ -1276,6 +1267,52 @@ machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size
     return m;
 }
 
+machine_t *machine_create_in_place(const uint8_t *rom, size_t rom_size, uint8_t *dram, uint32_t dram_size, char *error, size_t error_size) {
+    rom_region_t regions[2] = { { 0 } };
+    uint32_t start = ENTRY_VA;
+    if (rom_size >= 15 && !memcmp(rom, "B000FF\n", 7)) {
+        snprintf(error, error_size, "A B000FF image can't run in place");
+        return NULL;
+    }
+    if (dram_size < DRAM_SIZE || dram_size > DRAM_MAX || (dram_size & (dram_size - 1))) {
+        snprintf(error, error_size, "DRAM size %u is not supported", dram_size);
+        return NULL;
+    }
+    if (!raw_rom_region(rom, rom_size, &regions[0], &start, error, error_size)) return NULL;
+    regions[0].data = (uint8_t *)rom;
+    memset(dram, 0, dram_size);
+    machine_t *m = machine_build(regions, 1, start, rom, rom_size, dram, dram_size, true);
+    if (!m) snprintf(error, error_size, "Out of memory");
+    return m;
+}
+
+machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size_t error_size) {
+    rom_region_t regions[2] = { { 0 } };
+    int region_count;
+    uint32_t start = ENTRY_VA;
+    if (rom_size >= 15 && !memcmp(rom, "B000FF\n", 7)) {
+        region_count = load_b000ff(rom, rom_size, regions, &start, error, error_size);
+        if (region_count < 0) {
+            for (int i = 0; i < 2; i++) free(regions[i].data);
+            return NULL;
+        }
+        uint32_t entry_pa = start & KSEG_PA_MASK;
+        if (region_count == 2 && !(entry_pa >= regions[0].pa && entry_pa < regions[0].pa + regions[0].size)) {
+            rom_region_t swap = regions[0];
+            regions[0] = regions[1];
+            regions[1] = swap;
+        }
+    } else {
+        if (!raw_rom_region(rom, rom_size, &regions[0], &start, error, error_size)) return NULL;
+        regions[0].size = (uint32_t)((rom_size + 4095) & ~(size_t)4095);
+        regions[0].data = malloc(regions[0].size);
+        memset(regions[0].data, 0xFF, regions[0].size);
+        memcpy(regions[0].data, rom, rom_size);
+        region_count = 1;
+    }
+    return machine_build(regions, region_count, start, rom, rom_size, calloc(1, DRAM_SIZE), DRAM_SIZE, false);
+}
+
 void machine_destroy(machine_t *m) {
     if (!m) return;
     mailbox_clear(&m->mailbox);
@@ -1285,9 +1322,11 @@ void machine_destroy(machine_t *m) {
     if (m->vdisk_port.image) fclose(m->vdisk_port.image);
     screen_rom_t roms[2];
     screen_rom_revert(roms, screen_roms(m, roms), &m->screen_patch);
-    free(m->dram);
-    free(m->rom);
-    free(m->rom2);
+    if (!m->in_place) {
+        free(m->dram);
+        free(m->rom);
+        free(m->rom2);
+    }
     free(m);
 }
 
@@ -1465,31 +1504,39 @@ static uint32_t lcd_shade(const machine_t *m, uint32_t raw, uint32_t bpp) {
     return on_duty;
 }
 
-bool machine_screen(machine_t *m, uint8_t *levels) {
+bool machine_lcd_format(machine_t *m, machine_lcd_t *lcd) {
     uint32_t ctl1 = m->regs[0x28 / 4], ctl2 = m->regs[0x2C / 4];
+    if (!(ctl1 & LCD_ENVID)) return false;
+    lcd->bpp = 1u << ((ctl1 >> 6) & 3);
+    lcd->width = (((ctl2 >> 12) & 0x1FF) + 1) * ((ctl1 & LCD_DISP8) ? 8 : 4);
+    lcd->height = (ctl2 & 0x3FF) + 1;
+    lcd->base = m->regs[0x30 / 4] & 0xFFFFFFF0u;
+    lcd->stride = lcd->width * lcd->bpp / 8;
+    memset(lcd->shades, 0, sizeof lcd->shades);
+    for (uint32_t raw = 0; raw < (1u << lcd->bpp) && raw < 16; raw++) {
+        uint32_t on_duty = lcd_shade(m, raw, lcd->bpp);
+        lcd->shades[raw] = lcd->bpp == 4 ? (uint8_t)on_duty : (uint8_t)((on_duty * 3 + 7) / 15 * 5);
+    }
+    return true;
+}
+
+bool machine_screen(machine_t *m, uint8_t *levels) {
     int screen_width = m->screen.width, screen_height = m->screen.height;
-    if (!(ctl1 & LCD_ENVID)) {
+    machine_lcd_t lcd;
+    if (!machine_lcd_format(m, &lcd)) {
         memset(levels, 0, (size_t)screen_width * screen_height);
         return false;
     }
-    uint32_t bpp = 1u << ((ctl1 >> 6) & 3);
-    uint32_t width = (((ctl2 >> 12) & 0x1FF) + 1) * ((ctl1 & LCD_DISP8) ? 8 : 4);
-    uint32_t height = (ctl2 & 0x3FF) + 1;
-    uint32_t base = m->regs[0x30 / 4] & 0xFFFFFFF0u;
-    uint32_t stride = width * bpp / 8;
-    uint8_t shades[16];
-    for (uint32_t raw = 0; raw < (1u << bpp); raw++) {
-        uint32_t on_duty = lcd_shade(m, raw, bpp);
-        shades[raw] = bpp == 4 ? (uint8_t)on_duty : (uint8_t)((on_duty * 3 + 7) / 15 * 5);
-    }
+    uint32_t bpp = lcd.bpp;
     for (int y = 0; y < screen_height; y++) {
         for (int x = 0; x < screen_width; x++) {
             uint8_t level = 0;
-            if ((uint32_t)x < width && (uint32_t)y < height) {
+            if ((uint32_t)x < lcd.width && (uint32_t)y < lcd.height) {
                 uint32_t bit = (uint32_t)x * bpp;
-                uint32_t pa = base + (uint32_t)y * stride + bit / 8;
+                uint32_t pa = lcd.base + (uint32_t)y * lcd.stride + bit / 8;
                 uint32_t byte = pa < DRAM_DECODE_END ? m->dram[pa & (m->dram_size - 1)] : 0;
-                level = shades[(byte >> (8 - bpp - bit % 8)) & ((1u << bpp) - 1)];
+                uint32_t raw = (byte >> (8 - bpp - bit % 8)) & ((1u << bpp) - 1);
+                level = raw < 16 ? lcd.shades[raw] : 0;
             }
             levels[y * screen_width + x] = level;
         }
@@ -1786,6 +1833,7 @@ bool machine_load(machine_t *m, const char *path, int64_t *host_time) {
         }
         if (bad_card) machine_logf(m, "state: card DRAM has an unsupported size\n");
         ok = has_dram && !bad_card;
+        if (ok && saved_dram != m->dram_size && m->in_place) ok = false;
         if (ok && saved_dram != m->dram_size) {
             uint8_t *dram = calloc(1, saved_dram);
             if (!dram) ok = false;
@@ -1915,6 +1963,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     uint32_t rom_size = m->rom_size, rom_pa = m->rom_pa, entry_va = m->entry_va;
     uint8_t *rom2 = m->rom2;
     uint32_t rom2_size = m->rom2_size, rom2_pa = m->rom2_pa;
+    bool in_place = m->in_place;
     uint64_t rom_hash = m->rom_hash, rom_base_hash = m->rom_base_hash;
     screen_size_t screen = m->screen, screen_next = m->screen_next;
     screen_patch_t screen_patch = m->screen_patch;
@@ -1961,6 +2010,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     m->rom2 = rom2;
     m->rom2_size = rom2_size;
     m->rom2_pa = rom2_pa;
+    m->in_place = in_place;
     m->entry_va = entry_va;
     m->rom_hash = rom_hash;
     m->rom_base_hash = rom_base_hash;
@@ -2021,6 +2071,7 @@ void machine_set_memory(machine_t *m, uint32_t megabytes) {
         case 32: bank0 = 16; card = 16; break;
         default: return;
     }
+    if (m->in_place && bank0 << 20 != m->dram_size) return;
     m->dram_size_next = bank0 << 20;
     m->card_dram_size_next = card << 20;
     if (m->cpu.cycles == 0 && (m->dram_size_next != m->dram_size || m->card_dram_size_next != m->card_dram_size)) machine_reset(m);
