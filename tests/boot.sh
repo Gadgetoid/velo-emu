@@ -110,7 +110,7 @@ if pkg-config --exists slirp; then
     for attempt in 1 2 3 4 5 6 7 8 9 10; do ./velo-rapi --socket="$SOCKET" info >/dev/null 2>&1 && break; sleep 1; done
     ./velo-rapi --socket="$SOCKET" baud 115200 && ./velo-rapi --socket="$SOCKET" proxy on
     PROXY=$(./velo-rapi --socket="$SOCKET" reg get HKCU/Software/Apps/PocketIE ProxyServer)
-    { for i in $(seq 600); do echo "line $i of a file read back from a saved state"; done; head -c 6000 /dev/urandom; } > "$OUT/mixed.bin"
+    { for i in $(seq 600); do echo "line $i of a file read back from a saved state"; done; head -c 8192 /dev/zero; head -c 6000 /dev/urandom; } > "$OUT/mixed.bin"
     ./velo-rapi --socket="$SOCKET" put "$OUT/mixed.bin"
     kill -TERM $EMULATOR
     wait $EMULATOR

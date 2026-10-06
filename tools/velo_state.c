@@ -418,6 +418,12 @@ static uint8_t *read_file(const store_t *store, const node_t *node, uint32_t *le
     }
     uint32_t chunks = get16(info.data + 2) + 1u, at = 0;
     for (uint32_t i = 0; i < chunks && at < *length; i++) {
+        if (8 + 2 * i + 2 <= info.size && get16(info.data + 8 + 2 * i) == 0) {
+            uint32_t take = *length - at < CHUNK_SIZE ? *length - at : CHUNK_SIZE;
+            memset(data + at, 0, take);
+            at += take;
+            continue;
+        }
         if (8 + 2 * i + 2 > info.size || !read_object(store, get16(info.data + 8 + 2 * i), &chunk) || chunk.type != OBJECT_CHUNK || chunk.size < 4) {
             free(data);
             return NULL;
