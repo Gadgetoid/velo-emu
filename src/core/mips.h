@@ -92,6 +92,9 @@ struct mips_cpu {
     uint32_t next_pc;
     bool     in_delay_slot;
     bool     next_in_delay_slot;
+    uint32_t current_pc;
+    bool     current_in_delay_slot;
+    uint32_t epoch;
     uint32_t cp0[32];
     uint32_t external_ip;
     mips_tlb_entry_t tlb[MIPS_TLB_ENTRIES];

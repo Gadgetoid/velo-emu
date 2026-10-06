@@ -124,26 +124,25 @@ static void raise_exception(mips_cpu_t *cpu, uint32_t code, uint32_t faulting_pc
     cpu->next_pc = vector + 4;
     cpu->next_in_delay_slot = false;
     cpu->fault = true;
+    cpu->epoch++;
 }
-
-static uint32_t current_pc;
-static bool current_in_delay_slot;
 
 static void address_fault(mips_cpu_t *cpu, uint32_t code, uint32_t va) {
     cpu->cp0[CP0_BADVADDR] = va;
-    raise_exception(cpu, code, current_pc, current_in_delay_slot);
+    raise_exception(cpu, code, cpu->current_pc, cpu->current_in_delay_slot);
 }
 
 static void tlb_fault(mips_cpu_t *cpu, uint32_t code, uint32_t va) {
     cpu->cp0[CP0_BADVADDR] = va;
     cpu->cp0[CP0_CONTEXT] = (cpu->cp0[CP0_CONTEXT] & CONTEXT_PTE_BASE) | ((va >> 10) & CONTEXT_BAD_VPN);
     cpu->cp0[CP0_ENTRYHI] = (cpu->cp0[CP0_ENTRYHI] & ~ENTRYHI_VPN_MASK) | (va & ENTRYHI_VPN_MASK);
-    raise_exception(cpu, code, current_pc, current_in_delay_slot);
+    raise_exception(cpu, code, cpu->current_pc, cpu->current_in_delay_slot);
 }
 
 typedef enum { TRANSLATE_OK, TRANSLATE_ADDRESS, TRANSLATE_MISS, TRANSLATE_INVALID, TRANSLATE_MODIFIED } translate_result_t;
 
 void mips_flush_translations(mips_cpu_t *cpu) {
+    cpu->epoch++;
     memset(cpu->page_cache, 0, sizeof cpu->page_cache);
     memset(cpu->fetch_cache, 0, sizeof cpu->fetch_cache);
 }
@@ -187,19 +186,29 @@ static bool translate_or_fault(mips_cpu_t *cpu, uint32_t va, bool write, uint32_
     return false;
 }
 
-static uint32_t read_dram(const uint8_t *base, int size) {
-    if (size == 4) return (uint32_t)base[0] | (uint32_t)base[1] << 8 | (uint32_t)base[2] << 16 | (uint32_t)base[3] << 24;
-    if (size == 2) return (uint32_t)base[0] | (uint32_t)base[1] << 8;
+static inline uint32_t read_dram(const uint8_t *base, int size) {
+    if (size == 4) {
+        uint32_t word;
+        memcpy(&word, base, 4);
+        return word;
+    }
+    if (size == 2) {
+        uint16_t half;
+        memcpy(&half, base, 2);
+        return half;
+    }
     return base[0];
 }
 
-static void write_dram(uint8_t *base, int size, uint32_t value) {
-    base[0] = (uint8_t)value;
-    if (size == 1) return;
-    base[1] = (uint8_t)(value >> 8);
-    if (size == 2) return;
-    base[2] = (uint8_t)(value >> 16);
-    base[3] = (uint8_t)(value >> 24);
+static inline void write_dram(uint8_t *base, int size, uint32_t value) {
+    if (size == 4) {
+        memcpy(base, &value, 4);
+    } else if (size == 2) {
+        uint16_t half = (uint16_t)value;
+        memcpy(base, &half, 2);
+    } else {
+        base[0] = (uint8_t)value;
+    }
 }
 
 static bool load(mips_cpu_t *cpu, uint32_t va, int size, uint32_t *value) {
@@ -216,7 +225,7 @@ static bool load(mips_cpu_t *cpu, uint32_t va, int size, uint32_t *value) {
         return true;
     }
     if (!cpu->bus.read(cpu->bus.context, pa, size, value)) {
-        raise_exception(cpu, MIPS_EXC_DBE, current_pc, current_in_delay_slot);
+        raise_exception(cpu, MIPS_EXC_DBE, cpu->current_pc, cpu->current_in_delay_slot);
         return false;
     }
     return true;
@@ -236,7 +245,7 @@ static bool store(mips_cpu_t *cpu, uint32_t va, int size, uint32_t value) {
         return true;
     }
     if (!cpu->bus.write(cpu->bus.context, pa, size, value)) {
-        raise_exception(cpu, MIPS_EXC_DBE, current_pc, current_in_delay_slot);
+        raise_exception(cpu, MIPS_EXC_DBE, cpu->current_pc, cpu->current_in_delay_slot);
         return false;
     }
     return true;
@@ -261,7 +270,7 @@ static bool fetch(mips_cpu_t *cpu, uint32_t va, uint32_t *instruction) {
         uint8_t *page = cpu->bus.fetch_page(cpu->bus.context, pa & ENTRYHI_VPN_MASK);
         if (!page) {
             if (!cpu->bus.read(cpu->bus.context, pa, 4, instruction)) {
-                raise_exception(cpu, MIPS_EXC_IBE, current_pc, current_in_delay_slot);
+                raise_exception(cpu, MIPS_EXC_IBE, cpu->current_pc, cpu->current_in_delay_slot);
                 return false;
             }
             return true;
@@ -299,7 +308,7 @@ static bool coprocessor_usable(mips_cpu_t *cpu, int unit) {
     uint32_t status = cpu->cp0[CP0_STATUS];
     if (unit == 0 && !(status & STATUS_KUC)) return true;
     if (status & (1u << (28 + unit))) return true;
-    raise_exception(cpu, MIPS_EXC_CPU, current_pc, current_in_delay_slot);
+    raise_exception(cpu, MIPS_EXC_CPU, cpu->current_pc, cpu->current_in_delay_slot);
     cpu->cp0[CP0_CAUSE] = (cpu->cp0[CP0_CAUSE] & ~(3u << CAUSE_CE_SHIFT)) | ((uint32_t)unit << CAUSE_CE_SHIFT);
     return false;
 }
@@ -313,6 +322,7 @@ static uint32_t read_cp0(mips_cpu_t *cpu, int reg) {
 }
 
 static void write_cp0(mips_cpu_t *cpu, int reg, uint32_t value) {
+    cpu->epoch++;
     switch (reg) {
         case CP0_RANDOM:
         case CP0_BADVADDR:
@@ -358,11 +368,11 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
         case 0x06: r[rd] = r[rt] >> (r[rs] & 31); break;
         case 0x07: r[rd] = (uint32_t)((int32_t)r[rt] >> (r[rs] & 31)); break;
         case 0x08: branch(cpu, true, r[rs]); break;
-        case 0x09: { uint32_t target = r[rs]; r[rd] = current_pc + 8; branch(cpu, true, target); break; }
-        case 0x0C: raise_exception(cpu, MIPS_EXC_SYS, current_pc, current_in_delay_slot); break;
+        case 0x09: { uint32_t target = r[rs]; r[rd] = cpu->current_pc + 8; branch(cpu, true, target); break; }
+        case 0x0C: raise_exception(cpu, MIPS_EXC_SYS, cpu->current_pc, cpu->current_in_delay_slot); break;
         case 0x0D:
             if (cpu->on_break && cpu->on_break(cpu->bus.context, (op >> 6) & 0xFFFFFu)) break;
-            raise_exception(cpu, MIPS_EXC_BP, current_pc, current_in_delay_slot);
+            raise_exception(cpu, MIPS_EXC_BP, cpu->current_pc, cpu->current_in_delay_slot);
             break;
         case 0x0F: break;
         case 0x10: r[rd] = cpu->hi; break;
@@ -384,14 +394,14 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
             break;
         case 0x20: {
             uint32_t sum = r[rs] + r[rt];
-            if (~(r[rs] ^ r[rt]) & (r[rs] ^ sum) & 0x80000000u) raise_exception(cpu, MIPS_EXC_OV, current_pc, current_in_delay_slot);
+            if (~(r[rs] ^ r[rt]) & (r[rs] ^ sum) & 0x80000000u) raise_exception(cpu, MIPS_EXC_OV, cpu->current_pc, cpu->current_in_delay_slot);
             else r[rd] = sum;
             break;
         }
         case 0x21: r[rd] = r[rs] + r[rt]; break;
         case 0x22: {
             uint32_t difference = r[rs] - r[rt];
-            if ((r[rs] ^ r[rt]) & (r[rs] ^ difference) & 0x80000000u) raise_exception(cpu, MIPS_EXC_OV, current_pc, current_in_delay_slot);
+            if ((r[rs] ^ r[rt]) & (r[rs] ^ difference) & 0x80000000u) raise_exception(cpu, MIPS_EXC_OV, cpu->current_pc, cpu->current_in_delay_slot);
             else r[rd] = difference;
             break;
         }
@@ -402,34 +412,34 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
         case 0x27: r[rd] = ~(r[rs] | r[rt]); break;
         case 0x2A: r[rd] = (int32_t)r[rs] < (int32_t)r[rt]; break;
         case 0x2B: r[rd] = r[rs] < r[rt]; break;
-        default: raise_exception(cpu, MIPS_EXC_RI, current_pc, current_in_delay_slot); break;
+        default: raise_exception(cpu, MIPS_EXC_RI, cpu->current_pc, cpu->current_in_delay_slot); break;
         }
         break;
     case 0x01: {
-        uint32_t target = current_pc + 4 + ((uint32_t)simm << 2);
+        uint32_t target = cpu->current_pc + 4 + ((uint32_t)simm << 2);
         bool less = (int32_t)r[rs] < 0;
         switch (rt) {
         case 0x00: branch(cpu, less, target); break;
         case 0x01: branch(cpu, !less, target); break;
         case 0x02: branch_likely(cpu, less, target); break;
         case 0x03: branch_likely(cpu, !less, target); break;
-        case 0x10: r[31] = current_pc + 8; branch(cpu, less, target); break;
-        case 0x11: r[31] = current_pc + 8; branch(cpu, !less, target); break;
-        case 0x12: r[31] = current_pc + 8; branch_likely(cpu, less, target); break;
-        case 0x13: r[31] = current_pc + 8; branch_likely(cpu, !less, target); break;
-        default: raise_exception(cpu, MIPS_EXC_RI, current_pc, current_in_delay_slot); break;
+        case 0x10: r[31] = cpu->current_pc + 8; branch(cpu, less, target); break;
+        case 0x11: r[31] = cpu->current_pc + 8; branch(cpu, !less, target); break;
+        case 0x12: r[31] = cpu->current_pc + 8; branch_likely(cpu, less, target); break;
+        case 0x13: r[31] = cpu->current_pc + 8; branch_likely(cpu, !less, target); break;
+        default: raise_exception(cpu, MIPS_EXC_RI, cpu->current_pc, cpu->current_in_delay_slot); break;
         }
         break;
     }
-    case 0x02: branch(cpu, true, ((current_pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
-    case 0x03: r[31] = current_pc + 8; branch(cpu, true, ((current_pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
-    case 0x04: branch(cpu, r[rs] == r[rt], current_pc + 4 + ((uint32_t)simm << 2)); break;
-    case 0x05: branch(cpu, r[rs] != r[rt], current_pc + 4 + ((uint32_t)simm << 2)); break;
-    case 0x06: branch(cpu, (int32_t)r[rs] <= 0, current_pc + 4 + ((uint32_t)simm << 2)); break;
-    case 0x07: branch(cpu, (int32_t)r[rs] > 0, current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x02: branch(cpu, true, ((cpu->current_pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
+    case 0x03: r[31] = cpu->current_pc + 8; branch(cpu, true, ((cpu->current_pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
+    case 0x04: branch(cpu, r[rs] == r[rt], cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x05: branch(cpu, r[rs] != r[rt], cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x06: branch(cpu, (int32_t)r[rs] <= 0, cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x07: branch(cpu, (int32_t)r[rs] > 0, cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
     case 0x08: {
         uint32_t sum = r[rs] + (uint32_t)simm;
-        if (~(r[rs] ^ (uint32_t)simm) & (r[rs] ^ sum) & 0x80000000u) raise_exception(cpu, MIPS_EXC_OV, current_pc, current_in_delay_slot);
+        if (~(r[rs] ^ (uint32_t)simm) & (r[rs] ^ sum) & 0x80000000u) raise_exception(cpu, MIPS_EXC_OV, cpu->current_pc, cpu->current_in_delay_slot);
         else r[rt] = sum;
         break;
     }
@@ -450,14 +460,15 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
             case 0x08: tlb_probe(cpu); break;
             case 0x10:
                 cpu->cp0[CP0_STATUS] = (cpu->cp0[CP0_STATUS] & ~0xFu) | ((cpu->cp0[CP0_STATUS] >> 2) & 0xFu);
+                cpu->epoch++;
                 break;
-            default: raise_exception(cpu, MIPS_EXC_RI, current_pc, current_in_delay_slot); break;
+            default: raise_exception(cpu, MIPS_EXC_RI, cpu->current_pc, cpu->current_in_delay_slot); break;
             }
         } else {
             switch (rs) {
             case 0x00: if (rt) r[rt] = read_cp0(cpu, (int)rd); break;
             case 0x04: write_cp0(cpu, (int)rd, r[rt]); break;
-            default: raise_exception(cpu, MIPS_EXC_RI, current_pc, current_in_delay_slot); break;
+            default: raise_exception(cpu, MIPS_EXC_RI, cpu->current_pc, cpu->current_in_delay_slot); break;
             }
         }
         break;
@@ -465,12 +476,12 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
     case 0x12:
     case 0x13:
         coprocessor_usable(cpu, (int)((op >> 26) & 3));
-        if (!cpu->fault) raise_exception(cpu, MIPS_EXC_RI, current_pc, current_in_delay_slot);
+        if (!cpu->fault) raise_exception(cpu, MIPS_EXC_RI, cpu->current_pc, cpu->current_in_delay_slot);
         break;
-    case 0x14: branch_likely(cpu, r[rs] == r[rt], current_pc + 4 + ((uint32_t)simm << 2)); break;
-    case 0x15: branch_likely(cpu, r[rs] != r[rt], current_pc + 4 + ((uint32_t)simm << 2)); break;
-    case 0x16: branch_likely(cpu, (int32_t)r[rs] <= 0, current_pc + 4 + ((uint32_t)simm << 2)); break;
-    case 0x17: branch_likely(cpu, (int32_t)r[rs] > 0, current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x14: branch_likely(cpu, r[rs] == r[rt], cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x15: branch_likely(cpu, r[rs] != r[rt], cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x16: branch_likely(cpu, (int32_t)r[rs] <= 0, cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
+    case 0x17: branch_likely(cpu, (int32_t)r[rs] > 0, cpu->current_pc + 4 + ((uint32_t)simm << 2)); break;
     case 0x20: if (load(cpu, r[rs] + (uint32_t)simm, 1, &value)) r[rt] = (uint32_t)(int8_t)value; break;
     case 0x21: if (load(cpu, r[rs] + (uint32_t)simm, 2, &value)) r[rt] = (uint32_t)(int16_t)value; break;
     case 0x22: {
@@ -512,7 +523,7 @@ static void execute(mips_cpu_t *cpu, uint32_t op) {
         break;
     }
     case 0x2F: break;
-    default: raise_exception(cpu, MIPS_EXC_RI, current_pc, current_in_delay_slot); break;
+    default: raise_exception(cpu, MIPS_EXC_RI, cpu->current_pc, cpu->current_in_delay_slot); break;
     }
     r[0] = 0;
 }
@@ -543,10 +554,7 @@ static bool debug_stops_before(mips_cpu_t *cpu, uint32_t pc) {
     return debug->before(debug->context, pc);
 }
 
-void mips_run(mips_cpu_t *cpu, uint64_t until_cycle) {
-    cpu->yield = false;
-    memset(cpu->watch_filter, 0, sizeof cpu->watch_filter);
-    for (int w = 0; w < cpu->watch_count; w++) cpu->watch_filter[watch_bit(cpu->watch[w]) >> 5] |= 1u << (watch_bit(cpu->watch[w]) & 31);
+static void run_checked(mips_cpu_t *cpu, uint64_t until_cycle) {
     uint32_t speed = cpu->speed ? cpu->speed : 1;
     while (cpu->cycles < until_cycle && !cpu->yield) {
         if (++cpu->speed_count >= speed) {
@@ -554,44 +562,331 @@ void mips_run(mips_cpu_t *cpu, uint64_t until_cycle) {
             cpu->cycles++;
         }
         cpu->fault = false;
-        current_pc = cpu->pc;
-        current_in_delay_slot = cpu->next_in_delay_slot;
+        cpu->current_pc = cpu->pc;
+        cpu->current_in_delay_slot = cpu->next_in_delay_slot;
         if (interrupt_pending(cpu)) {
-            raise_exception(cpu, MIPS_EXC_INT, current_pc, current_in_delay_slot);
+            raise_exception(cpu, MIPS_EXC_INT, cpu->current_pc, cpu->current_in_delay_slot);
             continue;
         }
         uint32_t instruction;
-        if (!fetch(cpu, current_pc, &instruction)) continue;
-        uint32_t bit = watch_bit(current_pc);
+        if (!fetch(cpu, cpu->current_pc, &instruction)) continue;
+        uint32_t bit = watch_bit(cpu->current_pc);
         for (int w = 0; (cpu->watch_filter[bit >> 5] >> (bit & 31) & 1) && w < cpu->watch_count; w++) {
             uint32_t va = cpu->watch[w];
-            bool slot_relative = va < MIPS_SLOT_SIZE && current_pc < 0x80000000u;
-            if (slot_relative ? (current_pc & (MIPS_SLOT_SIZE - 1)) == va : current_pc == va) cpu->on_watch(cpu->bus.context, current_pc);
+            bool slot_relative = va < MIPS_SLOT_SIZE && cpu->current_pc < 0x80000000u;
+            if (slot_relative ? (cpu->current_pc & (MIPS_SLOT_SIZE - 1)) == va : cpu->current_pc == va) cpu->on_watch(cpu->bus.context, cpu->current_pc);
         }
         if (cpu->fault) continue;
         if (cpu->debug) {
-            if (debug_stops_before(cpu, current_pc)) {
+            if (debug_stops_before(cpu, cpu->current_pc)) {
                 cpu->debug->stop = true;
                 break;
             }
-            cpu->debug->pc = current_pc;
+            cpu->debug->pc = cpu->current_pc;
         }
         uint32_t next_pc = cpu->next_pc;
         bool in_delay_slot = cpu->in_delay_slot;
         cpu->pc = cpu->next_pc;
         cpu->next_pc = cpu->pc + 4;
         cpu->next_in_delay_slot = false;
-        cpu->in_delay_slot = current_in_delay_slot;
+        cpu->in_delay_slot = cpu->current_in_delay_slot;
         execute(cpu, instruction);
         if (cpu->debug && cpu->debug->stop) {
             if (cpu->debug->undo) {
                 cpu->debug->undo = false;
-                cpu->pc = current_pc;
+                cpu->pc = cpu->current_pc;
                 cpu->next_pc = next_pc;
-                cpu->next_in_delay_slot = current_in_delay_slot;
+                cpu->next_in_delay_slot = cpu->current_in_delay_slot;
                 cpu->in_delay_slot = in_delay_slot;
             }
             break;
         }
     }
+}
+
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "guest memory is accessed as host words");
+
+#define WINDOW_NONE 1u
+#define WINDOW_MATCH_MASK 0xFFFFF003u
+
+typedef struct {
+    uint32_t pc, next_pc;
+    bool     delay, was_delay;
+    uint32_t current;
+    bool     current_delay;
+    uint64_t cycles;
+    uint32_t speed_count;
+} hot_t;
+
+static inline void hot_save(mips_cpu_t *cpu, const hot_t *hot) {
+    cpu->pc = hot->pc;
+    cpu->next_pc = hot->next_pc;
+    cpu->next_in_delay_slot = hot->delay;
+    cpu->in_delay_slot = hot->was_delay;
+    cpu->current_pc = hot->current;
+    cpu->current_in_delay_slot = hot->current_delay;
+    cpu->cycles = hot->cycles;
+    cpu->speed_count = hot->speed_count;
+    cpu->fault = false;
+}
+
+static inline void hot_load(const mips_cpu_t *cpu, hot_t *hot) {
+    hot->pc = cpu->pc;
+    hot->next_pc = cpu->next_pc;
+    hot->delay = cpu->next_in_delay_slot;
+    hot->was_delay = cpu->in_delay_slot;
+    hot->cycles = cpu->cycles;
+    hot->speed_count = cpu->speed_count;
+}
+
+static inline void hot_branch(hot_t *hot, bool taken, uint32_t target) {
+    if (taken) hot->next_pc = target;
+    hot->delay = true;
+}
+
+static inline void hot_branch_likely(hot_t *hot, bool taken, uint32_t target) {
+    if (taken) {
+        hot->next_pc = target;
+        hot->delay = true;
+    } else {
+        hot->pc = hot->next_pc;
+        hot->next_pc = hot->pc + 4;
+    }
+}
+
+static inline bool fast_translate(const mips_cpu_t *cpu, uint32_t va, uint32_t size, bool write, uint32_t *pa) {
+    if (va & (size - 1)) return false;
+    if (va >= 0x80000000u) {
+        if (cpu->cp0[CP0_STATUS] & STATUS_KUC) return false;
+        if (va < 0xC0000000u) {
+            *pa = va & 0x1FFFFFFFu;
+            return true;
+        }
+    }
+    uint32_t tag = (va & ENTRYHI_VPN_MASK) | tlb_pid(cpu) << 1 | 1;
+    const mips_page_cache_t *cached = &cpu->page_cache[(va >> 12) & (MIPS_PAGE_CACHE - 1)];
+    if (cached->tag != tag || (write && !cached->dirty)) return false;
+    *pa = cached->pfn | (va & 0xFFFu);
+    return true;
+}
+
+static inline bool fast_load(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t *value) {
+    uint32_t pa;
+    if (!fast_translate(cpu, va, size, false, &pa) || pa >= cpu->bus.dram_end) return false;
+    *value = read_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size);
+    return true;
+}
+
+static inline bool fast_store(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t value) {
+    uint32_t pa;
+    if (!fast_translate(cpu, va, size, true, &pa) || pa >= cpu->bus.dram_end) return false;
+    write_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size, value);
+    return true;
+}
+
+static inline bool execute_fast(mips_cpu_t *cpu, hot_t *hot, uint32_t op) {
+    uint32_t *r = cpu->gpr;
+    uint32_t rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31;
+    uint32_t simm = (uint32_t)sign16(op);
+    uint32_t pc = hot->current;
+    uint32_t value;
+
+    switch (op >> 26) {
+    case 0x00:
+        switch (op & 63) {
+        case 0x00: r[rd] = r[rt] << ((op >> 6) & 31); break;
+        case 0x02: r[rd] = r[rt] >> ((op >> 6) & 31); break;
+        case 0x03: r[rd] = (uint32_t)((int32_t)r[rt] >> ((op >> 6) & 31)); break;
+        case 0x04: r[rd] = r[rt] << (r[rs] & 31); break;
+        case 0x06: r[rd] = r[rt] >> (r[rs] & 31); break;
+        case 0x07: r[rd] = (uint32_t)((int32_t)r[rt] >> (r[rs] & 31)); break;
+        case 0x08: hot_branch(hot, true, r[rs]); break;
+        case 0x09: { uint32_t target = r[rs]; r[rd] = pc + 8; hot_branch(hot, true, target); break; }
+        case 0x10: r[rd] = cpu->hi; break;
+        case 0x11: cpu->hi = r[rs]; break;
+        case 0x12: r[rd] = cpu->lo; break;
+        case 0x13: cpu->lo = r[rs]; break;
+        case 0x18: { int64_t product = (int64_t)(int32_t)r[rs] * (int32_t)r[rt]; cpu->lo = (uint32_t)product; cpu->hi = (uint32_t)((uint64_t)product >> 32); if (rd) r[rd] = cpu->lo; break; }
+        case 0x19: { uint64_t product = (uint64_t)r[rs] * r[rt]; cpu->lo = (uint32_t)product; cpu->hi = (uint32_t)(product >> 32); if (rd) r[rd] = cpu->lo; break; }
+        case 0x1A: {
+            int32_t numerator = (int32_t)r[rs], denominator = (int32_t)r[rt];
+            if (denominator == 0) { cpu->lo = numerator < 0 ? 1 : 0xFFFFFFFFu; cpu->hi = (uint32_t)numerator; }
+            else if (numerator == INT32_MIN && denominator == -1) { cpu->lo = (uint32_t)INT32_MIN; cpu->hi = 0; }
+            else { cpu->lo = (uint32_t)(numerator / denominator); cpu->hi = (uint32_t)(numerator % denominator); }
+            break;
+        }
+        case 0x1B:
+            if (r[rt] == 0) { cpu->lo = 0xFFFFFFFFu; cpu->hi = r[rs]; }
+            else { cpu->lo = r[rs] / r[rt]; cpu->hi = r[rs] % r[rt]; }
+            break;
+        case 0x20: {
+            uint32_t sum = r[rs] + r[rt];
+            if (~(r[rs] ^ r[rt]) & (r[rs] ^ sum) & 0x80000000u) return false;
+            r[rd] = sum;
+            break;
+        }
+        case 0x21: r[rd] = r[rs] + r[rt]; break;
+        case 0x22: {
+            uint32_t difference = r[rs] - r[rt];
+            if ((r[rs] ^ r[rt]) & (r[rs] ^ difference) & 0x80000000u) return false;
+            r[rd] = difference;
+            break;
+        }
+        case 0x23: r[rd] = r[rs] - r[rt]; break;
+        case 0x24: r[rd] = r[rs] & r[rt]; break;
+        case 0x25: r[rd] = r[rs] | r[rt]; break;
+        case 0x26: r[rd] = r[rs] ^ r[rt]; break;
+        case 0x27: r[rd] = ~(r[rs] | r[rt]); break;
+        case 0x2A: r[rd] = (int32_t)r[rs] < (int32_t)r[rt]; break;
+        case 0x2B: r[rd] = r[rs] < r[rt]; break;
+        default: return false;
+        }
+        break;
+    case 0x01: {
+        uint32_t target = pc + 4 + (simm << 2);
+        bool less = (int32_t)r[rs] < 0;
+        switch (rt) {
+        case 0x00: hot_branch(hot, less, target); break;
+        case 0x01: hot_branch(hot, !less, target); break;
+        case 0x02: hot_branch_likely(hot, less, target); break;
+        case 0x03: hot_branch_likely(hot, !less, target); break;
+        case 0x10: r[31] = pc + 8; hot_branch(hot, less, target); break;
+        case 0x11: r[31] = pc + 8; hot_branch(hot, !less, target); break;
+        case 0x12: r[31] = pc + 8; hot_branch_likely(hot, less, target); break;
+        case 0x13: r[31] = pc + 8; hot_branch_likely(hot, !less, target); break;
+        default: return false;
+        }
+        break;
+    }
+    case 0x02: hot_branch(hot, true, ((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
+    case 0x03: r[31] = pc + 8; hot_branch(hot, true, ((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)); break;
+    case 0x04: hot_branch(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
+    case 0x05: hot_branch(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
+    case 0x06: hot_branch(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
+    case 0x07: hot_branch(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
+    case 0x08: {
+        uint32_t sum = r[rs] + simm;
+        if (~(r[rs] ^ simm) & (r[rs] ^ sum) & 0x80000000u) return false;
+        r[rt] = sum;
+        break;
+    }
+    case 0x09: r[rt] = r[rs] + simm; break;
+    case 0x0A: r[rt] = (int32_t)r[rs] < (int32_t)simm; break;
+    case 0x0B: r[rt] = r[rs] < simm; break;
+    case 0x0C: r[rt] = r[rs] & (op & 0xFFFFu); break;
+    case 0x0D: r[rt] = r[rs] | (op & 0xFFFFu); break;
+    case 0x0E: r[rt] = r[rs] ^ (op & 0xFFFFu); break;
+    case 0x0F: r[rt] = op << 16; break;
+    case 0x14: hot_branch_likely(hot, r[rs] == r[rt], pc + 4 + (simm << 2)); break;
+    case 0x15: hot_branch_likely(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
+    case 0x16: hot_branch_likely(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
+    case 0x17: hot_branch_likely(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
+    case 0x20: if (!fast_load(cpu, r[rs] + simm, 1, &value)) return false; r[rt] = (uint32_t)(int8_t)value; break;
+    case 0x21: if (!fast_load(cpu, r[rs] + simm, 2, &value)) return false; r[rt] = (uint32_t)(int16_t)value; break;
+    case 0x23: if (!fast_load(cpu, r[rs] + simm, 4, &value)) return false; r[rt] = value; break;
+    case 0x24: if (!fast_load(cpu, r[rs] + simm, 1, &value)) return false; r[rt] = value; break;
+    case 0x25: if (!fast_load(cpu, r[rs] + simm, 2, &value)) return false; r[rt] = value; break;
+    case 0x28: if (!fast_store(cpu, r[rs] + simm, 1, r[rt])) return false; break;
+    case 0x29: if (!fast_store(cpu, r[rs] + simm, 2, r[rt])) return false; break;
+    case 0x2B: if (!fast_store(cpu, r[rs] + simm, 4, r[rt])) return false; break;
+    default: return false;
+    }
+    r[0] = 0;
+    return true;
+}
+
+static bool page_watched(const mips_cpu_t *cpu, uint32_t pc) {
+    for (int w = 0; w < cpu->watch_count; w++) {
+        uint32_t va = cpu->watch[w];
+        if ((va >> 12) == (pc >> 12)) return true;
+        if (va < MIPS_SLOT_SIZE && pc < 0x80000000u && (va >> 12) == ((pc & (MIPS_SLOT_SIZE - 1)) >> 12)) return true;
+    }
+    return false;
+}
+
+static uint32_t fetch_tag(const mips_cpu_t *cpu, uint32_t va) {
+    uint32_t user = (cpu->cp0[CP0_STATUS] & STATUS_KUC) != 0;
+    return (va & ENTRYHI_VPN_MASK) | tlb_pid(cpu) << 2 | user << 1 | 1;
+}
+
+static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
+    uint32_t speed = cpu->speed ? cpu->speed : 1;
+    hot_t hot;
+    hot_load(cpu, &hot);
+    uint32_t window_va = WINDOW_NONE, window_epoch = 0;
+    const uint8_t *window = NULL;
+    bool window_watched = false;
+    bool settled = false, interrupt = false;
+    while (hot.cycles < until_cycle) {
+        if (!settled) {
+            if (cpu->yield) break;
+            interrupt = interrupt_pending(cpu);
+            if (cpu->epoch != window_epoch) window_va = WINDOW_NONE;
+            settled = true;
+        }
+        if (++hot.speed_count >= speed) {
+            hot.speed_count = 0;
+            hot.cycles++;
+        }
+        hot.current = hot.pc;
+        hot.current_delay = hot.delay;
+        if (interrupt) {
+            hot_save(cpu, &hot);
+            raise_exception(cpu, MIPS_EXC_INT, hot.current, hot.current_delay);
+            hot_load(cpu, &hot);
+            settled = false;
+            continue;
+        }
+        uint32_t instruction;
+        if ((hot.current & WINDOW_MATCH_MASK) == window_va) {
+            memcpy(&instruction, window + (hot.current & 0xFFFu), 4);
+        } else {
+            hot_save(cpu, &hot);
+            bool fetched = fetch(cpu, hot.current, &instruction);
+            hot_load(cpu, &hot);
+            settled = false;
+            if (!fetched) continue;
+            const mips_fetch_cache_t *cached = &cpu->fetch_cache[(hot.current >> 12) & (MIPS_FETCH_CACHE - 1)];
+            if (cached->tag == fetch_tag(cpu, hot.current) && cached->page) {
+                window_va = hot.current & ENTRYHI_VPN_MASK;
+                window = cached->page;
+                window_epoch = cpu->epoch;
+                window_watched = page_watched(cpu, hot.current);
+            }
+        }
+        if (window_watched) {
+            uint32_t bit = watch_bit(hot.current);
+            bool faulted = false;
+            for (int w = 0; (cpu->watch_filter[bit >> 5] >> (bit & 31) & 1) && w < cpu->watch_count; w++) {
+                uint32_t va = cpu->watch[w];
+                bool slot_relative = va < MIPS_SLOT_SIZE && hot.current < 0x80000000u;
+                if (slot_relative ? (hot.current & (MIPS_SLOT_SIZE - 1)) == va : hot.current == va) {
+                    hot_save(cpu, &hot);
+                    cpu->on_watch(cpu->bus.context, hot.current);
+                    faulted = faulted || cpu->fault;
+                    hot_load(cpu, &hot);
+                    settled = false;
+                }
+            }
+            if (faulted) continue;
+        }
+        hot.pc = hot.next_pc;
+        hot.next_pc = hot.pc + 4;
+        hot.delay = false;
+        hot.was_delay = hot.current_delay;
+        if (execute_fast(cpu, &hot, instruction)) continue;
+        hot_save(cpu, &hot);
+        execute(cpu, instruction);
+        hot_load(cpu, &hot);
+        settled = false;
+    }
+    hot_save(cpu, &hot);
+}
+
+void mips_run(mips_cpu_t *cpu, uint64_t until_cycle) {
+    cpu->yield = false;
+    memset(cpu->watch_filter, 0, sizeof cpu->watch_filter);
+    for (int w = 0; w < cpu->watch_count; w++) cpu->watch_filter[watch_bit(cpu->watch[w]) >> 5] |= 1u << (watch_bit(cpu->watch[w]) & 31);
+    if (cpu->debug) run_checked(cpu, until_cycle);
+    else run_fast(cpu, until_cycle);
 }
