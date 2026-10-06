@@ -613,8 +613,6 @@ static void run_checked(mips_cpu_t *cpu, uint64_t until_cycle) {
 
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "guest memory is accessed as host words");
 
-#define WINDOW_NONE 1u
-#define WINDOW_MATCH_MASK 0xFFFFF003u
 #define BUDGET_MAX 0x7FFFFFFFu
 #define FLAG_DELAY     1u
 #define FLAG_WAS_DELAY 2u
@@ -627,14 +625,19 @@ typedef struct {
 static void __attribute__((noinline)) sync_out(mips_cpu_t *cpu, const flow_t *flow, uint32_t current, bool current_delay, uint32_t budget) {
     uint32_t speed = cpu->speed ? cpu->speed : 1;
     uint32_t total = cpu->run_base_count + (cpu->run_base_budget - budget - cpu->run_stash);
+    if (speed == 1) {
+        cpu->cycles = cpu->run_base_cycles + total;
+        cpu->speed_count = 0;
+    } else {
+        cpu->cycles = cpu->run_base_cycles + total / speed;
+        cpu->speed_count = total % speed;
+    }
     cpu->pc = flow->pc;
     cpu->next_pc = flow->next_pc;
     cpu->next_in_delay_slot = (flow->flags & FLAG_DELAY) != 0;
     cpu->in_delay_slot = (flow->flags & FLAG_WAS_DELAY) != 0;
     cpu->current_pc = current;
     cpu->current_in_delay_slot = current_delay;
-    cpu->cycles = cpu->run_base_cycles + total / speed;
-    cpu->speed_count = total % speed;
     cpu->run_stash = 0;
     cpu->fault = false;
 }
@@ -684,25 +687,42 @@ static ALWAYS_INLINE bool fast_translate(const mips_cpu_t *cpu, uint32_t va, uin
     return true;
 }
 
-static ALWAYS_INLINE bool fast_load(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t *value) {
+typedef enum { FAST_SLOW, FAST_DONE, FAST_BUS } fast_result_t;
+
+typedef struct {
+    uint32_t pa, size, value, reg;
+    bool     write, sign;
+} bus_access_t;
+
+static ALWAYS_INLINE fast_result_t fast_load(mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t reg, bool sign, bus_access_t *access) {
     uint32_t pa;
-    if (!fast_translate(cpu, va, size, false, &pa) || pa >= cpu->bus.dram_end) return false;
-    *value = read_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size);
-    return true;
+    if (!fast_translate(cpu, va, size, false, &pa)) return FAST_SLOW;
+    if (pa >= cpu->bus.dram_end) {
+        *access = (bus_access_t){ pa, size, 0, reg, false, sign };
+        return FAST_BUS;
+    }
+    uint32_t value = read_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size);
+    if (sign) value = size == 1 ? (uint32_t)(int8_t)value : (uint32_t)(int16_t)value;
+    cpu->gpr[reg] = value;
+    return FAST_DONE;
 }
 
-static ALWAYS_INLINE bool fast_store(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t value) {
+static ALWAYS_INLINE fast_result_t fast_store(const mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t value, bus_access_t *access) {
     uint32_t pa;
-    if (!fast_translate(cpu, va, size, true, &pa) || pa >= cpu->bus.dram_end) return false;
+    if (!fast_translate(cpu, va, size, true, &pa)) return FAST_SLOW;
+    if (pa >= cpu->bus.dram_end) {
+        *access = (bus_access_t){ pa, size, value, 0, true, false };
+        return FAST_BUS;
+    }
     write_dram(cpu->bus.dram + (pa & cpu->bus.dram_mask), (int)size, value);
-    return true;
+    return FAST_DONE;
 }
 
-static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc, uint32_t op) {
+static ALWAYS_INLINE fast_result_t execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc, uint32_t op, bus_access_t *access) {
     uint32_t *r = cpu->gpr;
     uint32_t rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31;
     uint32_t simm = (uint32_t)sign16(op);
-    uint32_t value;
+    fast_result_t result = FAST_DONE;
 
     switch (op >> 26) {
     case 0x00:
@@ -734,14 +754,14 @@ static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc
             break;
         case 0x20: {
             uint32_t sum = r[rs] + r[rt];
-            if (~(r[rs] ^ r[rt]) & (r[rs] ^ sum) & 0x80000000u) return false;
+            if (~(r[rs] ^ r[rt]) & (r[rs] ^ sum) & 0x80000000u) return FAST_SLOW;
             r[rd] = sum;
             break;
         }
         case 0x21: r[rd] = r[rs] + r[rt]; break;
         case 0x22: {
             uint32_t difference = r[rs] - r[rt];
-            if ((r[rs] ^ r[rt]) & (r[rs] ^ difference) & 0x80000000u) return false;
+            if ((r[rs] ^ r[rt]) & (r[rs] ^ difference) & 0x80000000u) return FAST_SLOW;
             r[rd] = difference;
             break;
         }
@@ -752,7 +772,7 @@ static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc
         case 0x27: r[rd] = ~(r[rs] | r[rt]); break;
         case 0x2A: r[rd] = (int32_t)r[rs] < (int32_t)r[rt]; break;
         case 0x2B: r[rd] = r[rs] < r[rt]; break;
-        default: return false;
+        default: return FAST_SLOW;
         }
         break;
     case 0x01: {
@@ -767,7 +787,7 @@ static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc
         case 0x11: r[31] = pc + 8; flow_branch(hot, !less, target); break;
         case 0x12: r[31] = pc + 8; flow_branch_likely(hot, less, target); break;
         case 0x13: r[31] = pc + 8; flow_branch_likely(hot, !less, target); break;
-        default: return false;
+        default: return FAST_SLOW;
         }
         break;
     }
@@ -779,7 +799,7 @@ static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc
     case 0x07: flow_branch(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
     case 0x08: {
         uint32_t sum = r[rs] + simm;
-        if (~(r[rs] ^ simm) & (r[rs] ^ sum) & 0x80000000u) return false;
+        if (~(r[rs] ^ simm) & (r[rs] ^ sum) & 0x80000000u) return FAST_SLOW;
         r[rt] = sum;
         break;
     }
@@ -794,27 +814,38 @@ static ALWAYS_INLINE bool execute_fast(mips_cpu_t *cpu, flow_t *hot, uint32_t pc
     case 0x15: flow_branch_likely(hot, r[rs] != r[rt], pc + 4 + (simm << 2)); break;
     case 0x16: flow_branch_likely(hot, (int32_t)r[rs] <= 0, pc + 4 + (simm << 2)); break;
     case 0x17: flow_branch_likely(hot, (int32_t)r[rs] > 0, pc + 4 + (simm << 2)); break;
-    case 0x20: if (!fast_load(cpu, r[rs] + simm, 1, &value)) return false; r[rt] = (uint32_t)(int8_t)value; break;
-    case 0x21: if (!fast_load(cpu, r[rs] + simm, 2, &value)) return false; r[rt] = (uint32_t)(int16_t)value; break;
-    case 0x23: if (!fast_load(cpu, r[rs] + simm, 4, &value)) return false; r[rt] = value; break;
-    case 0x24: if (!fast_load(cpu, r[rs] + simm, 1, &value)) return false; r[rt] = value; break;
-    case 0x25: if (!fast_load(cpu, r[rs] + simm, 2, &value)) return false; r[rt] = value; break;
-    case 0x28: if (!fast_store(cpu, r[rs] + simm, 1, r[rt])) return false; break;
-    case 0x29: if (!fast_store(cpu, r[rs] + simm, 2, r[rt])) return false; break;
-    case 0x2B: if (!fast_store(cpu, r[rs] + simm, 4, r[rt])) return false; break;
-    default: return false;
+    case 0x20: result = fast_load(cpu, r[rs] + simm, 1, rt, true, access); break;
+    case 0x21: result = fast_load(cpu, r[rs] + simm, 2, rt, true, access); break;
+    case 0x23: result = fast_load(cpu, r[rs] + simm, 4, rt, false, access); break;
+    case 0x24: result = fast_load(cpu, r[rs] + simm, 1, rt, false, access); break;
+    case 0x25: result = fast_load(cpu, r[rs] + simm, 2, rt, false, access); break;
+    case 0x28: result = fast_store(cpu, r[rs] + simm, 1, r[rt] & 0xFFu, access); break;
+    case 0x29: result = fast_store(cpu, r[rs] + simm, 2, r[rt] & 0xFFFFu, access); break;
+    case 0x2B: result = fast_store(cpu, r[rs] + simm, 4, r[rt], access); break;
+    default: return FAST_SLOW;
     }
     r[0] = 0;
-    return true;
+    return result;
 }
 
-static bool page_watched(const mips_cpu_t *cpu, uint32_t pc) {
+static void narrow_window(uint32_t pc, uint32_t watched, uint32_t *low, uint32_t *high) {
+    if (watched < *low || watched >= *high) return;
+    if (watched > pc) *high = watched;
+    else *low = watched + 4;
+}
+
+static void window_bounds(const mips_cpu_t *cpu, uint32_t pc, uint32_t *low, uint32_t *high) {
+    *low = pc & ENTRYHI_VPN_MASK;
+    *high = *low + 0x1000u;
     for (int w = 0; w < cpu->watch_count; w++) {
         uint32_t va = cpu->watch[w];
-        if ((va >> 12) == (pc >> 12)) return true;
-        if (va < MIPS_SLOT_SIZE && pc < 0x80000000u && (va >> 12) == ((pc & (MIPS_SLOT_SIZE - 1)) >> 12)) return true;
+        narrow_window(pc, va, low, high);
+        if (va < MIPS_SLOT_SIZE && pc < 0x80000000u) narrow_window(pc, (pc & ~(MIPS_SLOT_SIZE - 1)) | va, low, high);
     }
-    return false;
+}
+
+static inline uint32_t rotate_right_2(uint32_t value) {
+    return value >> 2 | value << 30;
 }
 
 static uint32_t fetch_tag(const mips_cpu_t *cpu, uint32_t va) {
@@ -842,7 +873,7 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
     cpu->run_window_epoch = cpu->epoch - 1;
     uint32_t current = cpu->current_pc;
     uint32_t budget = sync_in(cpu, &flow);
-    uint32_t window_va = WINDOW_NONE;
+    uint32_t window_low = 0, window_words = 0;
     const uint8_t *window = NULL;
     for (;;) {
         if (budget == 0) {
@@ -856,7 +887,7 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
                 if (budget == 0) break;
             }
             if (cpu->yield) break;
-            if (cpu->epoch != cpu->run_window_epoch) window_va = WINDOW_NONE;
+            if (cpu->epoch != cpu->run_window_epoch) window_words = 0;
             if (interrupt_pending(cpu)) {
                 current = flow.pc;
                 sync_out(cpu, &flow, current, (flow.flags & FLAG_DELAY) != 0, budget - 1);
@@ -868,26 +899,48 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
         budget--;
         current = flow.pc;
         uint32_t instruction;
-        if ((current & WINDOW_MATCH_MASK) == window_va) {
-            memcpy(&instruction, window + (current & 0xFFFu), 4);
+        uint32_t window_offset = current - window_low;
+        if (rotate_right_2(window_offset) < window_words) {
+            memcpy(&instruction, window + window_offset, 4);
         } else {
             sync_out(cpu, &flow, current, (flow.flags & FLAG_DELAY) != 0, budget);
             bool fetched = fetch(cpu, current, &instruction) && (!cpu->watch_count || run_watches(cpu, current));
             budget = sync_in(cpu, &flow);
             if (!fetched) continue;
             const mips_fetch_cache_t *cached = &cpu->fetch_cache[(current >> 12) & (MIPS_FETCH_CACHE - 1)];
-            if (cached->tag == fetch_tag(cpu, current) && cached->page && !page_watched(cpu, current)) {
-                window_va = current & ENTRYHI_VPN_MASK;
-                window = cached->page;
+            if (cached->tag == fetch_tag(cpu, current) && cached->page) {
+                uint32_t high;
+                window_bounds(cpu, current, &window_low, &high);
+                window_words = high > window_low ? (high - window_low) / 4 : 0;
+                window = cached->page + (window_low & 0xFFFu);
                 cpu->run_window_epoch = cpu->epoch;
             }
         }
         flow.pc = flow.next_pc;
         flow.next_pc = flow.pc + 4;
         flow.flags = (flow.flags & FLAG_DELAY) << 1;
-        if (execute_fast(cpu, &flow, current, instruction)) continue;
-        sync_out(cpu, &flow, current, (flow.flags & FLAG_WAS_DELAY) != 0, budget);
-        execute(cpu, instruction);
+        bus_access_t access;
+        fast_result_t result = execute_fast(cpu, &flow, current, instruction, &access);
+        if (result == FAST_DONE) continue;
+        bool current_delay = (flow.flags & FLAG_WAS_DELAY) != 0;
+        budget += cpu->run_stash;
+        cpu->run_stash = 0;
+        sync_out(cpu, &flow, current, current_delay, budget);
+        if (result == FAST_BUS) {
+            uint32_t value = access.value;
+            bool ok = access.write ? cpu->bus.write(cpu->bus.context, access.pa, (int)access.size, value)
+                                   : cpu->bus.read(cpu->bus.context, access.pa, (int)access.size, &value);
+            if (ok && !access.write) cpu->gpr[access.reg] = access.sign ? (access.size == 1 ? (uint32_t)(int8_t)value : (uint32_t)(int16_t)value) : value;
+            cpu->gpr[0] = 0;
+            if (ok && cpu->pc == flow.pc) {
+                cpu->run_stash = budget;
+                budget = 0;
+                continue;
+            }
+            if (!ok) raise_exception(cpu, MIPS_EXC_DBE, current, current_delay);
+        } else {
+            execute(cpu, instruction);
+        }
         budget = sync_in(cpu, &flow);
     }
     sync_out(cpu, &flow, current, (flow.flags & FLAG_WAS_DELAY) != 0, budget);
