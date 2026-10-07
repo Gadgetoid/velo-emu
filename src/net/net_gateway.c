@@ -66,6 +66,9 @@ static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
 #if !SLIRP_CHECK_VERSION(4, 9, 0)
 typedef int slirp_os_socket;
 #endif
+#if !SLIRP_CHECK_VERSION(4, 8, 0)
+typedef ssize_t slirp_ssize_t;
+#endif
 
 static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
 static const uint8_t desktop_alias_ip[4] = { 10, 0, 2, 5 };
