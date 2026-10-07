@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+bool     net_gateway_available(void) { return false; }
 net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_options_t *options) { (void)log; (void)options; return NULL; }
 void     net_gateway_destroy(net_gateway_t *gateway) { (void)gateway; }
 void     net_gateway_reset(net_gateway_t *gateway) { (void)gateway; }

@@ -15,6 +15,7 @@ typedef struct {
 
 typedef void (*net_gateway_log_fn)(const char *message);
 
+bool     net_gateway_available(void);
 net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_options_t *options);
 void     net_gateway_destroy(net_gateway_t *gateway);
 void     net_gateway_reset(net_gateway_t *gateway);

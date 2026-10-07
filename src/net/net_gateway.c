@@ -543,6 +543,8 @@ static void start_proxy(net_gateway_t *gateway, const char *user_agent) {
 #endif
 }
 
+bool net_gateway_available(void) { return true; }
+
 bool net_gateway_socket_path(char *path, size_t size, const char *name) {
     const char *directory = getenv("TMPDIR");
     if (!directory || !*directory) directory = "/tmp";
