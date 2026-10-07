@@ -21,6 +21,7 @@
 #include "core/lcd.h"
 #include "core/machine.h"
 #include "net/net_gateway.h"
+#include "net/serial_link.h"
 #include "rapi/rapi.h"
 #include "util/fat.h"
 #include "util/file.h"
@@ -30,7 +31,6 @@
 
 #include <arpa/inet.h>
 #include <dirent.h>
-#include <fcntl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -38,7 +38,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <spawn.h>
-#include <termios.h>
 #include <unistd.h>
 
 #define WINDOW_SCALE     2
@@ -273,98 +272,14 @@ static void release_keys(input_queue_t *input, machine_t *machine, bool *held, i
     }
 }
 
-typedef enum { SERIAL_OFF, SERIAL_NETWORK, SERIAL_PTY, SERIAL_DEVICE } serial_mode_t;
-
-#define SERIAL_QUEUE 65536
-
-typedef struct {
-    serial_mode_t mode;
-    net_gateway_t *gateway;
-    int      pty;
-    int      pty_slave;
-    char     pty_name[128];
-    const char *user_agent;
-    const char *device;
-    int      rapi_port;
-    uint32_t baud;
-    uint8_t  queue[SERIAL_QUEUE];
-    size_t   queued;
-} serial_t;
-
 #define SERIAL_PORT_MAX   16
 #define PORT_SCAN_SECONDS 2.0
-
-static bool is_serial_port(const char *name) {
-    return !strncmp(name, "cu.", 3) || !strncmp(name, "ttyUSB", 6) || !strncmp(name, "ttyACM", 6);
-}
-
-static int compare_names(const void *a, const void *b) {
-    return strcmp((const char *)a, (const char *)b);
-}
-
-static int list_serial_ports(char ports[][64], int max) {
-#ifdef __ANDROID__
-    (void)ports;
-    (void)max;
-    return 0;
-#endif
-    DIR *dev = opendir("/dev");
-    if (!dev) return 0;
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dev)) && count < max) {
-        if (!is_serial_port(entry->d_name) || strlen(entry->d_name) + 6 > 64) continue;
-        snprintf(ports[count++], 64, "/dev/%s", entry->d_name);
-    }
-    closedir(dev);
-    qsort(ports, (size_t)count, 64, compare_names);
-    return count;
-}
-
-static speed_t speed_for(uint32_t baud) {
-    static const struct { uint32_t baud; speed_t speed; } speeds[] = {
-        { 300, B300 }, { 1200, B1200 }, { 2400, B2400 }, { 4800, B4800 }, { 9600, B9600 },
-        { 19200, B19200 }, { 38400, B38400 }, { 57600, B57600 }, { 115200, B115200 },
-    };
-    speed_t best = B9600;
-    uint32_t best_error = UINT32_MAX;
-    for (size_t i = 0; i < sizeof speeds / sizeof speeds[0]; i++) {
-        uint32_t error = speeds[i].baud > baud ? speeds[i].baud - baud : baud - speeds[i].baud;
-        if (error < best_error) { best_error = error; best = speeds[i].speed; }
-    }
-    return best;
-}
-
-static void device_follow_baud(serial_t *serial, machine_t *machine) {
-    uint32_t baud = machine_serial_baud(machine);
-    if (serial->mode != SERIAL_DEVICE || !baud || baud == serial->baud) return;
-    struct termios settings;
-    if (tcgetattr(serial->pty, &settings) != 0) return;
-    cfsetispeed(&settings, speed_for(baud));
-    cfsetospeed(&settings, speed_for(baud));
-    tcsetattr(serial->pty, TCSANOW, &settings);
-    serial->baud = baud;
-    if (verbose) fprintf(stderr, "serial: %s at %u baud\n", serial->device, baud);
-}
 
 static void serial_log(const char *message) {
 #ifdef __ANDROID__
     SDL_Log("%s", message);
 #endif
     if (verbose) fputs(message, stderr);
-}
-
-static void serial_close(serial_t *serial, machine_t *machine) {
-    if (serial->gateway) net_gateway_destroy(serial->gateway);
-    if (serial->pty >= 0) close(serial->pty);
-    if (serial->pty_slave >= 0) close(serial->pty_slave);
-    serial->gateway = NULL;
-    serial->pty = -1;
-    serial->pty_slave = -1;
-    serial->queued = 0;
-    serial->baud = 0;
-    serial->mode = SERIAL_OFF;
-    machine_serial_connect(machine, false);
 }
 
 static void rapi_socket_path(char *path, size_t size) {
@@ -375,95 +290,44 @@ static void rapi_socket_path(char *path, size_t size) {
 #endif
 }
 
-static const char *serial_open(serial_t *serial, machine_t *machine, serial_mode_t mode) {
-    serial_close(serial, machine);
-    if (mode == SERIAL_NETWORK) {
-        char rapi_socket[1024];
-        rapi_socket_path(rapi_socket, sizeof rapi_socket);
-        net_gateway_options_t options = { serial->user_agent, rapi_socket, serial->rapi_port };
-        serial->gateway = net_gateway_create(serial_log, &options);
-        if (!serial->gateway) return "built without libslirp";
-    } else if (mode == SERIAL_PTY) {
-        int fd = posix_openpt(O_RDWR | O_NOCTTY);
-        if (fd < 0 || grantpt(fd) != 0 || unlockpt(fd) != 0) {
-            if (fd >= 0) close(fd);
-            return "could not open a pseudo-terminal";
-        }
-        snprintf(serial->pty_name, sizeof serial->pty_name, "%s", ptsname(fd));
-        int slave = open(serial->pty_name, O_RDWR | O_NOCTTY);
-        struct termios settings;
-        tcgetattr(slave, &settings);
-        cfmakeraw(&settings);
-        tcsetattr(slave, TCSANOW, &settings);
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-        serial->pty = fd;
-        serial->pty_slave = slave;
-        fprintf(stderr, "serial: COM1 on %s\n", serial->pty_name);
-    } else if (mode == SERIAL_DEVICE) {
-        if (!serial->device || !serial->device[0]) return "choose a host serial port first";
-        int fd = open(serial->device, O_RDWR | O_NOCTTY | O_NONBLOCK);
-        struct termios settings;
-        if (fd < 0 || tcgetattr(fd, &settings) != 0) {
-            if (fd >= 0) close(fd);
-            snprintf(serial->pty_name, sizeof serial->pty_name, "could not open %s", serial->device);
-            return serial->pty_name;
-        }
-        cfmakeraw(&settings);
-        settings.c_cflag |= CLOCAL | CREAD;
-        settings.c_cflag &= ~(tcflag_t)CRTSCTS;
-        cfsetispeed(&settings, B19200);
-        cfsetospeed(&settings, B19200);
-        tcsetattr(fd, TCSANOW, &settings);
-        serial->pty = fd;
-        snprintf(serial->pty_name, sizeof serial->pty_name, "COM1 on %s", serial->device);
-    }
-    serial->mode = mode;
-    machine_set_serial_tag(machine, (uint32_t)mode);
-    if (mode != SERIAL_OFF) machine_serial_connect(machine, true);
-    if (mode == SERIAL_DEVICE) device_follow_baud(serial, machine);
-    return mode == SERIAL_NETWORK ? "network cable connected" : mode != SERIAL_OFF ? serial->pty_name : "serial disconnected";
+static void serial_close(serial_link_t *serial, machine_t *machine) {
+    serial_link_close(serial);
+    machine_serial_connect(machine, false);
 }
 
-static void serial_restored(serial_t *serial, machine_t *machine, uint64_t *reconnect_at, serial_mode_t *reconnect_mode) {
+static const char *serial_open(serial_link_t *serial, machine_t *machine, serial_mode_t mode, const char *device) {
+    static char rapi_socket[1024];
+    static char notice[SERIAL_LINK_PORT_NAME + 16];
+    serial_close(serial, machine);
+    if (mode == SERIAL_NETWORK) {
+        rapi_socket_path(rapi_socket, sizeof rapi_socket);
+        serial->options.rapi_socket = rapi_socket;
+    }
+    const char *failure = serial_link_open(serial, mode, device);
+    if (failure) return failure;
+    if (mode == SERIAL_PTY) fprintf(stderr, "serial: COM1 on %s\n", serial->name);
+    machine_set_serial_tag(machine, (uint32_t)mode);
+    if (mode != SERIAL_OFF) machine_serial_connect(machine, true);
+    if (mode == SERIAL_NETWORK) return "network cable connected";
+    if (mode == SERIAL_PTY) return serial->name;
+    if (mode == SERIAL_DEVICE) {
+        snprintf(notice, sizeof notice, "COM1 on %s", serial->name);
+        return notice;
+    }
+    return "serial disconnected";
+}
+
+static void serial_restored(serial_link_t *serial, machine_t *machine, const char *device, uint64_t *reconnect_at, serial_mode_t *reconnect_mode) {
     bool was_connected = machine_serial_connected(machine);
     serial_mode_t mode = (serial_mode_t)machine_serial_tag(machine);
     serial_close(serial, machine);
     *reconnect_at = 0;
-    if (was_connected && (mode == SERIAL_NETWORK || mode == SERIAL_PTY || (mode == SERIAL_DEVICE && serial->device && serial->device[0]))) {
+    if (was_connected && (mode == SERIAL_NETWORK || mode == SERIAL_PTY || (mode == SERIAL_DEVICE && device && device[0]))) {
         *reconnect_mode = mode;
         *reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
     }
 }
 
-static void serial_pump(serial_t *serial, machine_t *machine) {
-    uint8_t buffer[4096];
-    size_t count;
-    device_follow_baud(serial, machine);
-    while ((count = machine_serial_take(machine, buffer, sizeof buffer)) > 0) {
-        if (serial->gateway) net_gateway_from_guest(serial->gateway, buffer, count);
-        else if (serial->mode == SERIAL_DEVICE) {
-            size_t room = sizeof serial->queue - serial->queued;
-            if (count > room) count = room;
-            memcpy(serial->queue + serial->queued, buffer, count);
-            serial->queued += count;
-        }
-        else if (serial->pty >= 0 && write(serial->pty, buffer, count) < 0) break;
-    }
-    if (serial->mode == SERIAL_DEVICE && serial->queued) {
-        ssize_t written = write(serial->pty, serial->queue, serial->queued);
-        if (written > 0) {
-            memmove(serial->queue, serial->queue + written, serial->queued - (size_t)written);
-            serial->queued -= (size_t)written;
-        }
-    }
-    if (serial->gateway) {
-        net_gateway_poll(serial->gateway, machine_cycles(machine) / (MACHINE_CLOCK_HZ / 1000));
-        while ((count = net_gateway_to_guest(serial->gateway, buffer, sizeof buffer)) > 0) machine_serial_send(machine, buffer, count);
-    } else if (serial->pty >= 0) {
-        ssize_t got;
-        while ((got = read(serial->pty, buffer, sizeof buffer)) > 0) machine_serial_send(machine, buffer, (size_t)got);
-    }
-}
 typedef enum { PICK_SEND = 1, PICK_FETCH, PICK_SHARED, PICK_SAVE_SNAPSHOT, PICK_LOAD_SNAPSHOT, PICK_CARD, PICK_DISK, PICK_NEW_DISK } pick_kind_t;
 
 #define PICK_MAX 64
@@ -1624,13 +1488,15 @@ int main(int argc, char **argv) {
     uint64_t power_release_at = 0, backlight_release_at = 0;
     const char *notice = startup_notice;
     if (notice) notice_left = 6;
-    static serial_t serial;
-    serial = (serial_t){ SERIAL_OFF, NULL, -1, -1, "", settings.user_agent, settings.serial_device, settings.network_rapi ? (int)settings.rapi_port : 0, 0, { 0 }, 0 };
+    static serial_link_t serial;
+    serial_link_init(&serial, serial_log);
+    serial.options.user_agent = settings.user_agent;
+    serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
     char rapi_socket[1024], sync_manifest[1024], desktop_notice[256], shared_notice[1200], paste_notice[64];
     static typer_t typer;
     static scroller_t scroller;
     static input_queue_t input;
-    static char ports[SERIAL_PORT_MAX][64];
+    static char ports[SERIAL_PORT_MAX][SERIAL_LINK_PORT_NAME];
     int port_count = 0;
     double since_port_scan = 0;
     static dropped_t dropped;
@@ -1640,11 +1506,11 @@ int main(int argc, char **argv) {
     desktop_t *desktop = desktop_create(rapi_socket, sync_manifest);
     uint64_t serial_reconnect_at = 0, serial_unplug_at = 0;
     serial_mode_t serial_reconnect_mode = SERIAL_OFF;
-    serial_restored(&serial, machine, &serial_reconnect_at, &serial_reconnect_mode);
+    serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
     if (serial_mode != SERIAL_OFF && serial_reconnect_at) {
         serial_reconnect_mode = serial_mode;
     } else if (serial_mode != SERIAL_OFF) {
-        const char *result = serial_open(&serial, machine, serial_mode);
+        const char *result = serial_open(&serial, machine, serial_mode, settings.serial_device);
         if (!notice) { notice = result; notice_left = NOTICE_SECONDS * 2; }
     }
 
@@ -1910,7 +1776,7 @@ int main(int argc, char **argv) {
             case MENU_LOAD_STATE:
                 backup_machine(machine, state);
                 if (machine_load(machine, state, NULL)) {
-                    serial_restored(&serial, machine, &serial_reconnect_at, &serial_reconnect_mode);
+                    serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
                     notice = "state loaded";
                 } else {
                     notice = "no saved state";
@@ -2005,7 +1871,7 @@ int main(int argc, char **argv) {
                     snprintf(settings.serial_device, sizeof settings.serial_device, "%s", ports[item - MENU_SERIAL_PORT_FIRST]);
                     settings_save(&settings);
                     serial_reconnect_at = 0;
-                    notice = serial_open(&serial, machine, SERIAL_DEVICE);
+                    notice = serial_open(&serial, machine, SERIAL_DEVICE, settings.serial_device);
                     notice_left = NOTICE_SECONDS * 3;
                 }
                 break;
@@ -2013,7 +1879,7 @@ int main(int argc, char **argv) {
             case MENU_SERIAL_PTY:
             case MENU_SERIAL_OFF:
                 serial_reconnect_at = 0;
-                notice = serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : SERIAL_OFF);
+                notice = serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : SERIAL_OFF, settings.serial_device);
                 notice_left = NOTICE_SECONDS * 3;
                 break;
 #ifdef __ANDROID__
@@ -2062,12 +1928,12 @@ int main(int argc, char **argv) {
                 static char rapi_notice[160];
                 settings.network_rapi = !settings.network_rapi;
                 settings_save(&settings);
-                serial.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
+                serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
                 char address[64];
                 local_address(address, sizeof address);
                 if (settings.network_rapi) snprintf(rapi_notice, sizeof rapi_notice, "RAPI at %s:%u", address, settings.rapi_port);
                 else snprintf(rapi_notice, sizeof rapi_notice, "RAPI over the network off");
-                if (serial.mode == SERIAL_NETWORK) serial_open(&serial, machine, SERIAL_NETWORK);
+                if (serial.mode == SERIAL_NETWORK) serial_open(&serial, machine, SERIAL_NETWORK, settings.serial_device);
                 notice = rapi_notice;
                 notice_left = NOTICE_SECONDS * 3;
                 break;
@@ -2193,7 +2059,7 @@ int main(int argc, char **argv) {
                 static char snapshot_notice[1200];
                 if (machine_state_matches(machine, picked->paths[0])) backup_machine(machine, state);
                 if (machine_load(machine, picked->paths[0], NULL)) {
-                    serial_restored(&serial, machine, &serial_reconnect_at, &serial_reconnect_mode);
+                    serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
                     snprintf(snapshot_notice, sizeof snapshot_notice, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
                 } else {
                     snprintf(snapshot_notice, sizeof snapshot_notice, "%s isn't a snapshot of this ROM", file_leaf_name(picked->paths[0]));
@@ -2220,7 +2086,7 @@ int main(int argc, char **argv) {
         if (serial_unplug_at && machine_cycles(machine) >= serial_unplug_at) {
             serial_unplug_at = 0;
             if (serial.mode == SERIAL_NETWORK) {
-                serial_open(&serial, machine, SERIAL_OFF);
+                serial_open(&serial, machine, SERIAL_OFF, settings.serial_device);
                 serial_reconnect_mode = SERIAL_NETWORK;
                 serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
             }
@@ -2250,7 +2116,7 @@ int main(int argc, char **argv) {
         reap_reveal_children();
         if (since_port_scan <= 0) {
             since_port_scan = PORT_SCAN_SECONDS;
-            port_count = list_serial_ports(ports, SERIAL_PORT_MAX);
+            port_count = serial_link_ports(ports, SERIAL_PORT_MAX);
         }
         for (int i = 0; i < SERIAL_PORT_MAX; i++) {
             int port_item = MENU_SERIAL_PORT_FIRST + i;
@@ -2315,10 +2181,10 @@ int main(int argc, char **argv) {
         runner.paused = paused;
         typer_step(&typer, machine);
         scroller_step(&scroller, machine);
-        serial_pump(&serial, machine);
+        serial_link_pump(&serial, machine);
         if (serial_reconnect_at && machine_cycles(machine) >= serial_reconnect_at) {
             serial_reconnect_at = 0;
-            notice = serial_open(&serial, machine, serial_reconnect_mode);
+            notice = serial_open(&serial, machine, serial_reconnect_mode, settings.serial_device);
             notice_left = NOTICE_SECONDS * 2;
         }
         if (backlight_release_at && machine_cycles(machine) >= backlight_release_at) {

@@ -40,7 +40,7 @@ SRC_MENU  = src/app/menu_bar.c src/vendor/truetype.c
 endif
 
 ifeq ($(shell $(PKG_CONFIG) --exists slirp && echo yes),yes)
-SRC_NET  = src/net/net_gateway.c
+SRC_NET  = src/net/net_gateway.c src/net/serial_link.c
 CFLAGS  += $(shell $(PKG_CONFIG) --cflags slirp)
 NET_LIBS = $(shell $(PKG_CONFIG) --libs slirp)
 ifeq ($(shell $(PKG_CONFIG) --exists libcurl && echo yes),yes)
@@ -52,7 +52,7 @@ SRC_NET  += src/net/web_proxy_none.c
 endif
 LDFLAGS += $(NET_LIBS)
 else
-SRC_NET  = src/net/net_gateway_none.c src/net/web_proxy_none.c
+SRC_NET  = src/net/net_gateway_none.c src/net/web_proxy_none.c src/net/serial_link.c
 endif
 
 SRC_MACHINE = src/core/mips.c src/core/machine.c src/core/ce.c src/core/gdb.c src/core/mailbox.c src/core/agent.c src/core/screen.c src/core/lzw.c src/core/lz.c src/core/accel.c src/core/vdisk.c src/core/pccard.c src/core/uart.c src/core/key_text.c src/util/options.c src/util/file.c
@@ -73,7 +73,7 @@ $(BUILD)/libmain.so: $(OBJ_APP)
 $(HEADLESS): $(OBJ_HEADLESS)
 	$(CC) -o $@ $^ -lm -lz $(NET_LIBS) $(THREAD_LIBS)
 
-$(PROXYCHECK): $(SRC_NET:%.c=$(BUILD)/%.o) $(BUILD)/tools/proxy_check.o
+$(PROXYCHECK): $(filter-out %/serial_link.o,$(SRC_NET:%.c=$(BUILD)/%.o)) $(BUILD)/tools/proxy_check.o
 	$(CC) -o $@ $^ -lm -lz $(NET_LIBS) $(THREAD_LIBS)
 
 $(VELORAPI): $(SRC_RAPI:%.c=$(BUILD)/%.o) $(BUILD)/src/util/options.o $(BUILD)/tools/velo_rapi.o

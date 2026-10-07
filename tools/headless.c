@@ -10,6 +10,7 @@
 #include "core/lcd.h"
 #include "core/machine.h"
 #include "net/net_gateway.h"
+#include "net/serial_link.h"
 #include "util/file.h"
 #include "util/options.h"
 #include "util/png.h"
@@ -338,7 +339,8 @@ int main(int argc, char **argv) {
     static run_t run;
     run = (run_t){ .seconds = 5, .png_cell = 4, .png_backlight = -1, .soft_reset_at = -1, .cable_at = -1, .net_at = -1, .replug_at = -1,
                    .net_options = { NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0 } };
-    net_gateway_t *gateway = NULL;
+    static serial_link_t serial;
+    serial_link_init(&serial, log_stderr);
     const char *positional[1];
     int positional_count;
     options_result_t parsed = options_parse(&SPEC, argc, argv, parse_option, &run, positional, 1, &positional_count);
@@ -443,13 +445,13 @@ int main(int argc, char **argv) {
                 machine_touch(machine, false, run.tap_x[t], run.tap_y[t]);
             }
         }
-        if (run.net_at >= 0 && !gateway && (uint64_t)(run.net_at * MACHINE_CLOCK_HZ) < done + slice) {
-            gateway = net_gateway_create(log_stderr, &run.net_options);
+        if (run.net_at >= 0 && serial.mode == SERIAL_OFF && (uint64_t)(run.net_at * MACHINE_CLOCK_HZ) < done + slice) {
+            serial.options = run.net_options;
+            serial_link_open(&serial, SERIAL_NETWORK, NULL);
             machine_serial_connect(machine, true);
         }
-        if (run.replug_at >= 0 && gateway && (uint64_t)(run.replug_at * MACHINE_CLOCK_HZ) < done + slice) {
-            net_gateway_destroy(gateway);
-            gateway = NULL;
+        if (run.replug_at >= 0 && serial.mode != SERIAL_OFF && (uint64_t)(run.replug_at * MACHINE_CLOCK_HZ) < done + slice) {
+            serial_link_close(&serial);
             machine_serial_connect(machine, false);
             run.net_at = run.replug_at + 2;
             run.replug_at = -1;
@@ -497,16 +499,12 @@ int main(int argc, char **argv) {
                 machine_power_button(machine, false);
             }
         }
-        if (gateway) {
+        if (serial.mode != SERIAL_OFF) {
             uint64_t step = MACHINE_CLOCK_HZ / 100;
             for (uint64_t ran = 0; ran < slice; ran += step) {
                 advance(machine, step);
                 pace(machine, run.realtime, wall_start, cycles_start);
-                uint8_t buffer[4096];
-                size_t count;
-                while ((count = machine_serial_take(machine, buffer, sizeof buffer)) > 0) net_gateway_from_guest(gateway, buffer, count);
-                net_gateway_poll(gateway, machine_cycles(machine) / (MACHINE_CLOCK_HZ / 1000));
-                while ((count = net_gateway_to_guest(gateway, buffer, sizeof buffer)) > 0) machine_serial_send(machine, buffer, count);
+                serial_link_pump(&serial, machine);
             }
         } else {
             advance(machine, slice);
@@ -549,7 +547,7 @@ int main(int argc, char **argv) {
         write_pgm(run.pgm, levels, machine_screen_size(machine));
     }
     if (run.png && !write_panel_png(run.png, machine, run.png_cell, run.png_backlight)) { fprintf(stderr, "cannot write %s\n", run.png); return 1; }
-    net_gateway_destroy(gateway);
+    serial_link_close(&serial);
     gdb_destroy(debugger);
     agent_destroy(agent);
     machine_destroy(machine);
