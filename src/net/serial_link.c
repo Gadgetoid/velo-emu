@@ -125,9 +125,14 @@ static void follow_baud(serial_link_t *link, machine_t *machine) {
 static void pump_network(serial_link_t *link, machine_t *machine) {
     uint8_t buffer[4096];
     size_t count;
+    bool dtr = machine_serial_dtr(machine);
+    if (dtr && !link->dtr) net_gateway_reset(link->gateway);
+    link->dtr = dtr;
     while ((count = machine_serial_take(machine, buffer, sizeof buffer)) > 0) net_gateway_from_guest(link->gateway, buffer, count);
     net_gateway_poll(link->gateway, machine_cycles(machine) / (MACHINE_CLOCK_HZ / 1000));
-    while ((count = net_gateway_to_guest(link->gateway, buffer, sizeof buffer)) > 0) machine_serial_send(machine, buffer, count);
+    size_t space = machine_serial_space(machine);
+    count = net_gateway_to_guest(link->gateway, buffer, space < sizeof buffer ? space : sizeof buffer);
+    machine_serial_send(machine, buffer, count);
 }
 
 static void pump_host(serial_link_t *link, machine_t *machine) {
@@ -144,8 +149,11 @@ static void pump_host(serial_link_t *link, machine_t *machine) {
             link->queued -= (size_t)written;
         }
     }
-    ssize_t got;
-    while ((got = read(link->fd, buffer, sizeof buffer)) > 0) machine_serial_send(machine, buffer, (size_t)got);
+    size_t space = machine_serial_space(machine);
+    if (space > sizeof buffer) space = sizeof buffer;
+    if (!space) return;
+    ssize_t got = read(link->fd, buffer, space);
+    if (got > 0) machine_serial_send(machine, buffer, (size_t)got);
 }
 
 void serial_link_pump(serial_link_t *link, machine_t *machine) {
