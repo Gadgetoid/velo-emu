@@ -24,6 +24,9 @@
 #define ROM_WINDOW_END   0x20000000u
 #define REGS_PA          0x10C00000u
 #define REGS_END         0x10E00000u
+#define REGS_MIRROR      0x00001000u
+#define SOC_OPEN_BUS     0xFF9C0FF0u
+#define ROM_CHIP_SIZE    0x00800000u
 #define CS2_PA           0x10400000u
 #define CS2_END          0x10800000u
 #define DEBUG_PROBE_PA   0x10401024u
@@ -714,8 +717,22 @@ static void eeprom_pins(machine_t *m) {
     }
 }
 
+static const struct { uint16_t first, last; } open_bus_ranges[] = {
+    { 0x014, 0x024 }, { 0x02C, 0x070 }, { 0x094, 0x09C }, { 0x0A4, 0x0AC }, { 0x0B4, 0x0BC }, { 0x0CC, 0x0D4 },
+    { 0x0E4, 0x0EC }, { 0x0F4, 0x0F4 }, { 0x0FC, 0x0FC }, { 0x130, 0x13C }, { 0x158, 0x15C }, { 0x168, 0x17C },
+    { 0x19C, 0x1BC }, { 0x1CC, 0x1D4 }, { 0x1E0, 0x1EC }, { 0x1F4, 0x1F8 },
+};
+
+static bool soc_open_bus(uint32_t offset) {
+    for (size_t i = 0; i < sizeof open_bus_ranges / sizeof open_bus_ranges[0]; i++) {
+        if (offset >= open_bus_ranges[i].first && offset <= open_bus_ranges[i].last) return true;
+    }
+    return false;
+}
+
 static uint32_t soc_read(machine_t *m, uint32_t offset, int size) {
     uint32_t index = offset / 4;
+    if (soc_open_bus(offset & ~3u)) return SOC_OPEN_BUS;
     switch (offset & ~3u) {
         case 0x0A0: return m->regs[0x0A0 / 4] | (m->ir_cardet ? IR_CARDET : 0);
         case 0x074: return m->sib_ctl | (m->pen_irq_status ? SIB_IRQ : 0);
@@ -935,8 +952,22 @@ static inline void write_host(uint8_t *base, int size, uint32_t value) {
 
 static uint8_t boot_block[BOOT_BLOCK_SIZE] = { 0x00, 0x00, 0xF0, 0x0B };
 
+static bool rom_chip_mirrored(const machine_t *m) {
+    bool rom2_in_window = m->rom2 && m->rom2_pa >= ROM_WINDOW_PA && m->rom2_pa < ROM_WINDOW_END;
+    return m->rom_pa == ROM_PA && m->rom_size <= ROM_CHIP_SIZE && !rom2_in_window;
+}
+
+static uint32_t rom_chip_offset(uint32_t pa) {
+    return (pa - ROM_PA) & (ROM_CHIP_SIZE - 1);
+}
+
 static bool bus_read(void *context, uint32_t pa, int size, uint32_t *value) {
     machine_t *m = context;
+    if (pa >= ROM_WINDOW_PA && pa < ROM_WINDOW_END && rom_chip_mirrored(m)) {
+        uint32_t offset = rom_chip_offset(pa);
+        *value = offset + (uint32_t)size <= m->rom_size ? read_host(m->rom + offset, size) : 0;
+        return true;
+    }
     if (pa >= BOOT_BLOCK_PA && pa < BOOT_BLOCK_PA + BOOT_BLOCK_SIZE) { *value = read_host(boot_block + (pa - BOOT_BLOCK_PA), size); return true; }
     if (pa < DRAM_DECODE_END) { *value = read_host(m->dram + (pa & (m->dram_size - 1)), size); return true; }
     if ((pa >= ROM_WINDOW_PA && pa < ROM_WINDOW_END) || (pa >= ROM_CARD_PA && pa < ROM_CARD_END)) {
@@ -945,7 +976,7 @@ static bool bus_read(void *context, uint32_t pa, int size, uint32_t *value) {
         *value = size == 4 ? 0xFFFFFFFFu : size == 2 ? 0xFFFFu : 0xFFu;
         return true;
     }
-    if (pa >= REGS_PA && pa < REGS_END) { *value = soc_read(m, pa - REGS_PA, size); return true; }
+    if (pa >= REGS_PA && pa < REGS_END) { *value = soc_read(m, (pa - REGS_PA) & (REGS_MIRROR - 1), size); return true; }
     if (pa == DEBUG_PROBE_PA) { *value = 0xFFFF; return true; }
     if (pa >= CS2_PA && pa < CS2_PA + PCCARD_IT8368_SIZE) {
         uint32_t offset = (pa - CS2_PA) & ~1u;
@@ -960,7 +991,7 @@ static bool bus_read(void *context, uint32_t pa, int size, uint32_t *value) {
     if (pa >= DRAM_DECODE_END && pa < BANK1_DECODE_END) {
         if (m->card_dram_size) { *value = read_host(m->card_dram + (pa & (m->card_dram_size - 1)), size); return true; }
         note_access(m, "bank1 read", pa, size, 0);
-        *value = 0xFFFFFFFFu >> (32 - size * 8);
+        *value = 0;
         return true;
     }
     if (pa >= VDISK_PA && pa < VDISK_PA + VDISK_WINDOW) { *value = vdisk_read(&m->vdisk_port, pa - VDISK_PA, size); return true; }
@@ -973,7 +1004,7 @@ static bool bus_write(void *context, uint32_t pa, int size, uint32_t value) {
     machine_t *m = context;
     if (pa < DRAM_DECODE_END) { write_host(m->dram + (pa & (m->dram_size - 1)), size, value); return true; }
     if ((pa >= ROM_WINDOW_PA && pa < ROM_WINDOW_END) || (pa >= ROM_CARD_PA && pa < ROM_CARD_END)) { note_access(m, "rom write", pa, size, value); return true; }
-    if (pa >= REGS_PA && pa < REGS_END) { soc_write(m, pa - REGS_PA, size, value); return true; }
+    if (pa >= REGS_PA && pa < REGS_END) { soc_write(m, (pa - REGS_PA) & (REGS_MIRROR - 1), size, value); return true; }
     if (pa >= CS2_PA && pa < CS2_PA + PCCARD_IT8368_SIZE) {
         uint32_t offset = (pa - CS2_PA) & ~1u;
         pccard_it8368_write(&m->card_socket, offset, (uint16_t)value);
@@ -995,6 +1026,10 @@ static bool bus_write(void *context, uint32_t pa, int size, uint32_t value) {
 
 static uint8_t *bus_fetch_page(void *context, uint32_t pa) {
     machine_t *m = context;
+    if (pa >= ROM_WINDOW_PA && pa < ROM_WINDOW_END && rom_chip_mirrored(m)) {
+        uint32_t offset = rom_chip_offset(pa);
+        return offset + 4096 <= m->rom_size ? m->rom + offset : NULL;
+    }
     if (pa >= BOOT_BLOCK_PA && pa < BOOT_BLOCK_PA + BOOT_BLOCK_SIZE) return boot_block + (pa - BOOT_BLOCK_PA);
     if (pa < DRAM_DECODE_END) return m->dram + (pa & (m->dram_size - 1));
     if (pa >= DRAM_DECODE_END && pa < BANK1_DECODE_END && m->card_dram_size) return m->card_dram + (pa & (m->card_dram_size - 1));
@@ -1420,7 +1455,8 @@ machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size
         if (!raw_rom_region(rom, rom_size, &regions[0], &start, error, error_size)) return NULL;
         regions[0].size = (uint32_t)((rom_size + 4095) & ~(size_t)4095);
         regions[0].data = malloc(regions[0].size);
-        memset(regions[0].data, 0xFF, regions[0].size);
+        bool rom_chip = regions[0].pa == ROM_PA && regions[0].size <= ROM_CHIP_SIZE;
+        memset(regions[0].data, rom_chip ? 0x00 : 0xFF, regions[0].size);
         memcpy(regions[0].data, rom, rom_size);
         region_count = 1;
     }

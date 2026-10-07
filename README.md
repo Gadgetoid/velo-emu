@@ -333,7 +333,7 @@ On the host, `headless --agent=SOCKET` and `velo --agent=SOCKET` listen on a Uni
 
 The Velo 1's CE 2.0 upgrade shipped as a ROM Miniature Card. An `nk.bin` whose single ROM header spans the whole file is mapped at the header's `physfirst` (0x90001000, the card window at physical 0x10000000) and started there, as the Velo's boot block would hand off to the card; the first 4 KB of the card, missing from the dump, reads as erased flash. A B000FF image also loads, with records in the card window and the internal ROM window at 0x1F400000. CE 2.0 runs the LCD in 16 greys.
 
-Reset (Start > Run, `reset`, or after an install) jumps to the Velo's boot block, which isn't in either dump. The emulator's boot block does a warm reset: CE restarts from the ROM's entry with RAM kept, so it keeps its object store and loads newly installed drivers.
+The Velo 1's internal ROM is an 8 MB chip, at 0x1F400000 and mirrored every 8 MB from 0x1F000000 to 0x1FFFFFFF, with zeros after the CE 1.0 image, so its boot block at 0x1FC00000 is the start of `nk.bin`. Images larger than the chip, such as merged CE 2.0 ones, aren't mirrored. Reset (Start > Run, `reset`, or after an install) jumps to the boot block, and the emulator does a warm reset there: CE restarts from the ROM's entry with RAM kept, so it keeps its object store and loads newly installed drivers.
 
 In CE 1.0's `fatfs.dll`, the function that sizes a direct multi-sector write computes the bytes left in a contiguous cluster run as `run_end - (pos - run_start)` instead of `run_end - pos`, so a large write into a fragmented card runs over other files. The emulator patches that instruction in the loaded ROM (0x9F5B4FCC), not the file, and only if the original is there.
 
