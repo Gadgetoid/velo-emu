@@ -17,7 +17,7 @@ With the CE 2.0 upgrade's applications, a library of period software on a PC Car
 ### Install
 
 - **macOS (Apple silicon):** `Velo.app`, from a release or `make app` (see Building). It isn't notarised, so macOS blocks a downloaded copy the first time it opens: allow it in System Settings > Privacy & Security > Open Anyway, or run `xattr -dr com.apple.quarantine Velo.app`. A copy built with `make app` opens normally. `velo-rapi` and `velo-state` are inside it, in `Velo.app/Contents/MacOS`.
-- **Debian 13 and Ubuntu:** the `.deb`, from a release or `tools/mkdeb.sh`. It installs `velo`, `velo-headless`, `velo-rapi` and `velo-state`, with a desktop entry.
+- **Debian 12 or later and Ubuntu 24.04 or later:** the `.deb`, from a release or `tools/mkdeb.sh`. It installs `velo`, `velo-headless`, `velo-rapi` and `velo-state`, with a desktop entry.
 - **Android (arm64, Android 9 or later):** the `.apk` from a release, or `make apk` (see Building). See Android.
 - **From source:** see Building.
 
@@ -353,7 +353,7 @@ make apk-push   # replace a debug install's native code without reinstalling
 
 `make apk` needs `brew install --cask android-ndk android-commandlinetools`, `brew install openjdk@21 meson ninja` and `sdkmanager "platforms;android-35" "build-tools;35.0.0"`. `tools/android-deps.sh` cross-builds GLib, libslirp, mbedTLS and curl into `build/android` the first time. Without a release key, the APK is a debug build signed with `~/.android/debug.keystore`. `make apk-install` installs with the Play Store as the installer, which gets past phones that block USB installs, such as Xiaomi's. `make apk-push` works because a debug build loads a newer `libmain.so` from its private files when there is one.
 
-Debian 13 or Ubuntu:
+Debian 13, or Ubuntu with `libsdl3-dev`:
 
 ```
 sudo apt install build-essential pkg-config libsdl3-dev libslirp-dev libcurl4-openssl-dev zlib1g-dev mtools dosfstools fdisk
@@ -361,7 +361,14 @@ make && make headless
 sh tools/mkdeb.sh dist    # the .deb, with dependencies from dpkg-shlibdeps
 ```
 
-libslirp 4.8 and 4.9 both work. GitHub Actions builds `Velo.app`, the Debian 13 `.deb` and the Android `.apk` for each push to `main` and each pull request, runs `make check`, and attaches them to a release for each `v*` tag. The APK is signed with the release key in the `ANDROID_KEYSTORE` (base64), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` secrets, or with a throwaway debug key without them. `make apk` takes the same key from `APK_KEYSTORE`, `APK_KEYSTORE_PASSWORD` and `APK_KEY_ALIAS`.
+Without `libsdl3-dev` (Debian 12, Ubuntu 24.04), build a static SDL3 first. That needs `cmake`, `curl`, `libglib2.0-dev` (for libslirp's pkg-config file) and the X11, Wayland and audio development packages, as listed in `.github/workflows/build.yml`:
+
+```
+sh tools/sdl3-static.sh
+PKG_CONFIG_PATH=build/sdl3/lib/pkgconfig make SDL_STATIC=1 all headless
+```
+
+libslirp 4.7, 4.8 and 4.9 all work. GitHub Actions builds `Velo.app`, the `.deb` (on Debian 12 with a static SDL3, so it also installs on Debian 13 and Ubuntu 24.04 or later) and the Android `.apk` for each push to `main` and each pull request, runs `make check`, and attaches them to a release for each `v*` tag. The APK is signed with the release key in the `ANDROID_KEYSTORE` (base64), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS` secrets, or with a throwaway debug key without them. `make apk` takes the same key from `APK_KEYSTORE`, `APK_KEYSTORE_PASSWORD` and `APK_KEY_ALIAS`.
 
 Tests:
 

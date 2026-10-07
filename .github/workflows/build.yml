@@ -35,13 +35,19 @@ jobs:
 
   debian:
     runs-on: ubuntu-latest
-    container: debian:trixie
+    container: debian:bookworm
+    env:
+      SDL_STATIC: 1
+      PKG_CONFIG_PATH: /opt/sdl3/lib/pkgconfig
     steps:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential pkg-config dpkg-dev git ca-certificates python3 \
-            libsdl3-dev libslirp-dev libcurl4-openssl-dev zlib1g-dev
+          apt-get install -y --no-install-recommends build-essential pkg-config dpkg-dev git ca-certificates python3 curl cmake \
+            libslirp-dev libglib2.0-dev libcurl4-openssl-dev zlib1g-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgl-dev libdbus-1-dev libudev-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -50,6 +56,8 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if [ "${GITHUB_REF_TYPE}" = tag ]; then echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           else echo "VERSION=0.1+git$(date +%Y%m%d).$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"; fi
+      - name: SDL3
+        run: sh tools/sdl3-static.sh /opt/sdl3
       - name: Build
         run: make all headless proxycheck velo-rapi
       - name: Check
@@ -58,7 +66,7 @@ jobs:
         run: sh tools/mkdeb.sh dist
       - uses: actions/upload-artifact@v7
         with:
-          name: velo-debian-13
+          name: velo-debian
           path: dist/*.deb
 
   android:
