@@ -730,9 +730,15 @@ static bool soc_open_bus(uint32_t offset) {
     return false;
 }
 
-static uint32_t soc_read(machine_t *m, uint32_t offset, int size) {
+static const struct { uint16_t offset; uint32_t defined; } soc_reserved_bits[] = {
+    { 0x000, 0x7FFFFFFFu }, { 0x00C, 0xFFFFFFF0u }, { 0x010, 0xFFF1FF3Fu }, { 0x0A0, 0x01FF001Fu },
+    { 0x0B0, 0xF000FFFFu }, { 0x0C0, 0x0000FFFFu }, { 0x0C8, 0xF000FFFFu }, { 0x0D8, 0x0000FFFFu },
+    { 0x160, 0x0003FF37u }, { 0x180, 0x7F7F7F7Fu }, { 0x1C0, 0xFFFFEFFFu }, { 0x1C4, 0xFE00FFBFu },
+    { 0x1C8, 0x000000FFu }, { 0x1D8, 0x3FFFFFFFu }, { 0x1DC, 0xFFFF0000u }, { 0x1F0, 0x3FFCFFFFu },
+};
+
+static uint32_t soc_register_read(machine_t *m, uint32_t offset, int size) {
     uint32_t index = offset / 4;
-    if (soc_open_bus(offset & ~3u)) return SOC_OPEN_BUS;
     switch (offset & ~3u) {
         case 0x0A0: return m->regs[0x0A0 / 4] | (m->ir_cardet ? IR_CARDET : 0);
         case 0x074: return m->sib_ctl | (m->pen_irq_status ? SIB_IRQ : 0);
@@ -798,6 +804,17 @@ static uint32_t soc_read(machine_t *m, uint32_t offset, int size) {
             note_access(m, "soc read (out of range)", REGS_PA + offset, size, 0);
             return 0;
     }
+}
+
+static uint32_t soc_read(machine_t *m, uint32_t offset, int size) {
+    uint32_t word = offset & ~3u;
+    if (soc_open_bus(word)) return SOC_OPEN_BUS;
+    uint32_t value = soc_register_read(m, offset, size);
+    if (word == 0x140 || word == 0x148 || word == 0x150) return (value & 0xFFu) | ((uint32_t)rtc_count(m) & 0xFFFFFF00u);
+    for (size_t i = 0; i < sizeof soc_reserved_bits / sizeof soc_reserved_bits[0]; i++) {
+        if (soc_reserved_bits[i].offset == word) return (value & soc_reserved_bits[i].defined) | (SOC_OPEN_BUS & ~soc_reserved_bits[i].defined);
+    }
+    return value;
 }
 
 static void power_write(machine_t *m, uint32_t value) {
