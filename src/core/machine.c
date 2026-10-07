@@ -24,7 +24,7 @@
 #define ROM_WINDOW_END   0x20000000u
 #define REGS_PA          0x10C00000u
 #define REGS_END         0x10E00000u
-#define REGS_MIRROR      0x00001000u
+#define REGS_MIRROR      0x00000200u
 #define SOC_OPEN_BUS     0xFF9C0FF0u
 #define ROM_CHIP_SIZE    0x00800000u
 #define CS2_PA           0x10400000u
