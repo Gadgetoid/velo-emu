@@ -31,6 +31,10 @@
 
 #define NO_EVENT UINT64_MAX
 
+uint32_t uart_space(const uart_port_t *port) {
+    return UART_WIRE_SIZE - port->state->wire_count;
+}
+
 uint32_t uart_baud(const uart_port_t *port) {
     return UART_CLOCK_OVER_16 / (port->state->baud_divisor + 1);
 }

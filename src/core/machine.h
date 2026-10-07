@@ -67,6 +67,8 @@ uint32_t machine_serial_tag(machine_t *machine);
 void   machine_serial_send(machine_t *machine, const uint8_t *data, size_t length);
 size_t machine_serial_take(machine_t *machine, uint8_t *out, size_t max);
 uint32_t machine_serial_baud(machine_t *machine);
+bool   machine_serial_dtr(machine_t *machine);
+size_t machine_serial_space(machine_t *machine);
 
 void machine_reset(machine_t *machine);
 void machine_soft_reset(machine_t *machine);

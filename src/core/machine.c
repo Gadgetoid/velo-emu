@@ -47,6 +47,7 @@ static const char STATE_MAGIC[16] = "VELO1 STATE v2";
 
 #define IODIN_MMODULE_ATTACHED (1u << 0)
 #define IODIN_SERIAL_DCD       (1u << 4)
+#define IODOUT_SERIAL_DTR      (1u << 3)
 #define MFIO_SERIAL_CTS        (1u << 30)
 #define STATUS5_IOPOS_DCD      (1u << 11)
 #define STATUS5_IONEG_DCD      (1u << 4)
@@ -2347,6 +2348,14 @@ size_t machine_serial_take(machine_t *m, uint8_t *out, size_t max) {
 }
 
 uint32_t machine_serial_baud(machine_t *m) { return uart_baud(&m->uart_port); }
+
+bool machine_serial_dtr(machine_t *m) {
+    uint32_t direction = (m->io_ctl >> 16) & 0x7F;
+    uint32_t dout = (m->io_ctl >> 8) & 0x7F;
+    return (direction & IODOUT_SERIAL_DTR) && !(dout & IODOUT_SERIAL_DTR);
+}
+
+size_t machine_serial_space(machine_t *m) { return uart_space(&m->uart_port); }
 
 static bool guest_halfword(machine_t *m, uint32_t va, bool write, uint16_t *value) {
     uint32_t pa, word = *value;
