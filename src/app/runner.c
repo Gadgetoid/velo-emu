@@ -93,6 +93,10 @@ void app_runner_set_machine_locked(app_runner_t *runner, machine_t *machine) {
     runner->restart = true;
 }
 
+void app_runner_set_debugger_locked(app_runner_t *runner, gdb_t *debugger) {
+    runner->debugger = debugger;
+}
+
 void app_runner_set_paused_locked(app_runner_t *runner, bool paused) {
     runner->paused = paused;
 }

@@ -1428,12 +1428,14 @@ int main(int argc, char **argv) {
 #endif
             case MENU_GDB_SERVER:
                 if (debugger) {
+                    app_runner_set_debugger_locked(runner, NULL);
                     gdb_destroy(debugger);
                     debugger = NULL;
                     settings.gdb_server = 0;
                     notice_queue_push(&notices, "GDB server stopped");
                 } else {
                     debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
+                    app_runner_set_debugger_locked(runner, debugger);
                     settings.gdb_server = debugger != NULL;
                     notice_queue_push(&notices, gdb_notice);
                 }
