@@ -1,4 +1,3 @@
-#include "frontend/common/dialog.h"
 #include "frontend/common/menu_layout.h"
 #include "frontend/common/menu_queue.h"
 #include "frontend/common/menu_state.h"
@@ -6,10 +5,9 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "vendor/stb_truetype.h"
+#include "frontend/linux/ui.h"
 
 #define BAR_HEIGHT       24.0f
 #define BAR_INSET        4.0f
@@ -25,16 +23,11 @@
 #define SHORTCUT_GAP     32.0f
 #define MENU_MIN_WIDTH   160.0f
 #define SUBMENU_OVERLAP  3.0f
-#define FONT_SIZE        13.0f
-#define FALLBACK_ADVANCE ((float)SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE)
 
 #define MAX_MENUS   16
 #define MAX_ITEMS   192
 #define MENU_ITEMS  48
 #define MAX_DEPTH   4
-#define ATLAS_SIZE  512
-#define ASCII_FIRST 32
-#define ASCII_COUNT 95
 
 typedef enum { ITEM_ACTION, ITEM_SEPARATOR, ITEM_SUBMENU, ITEM_HEADING } item_kind_t;
 
@@ -55,56 +48,13 @@ typedef struct {
 } menu_t;
 
 typedef struct {
-    SDL_Window   *window;
-    SDL_Renderer *renderer;
-    SDL_Texture  *glyphs;
-    int glyph_generation;
-} canvas_t;
-
-typedef struct {
     int menu;
     int hover;
     float width, height;
     canvas_t canvas;
 } level_t;
 
-typedef struct { Uint8 r, g, b, a; } colour_t;
-
-typedef struct {
-    colour_t bar, bar_open, bar_border, text, menu, menu_border, highlight, highlight_text, disabled, shortcut, separator;
-} palette_t;
-
-static const palette_t LIGHT = {
-    { 246, 245, 244, 255 }, { 222, 221, 218, 255 }, { 213, 208, 204, 255 }, { 46, 52, 54, 255 },
-    { 255, 255, 255, 255 }, { 190, 186, 182, 255 }, { 53, 132, 228, 255 }, { 255, 255, 255, 255 },
-    { 154, 153, 150, 255 }, { 119, 118, 123, 255 }, { 225, 222, 219, 255 },
-};
-
-static const palette_t DARK = {
-    { 48, 48, 48, 255 }, { 70, 70, 70, 255 }, { 28, 28, 28, 255 }, { 238, 238, 236, 255 },
-    { 56, 56, 56, 255 }, { 24, 24, 24, 255 }, { 53, 132, 228, 255 }, { 255, 255, 255, 255 },
-    { 125, 125, 125, 255 }, { 165, 165, 165, 255 }, { 78, 78, 78, 255 },
-};
-
-enum { GLYPH_ELLIPSIS, GLYPH_CHECK, GLYPH_ARROW, GLYPH_EXTRA_COUNT };
-static int EXTRA_CODEPOINTS[GLYPH_EXTRA_COUNT] = { 0x2026, 0x2713, 0x25b8 };
-
-static struct {
-    unsigned char   *data;
-    stbtt_fontinfo info;
-    stbtt_packedchar ascii[ASCII_COUNT];
-    stbtt_packedchar extra[GLYPH_EXTRA_COUNT];
-    bool has_extra[GLYPH_EXTRA_COUNT];
-    unsigned char   *atlas;
-    Uint32          *atlas_pixels;
-    float density;
-    float ascent, line_height;
-    int generation;
-    bool loaded, baked;
-} font;
-
 static SDL_Window *main_window;
-static float density = 1.0f;
 static canvas_t bar_canvas;
 static menu_t menus[MAX_MENUS];
 static int menu_count;
@@ -116,213 +66,6 @@ static level_t levels[MAX_DEPTH];
 static int depth;
 static int open_top = -1;
 static bool popup_failed;
-
-static const char *FONT_PATHS[] = {
-    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-};
-
-static bool load_font_file(const char *path) {
-    size_t size;
-    unsigned char *data = SDL_LoadFile(path, &size);
-    if (!data) return false;
-    int offset = stbtt_GetFontOffsetForIndex(data, 0);
-    if (offset < 0 || !stbtt_InitFont(&font.info, data, offset)) {
-        SDL_free(data);
-        return false;
-    }
-    font.data = data;
-    return true;
-}
-
-static bool load_matched_font(void) {
-    FILE *match = popen("fc-match -f '%{file}' sans-serif:style=Regular 2>/dev/null", "r");
-    if (!match) return false;
-    char path[1024] = "";
-    bool read = fgets(path, sizeof path, match) != NULL;
-    pclose(match);
-    return read && path[0] == '/' && load_font_file(path);
-}
-
-static void load_font(void) {
-    font.loaded = load_matched_font();
-    for (size_t i = 0; !font.loaded && i < sizeof FONT_PATHS / sizeof FONT_PATHS[0]; i++) font.loaded = load_font_file(FONT_PATHS[i]);
-    if (!font.loaded) return;
-    for (int i = 0; i < GLYPH_EXTRA_COUNT; i++) font.has_extra[i] = stbtt_FindGlyphIndex(&font.info, EXTRA_CODEPOINTS[i]) != 0;
-}
-
-static float window_density(void) {
-    float pixel_density = main_window ? SDL_GetWindowPixelDensity(main_window) : 1.0f;
-    return pixel_density > 0 ? pixel_density : 1.0f;
-}
-
-static void bake_font(void) {
-    density = window_density();
-    if (!font.loaded || (font.baked && font.density == density)) return;
-    if (!font.atlas) font.atlas = malloc(ATLAS_SIZE * ATLAS_SIZE);
-    if (!font.atlas_pixels) font.atlas_pixels = malloc((size_t)ATLAS_SIZE * ATLAS_SIZE * 4);
-    if (!font.atlas || !font.atlas_pixels) return;
-    float size = FONT_SIZE * density;
-    stbtt_pack_context pack;
-    stbtt_pack_range ranges[2] = {
-        { STBTT_POINT_SIZE(size), ASCII_FIRST, NULL, ASCII_COUNT, font.ascii, 0, 0 },
-        { STBTT_POINT_SIZE(size), 0, EXTRA_CODEPOINTS, GLYPH_EXTRA_COUNT, font.extra, 0, 0 },
-    };
-    if (!stbtt_PackBegin(&pack, font.atlas, ATLAS_SIZE, ATLAS_SIZE, 0, 1, NULL)) return;
-    bool packed = stbtt_PackFontRanges(&pack, font.data, 0, ranges, 2) != 0;
-    stbtt_PackEnd(&pack);
-    if (!packed) {
-        font.loaded = false;
-        return;
-    }
-    for (int i = 0; i < ATLAS_SIZE * ATLAS_SIZE; i++) font.atlas_pixels[i] = 0x00ffffffu | (Uint32)font.atlas[i] << 24;
-    float scale = stbtt_ScaleForMappingEmToPixels(&font.info, size);
-    int ascent, descent, gap;
-    stbtt_GetFontVMetrics(&font.info, &ascent, &descent, &gap);
-    font.ascent = ascent * scale / density;
-    font.line_height = (ascent - descent) * scale / density;
-    font.density = density;
-    font.baked = true;
-    font.generation++;
-}
-
-static bool ensure_glyphs(canvas_t *canvas) {
-    if (!font.baked) return false;
-    if (canvas->glyphs && canvas->glyph_generation == font.generation) return true;
-    if (canvas->glyphs) SDL_DestroyTexture(canvas->glyphs);
-    canvas->glyphs = SDL_CreateTexture(canvas->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, ATLAS_SIZE, ATLAS_SIZE);
-    if (!canvas->glyphs) return false;
-    SDL_UpdateTexture(canvas->glyphs, NULL, font.atlas_pixels, ATLAS_SIZE * 4);
-    SDL_SetTextureBlendMode(canvas->glyphs, SDL_BLENDMODE_BLEND);
-    SDL_SetTextureScaleMode(canvas->glyphs, SDL_SCALEMODE_NEAREST);
-    canvas->glyph_generation = font.generation;
-    return true;
-}
-
-static int next_codepoint(const char **text) {
-    const unsigned char *at = (const unsigned char *)*text;
-    int codepoint = *at++;
-    int extra = codepoint >= 0xf0 ? 3 : codepoint >= 0xe0 ? 2 : codepoint >= 0xc0 ? 1 : 0;
-    if (extra) codepoint &= 0x3f >> extra;
-    for (int i = 0; i < extra && (*at & 0xc0) == 0x80; i++) codepoint = codepoint << 6 | (*at++ & 0x3f);
-    *text = (const char *)at;
-    return codepoint;
-}
-
-static const stbtt_packedchar *glyph_for(int codepoint) {
-    if (codepoint >= ASCII_FIRST && codepoint < ASCII_FIRST + ASCII_COUNT) return &font.ascii[codepoint - ASCII_FIRST];
-    for (int i = 0; i < GLYPH_EXTRA_COUNT; i++) {
-        if (codepoint == EXTRA_CODEPOINTS[i] && font.has_extra[i]) return &font.extra[i];
-    }
-    return NULL;
-}
-
-static float text_width(const char *text) {
-    float width = 0;
-    while (*text) {
-        int codepoint = next_codepoint(&text);
-        if (!font.baked) { width += FALLBACK_ADVANCE; continue; }
-        const stbtt_packedchar *glyph = glyph_for(codepoint);
-        if (glyph) width += glyph->xadvance / font.density;
-        else if (codepoint == 0x2026) width += 3 * font.ascii['.' - ASCII_FIRST].xadvance / font.density;
-    }
-    return width;
-}
-
-static void set_colour(SDL_Renderer *renderer, colour_t colour) {
-    SDL_SetRenderDrawColor(renderer, colour.r, colour.g, colour.b, colour.a);
-}
-
-static void fill_rect(canvas_t *canvas, float x, float y, float width, float height, colour_t colour) {
-    SDL_FRect rect = { floorf(x * density), floorf(y * density), 0, 0 };
-    rect.w = floorf((x + width) * density) - rect.x;
-    rect.h = floorf((y + height) * density) - rect.y;
-    set_colour(canvas->renderer, colour);
-    SDL_RenderFillRect(canvas->renderer, &rect);
-}
-
-static void draw_glyph(canvas_t *canvas, const stbtt_packedchar *glyph, float *pen_x, float baseline) {
-    stbtt_aligned_quad quad;
-    float y = 0;
-    stbtt_GetPackedQuad(glyph, ATLAS_SIZE, ATLAS_SIZE, 0, pen_x, &y, &quad, 1);
-    SDL_FRect source = { quad.s0 * ATLAS_SIZE, quad.t0 * ATLAS_SIZE, (quad.s1 - quad.s0) * ATLAS_SIZE, (quad.t1 - quad.t0) * ATLAS_SIZE };
-    SDL_FRect target = { quad.x0, roundf(baseline) + quad.y0, quad.x1 - quad.x0, quad.y1 - quad.y0 };
-    SDL_RenderTexture(canvas->renderer, canvas->glyphs, &source, &target);
-}
-
-static void draw_text(canvas_t *canvas, float x, float top, float height, const char *text, colour_t colour) {
-    if (!ensure_glyphs(canvas)) {
-        char ascii[128];
-        size_t length = 0;
-        while (*text && length < sizeof ascii - 1) {
-            int codepoint = next_codepoint(&text);
-            ascii[length++] = codepoint < 128 ? (char)codepoint : '.';
-        }
-        ascii[length] = 0;
-        SDL_SetRenderScale(canvas->renderer, density, density);
-        set_colour(canvas->renderer, colour);
-        SDL_RenderDebugText(canvas->renderer, x, top + (height - 8) / 2, ascii);
-        SDL_SetRenderScale(canvas->renderer, 1, 1);
-        return;
-    }
-    SDL_SetTextureColorMod(canvas->glyphs, colour.r, colour.g, colour.b);
-    float pen_x = roundf(x * font.density);
-    float baseline = (top + (height - font.line_height) / 2 + font.ascent) * font.density;
-    while (*text) {
-        int codepoint = next_codepoint(&text);
-        const stbtt_packedchar *glyph = glyph_for(codepoint);
-        if (glyph) draw_glyph(canvas, glyph, &pen_x, baseline);
-        else if (codepoint == 0x2026) {
-            for (int i = 0; i < 3; i++) draw_glyph(canvas, &font.ascii['.' - ASCII_FIRST], &pen_x, baseline);
-        }
-    }
-}
-
-static void draw_polygon(canvas_t *canvas, const float *points, int count, colour_t colour) {
-    SDL_Vertex vertices[8];
-    int indices[18];
-    SDL_FColor fill = { colour.r / 255.0f, colour.g / 255.0f, colour.b / 255.0f, colour.a / 255.0f };
-    for (int i = 0; i < count; i++) vertices[i] = (SDL_Vertex){ { points[i * 2] * density, points[i * 2 + 1] * density }, fill, { 0, 0 } };
-    int index_count = 0;
-    for (int i = 1; i + 1 < count; i++) {
-        indices[index_count++] = 0;
-        indices[index_count++] = i;
-        indices[index_count++] = i + 1;
-    }
-    SDL_RenderGeometry(canvas->renderer, NULL, vertices, count, indices, index_count);
-}
-
-static void draw_mark(canvas_t *canvas, int glyph_index, float centre_x, float top, colour_t colour) {
-    if (font.has_extra[glyph_index] && ensure_glyphs(canvas)) {
-        float width = font.extra[glyph_index].xadvance / font.density;
-        char text[4] = { 0 };
-        int codepoint = EXTRA_CODEPOINTS[glyph_index];
-        text[0] = (char)(0xe0 | codepoint >> 12);
-        text[1] = (char)(0x80 | (codepoint >> 6 & 0x3f));
-        text[2] = (char)(0x80 | (codepoint & 0x3f));
-        draw_text(canvas, centre_x - width / 2, top, ROW_HEIGHT, text, colour);
-        return;
-    }
-    float y = top + ROW_HEIGHT / 2;
-    if (glyph_index == GLYPH_ARROW) {
-        float arrow[] = { centre_x - 2, y - 4, centre_x + 3, y, centre_x - 2, y + 4 };
-        draw_polygon(canvas, arrow, 3, colour);
-    } else {
-        float short_stroke[] = { centre_x - 5, y, centre_x - 3.5f, y - 1.5f, centre_x - 1, y + 1, centre_x - 2.5f, y + 2.5f };
-        float long_stroke[] = { centre_x - 2.5f, y + 2.5f, centre_x + 4, y - 4, centre_x + 5.5f, y - 2.5f, centre_x - 1, y + 4 };
-        draw_polygon(canvas, short_stroke, 4, colour);
-        draw_polygon(canvas, long_stroke, 4, colour);
-    }
-}
-
-static const palette_t *palette(void) {
-    return SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK ? &DARK : &LIGHT;
-}
 
 static void set_shortcut(item_t *item, const menu_entry_t *entry) {
     if (entry->tag == MENU_FULL_SCREEN) {
@@ -413,8 +156,8 @@ static void measure_menu(int menu, float *width, float *height) {
         if (!item_visible(item)) continue;
         rows += item_height(item);
         if (item->kind == ITEM_SEPARATOR) continue;
-        title_width = fmaxf(title_width, text_width(item_title(item)));
-        if (item->shortcut[0]) shortcut_width = fmaxf(shortcut_width, text_width(item->shortcut));
+        title_width = fmaxf(title_width, ui_text_width(item_title(item)));
+        if (item->shortcut[0]) shortcut_width = fmaxf(shortcut_width, ui_text_width(item->shortcut));
         if (item->kind == ITEM_SUBMENU) has_submenu = true;
     }
     float total = CHECK_COLUMN + title_width + (shortcut_width > 0 ? SHORTCUT_GAP + shortcut_width : 0) + (has_submenu ? ARROW_COLUMN : TEXT_RIGHT);
@@ -427,7 +170,7 @@ static void layout_bar(void) {
     for (int i = 0; i < top_count; i++) {
         menu_t *menu = &menus[top_menus[i]];
         menu->bar_x = x;
-        menu->bar_width = ceilf(text_width(menu->title) + 2 * BAR_PADDING);
+        menu->bar_width = ceilf(ui_text_width(menu->title) + 2 * BAR_PADDING);
         x += menu->bar_width;
     }
 }
@@ -451,15 +194,8 @@ static float item_top(const level_t *level, int index) {
     return y;
 }
 
-static void destroy_canvas(canvas_t *canvas) {
-    if (canvas->glyphs) SDL_DestroyTexture(canvas->glyphs);
-    if (canvas->renderer) SDL_DestroyRenderer(canvas->renderer);
-    if (canvas->window) SDL_DestroyWindow(canvas->window);
-    *canvas = (canvas_t){ 0 };
-}
-
 static void close_levels(int from) {
-    while (depth > from) destroy_canvas(&levels[--depth].canvas);
+    while (depth > from) ui_destroy_canvas(&levels[--depth].canvas);
     if (depth == 0) open_top = -1;
 }
 
@@ -692,8 +428,8 @@ void menu_install(SDL_Window *window) {
         int menu = parse_menu(&cursor, entry->title);
         if (menu >= 0) top_menus[top_count++] = menu;
     }
-    load_font();
-    bake_font();
+    ui_load_font();
+    ui_prepare(main_window);
 }
 
 void menu_ensure(void) {
@@ -733,22 +469,22 @@ bool menu_event(const SDL_Event *event) {
 }
 
 static void draw_bar(SDL_Renderer *renderer) {
-    const palette_t *colours = palette();
+    const palette_t *colours = ui_palette();
     bar_canvas.renderer = renderer;
     int width = 0, height = 0;
     SDL_GetWindowSize(main_window, &width, &height);
     layout_bar();
-    fill_rect(&bar_canvas, 0, 0, (float)width, BAR_HEIGHT, colours->bar);
-    fill_rect(&bar_canvas, 0, BAR_HEIGHT - 1, (float)width, 1, colours->bar_border);
+    ui_fill(&bar_canvas, 0, 0, (float)width, BAR_HEIGHT, colours->bar);
+    ui_fill(&bar_canvas, 0, BAR_HEIGHT - 1, (float)width, 1, colours->bar_border);
     for (int i = 0; i < top_count; i++) {
         const menu_t *menu = &menus[top_menus[i]];
-        if (i == open_top) fill_rect(&bar_canvas, menu->bar_x, 0, menu->bar_width, BAR_HEIGHT - 1, colours->bar_open);
-        draw_text(&bar_canvas, menu->bar_x + BAR_PADDING, 0, BAR_HEIGHT - 1, menu->title, colours->text);
+        if (i == open_top) ui_fill(&bar_canvas, menu->bar_x, 0, menu->bar_width, BAR_HEIGHT - 1, colours->bar_open);
+        ui_text(&bar_canvas, menu->bar_x + BAR_PADDING, 0, BAR_HEIGHT - 1, menu->title, colours->text);
     }
 }
 
 static void draw_level(level_t *level) {
-    const palette_t *colours = palette();
+    const palette_t *colours = ui_palette();
     canvas_t *canvas = &level->canvas;
     float width, height;
     measure_menu(level->menu, &width, &height);
@@ -757,34 +493,34 @@ static void draw_level(level_t *level) {
         level->height = height;
         SDL_SetWindowSize(canvas->window, (int)width, (int)height);
     }
-    fill_rect(canvas, 0, 0, width, height, colours->menu_border);
-    fill_rect(canvas, 1, 1, width - 2, height - 2, colours->menu);
+    ui_fill(canvas, 0, 0, width, height, colours->menu_border);
+    ui_fill(canvas, 1, 1, width - 2, height - 2, colours->menu);
     float top = MENU_PADDING;
     const menu_t *menu = &menus[level->menu];
     for (int i = menu->first; i < menu->first + menu->count; i++) {
         const item_t *item = &items[i];
         if (!item_visible(item)) continue;
         if (item->kind == ITEM_SEPARATOR) {
-            fill_rect(canvas, 1, top + floorf(SEPARATOR_HEIGHT / 2), width - 2, 1, colours->separator);
+            ui_fill(canvas, 1, top + floorf(SEPARATOR_HEIGHT / 2), width - 2, 1, colours->separator);
             top += SEPARATOR_HEIGHT;
             continue;
         }
         if (item->kind == ITEM_HEADING) {
-            draw_text(canvas, HEADING_INSET, top, HEADING_HEIGHT, item->title, colours->shortcut);
+            ui_text(canvas, HEADING_INSET, top, HEADING_HEIGHT, item->title, colours->shortcut);
             top += HEADING_HEIGHT;
             continue;
         }
         bool selectable = item_selectable(item);
         bool highlighted = selectable && level->hover == i;
-        if (highlighted) fill_rect(canvas, 1, top, width - 2, ROW_HEIGHT, colours->highlight);
+        if (highlighted) ui_fill(canvas, 1, top, width - 2, ROW_HEIGHT, colours->highlight);
         colour_t text = !selectable ? colours->disabled : highlighted ? colours->highlight_text : colours->text;
-        if (item->kind == ITEM_ACTION && menu_state_checked(item->tag)) draw_mark(canvas, GLYPH_CHECK, CHECK_COLUMN / 2 + 1, top, text);
-        draw_text(canvas, CHECK_COLUMN, top, ROW_HEIGHT, item_title(item), text);
+        if (item->kind == ITEM_ACTION && menu_state_checked(item->tag)) ui_mark(canvas, GLYPH_CHECK, CHECK_COLUMN / 2 + 1, top, ROW_HEIGHT, text);
+        ui_text(canvas, CHECK_COLUMN, top, ROW_HEIGHT, item_title(item), text);
         if (item->shortcut[0]) {
             colour_t shortcut = !selectable ? colours->disabled : highlighted ? colours->highlight_text : colours->shortcut;
-            draw_text(canvas, width - TEXT_RIGHT - text_width(item->shortcut), top, ROW_HEIGHT, item->shortcut, shortcut);
+            ui_text(canvas, width - TEXT_RIGHT - ui_text_width(item->shortcut), top, ROW_HEIGHT, item->shortcut, shortcut);
         }
-        if (item->kind == ITEM_SUBMENU) draw_mark(canvas, GLYPH_ARROW, width - ARROW_COLUMN / 2, top, text);
+        if (item->kind == ITEM_SUBMENU) ui_mark(canvas, GLYPH_ARROW, width - ARROW_COLUMN / 2, top, ROW_HEIGHT, text);
         top += ROW_HEIGHT;
     }
 }
@@ -792,10 +528,6 @@ static void draw_level(level_t *level) {
 static bool focus_is_ours(void) {
     SDL_Window *focus = SDL_GetKeyboardFocus();
     return focus && (focus == main_window || level_of_window(SDL_GetWindowID(focus)) >= 0);
-}
-
-static bool inside(float x, float y, float left, float top, float width, float height) {
-    return x >= left && y >= top && x < left + width && y < top + height;
 }
 
 static bool clicked_elsewhere(void) {
@@ -808,11 +540,11 @@ static bool clicked_elsewhere(void) {
     SDL_GetWindowSize(main_window, &width, &height);
     x -= (float)window_x;
     y -= (float)window_y;
-    if (inside(x, y, 0, 0, (float)width, (float)height)) return false;
+    if (ui_inside(x, y, 0, 0, (float)width, (float)height)) return false;
     for (int level = 0; level < depth; level++) {
         float origin_x, origin_y;
         level_origin(level, &origin_x, &origin_y);
-        if (inside(x, y, origin_x, origin_y, levels[level].width, levels[level].height)) return false;
+        if (ui_inside(x, y, origin_x, origin_y, levels[level].width, levels[level].height)) return false;
     }
     return true;
 }
@@ -820,7 +552,7 @@ static bool clicked_elsewhere(void) {
 void menu_draw(SDL_Renderer *renderer) {
     if (!main_window) return;
     if (depth && (!focus_is_ours() || clicked_elsewhere())) close_levels(0);
-    bake_font();
+    ui_prepare(main_window);
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     draw_bar(renderer);
     for (int i = 0; i < depth; i++) {
@@ -833,493 +565,4 @@ void menu_draw(SDL_Renderer *renderer) {
 
 int menu_modifiers(void) {
     return 0;
-}
-
-#define FORM_WIDTH      500.0f
-#define FORM_PADDING    18.0f
-#define FORM_LABEL      92.0f
-#define FORM_GAP        8.0f
-#define FORM_ROW        30.0f
-#define FORM_CONTROL    24.0f
-#define FORM_LINE       18.0f
-#define FORM_BUTTON     88.0f
-#define FORM_WIDGETS    8
-#define FORM_OPTIONS    40
-#define FORM_LIST_ROW   22.0f
-#define FORM_CANCEL     -1
-
-typedef enum { WIDGET_TEXT, WIDGET_CHOICE, WIDGET_CHECK, WIDGET_BUTTON } widget_kind_t;
-
-typedef struct {
-    widget_kind_t kind;
-    const char   *label;
-    const char   *text;
-    char         *value;
-    size_t value_size;
-    const char   *placeholder;
-    const char   *options[FORM_OPTIONS];
-    int count, selected;
-    uint64_t enabled;
-    bool checked;
-    int result;
-    float x, y, width, height;
-} widget_t;
-
-typedef struct form form_t;
-
-struct form {
-    const char *title, *message;
-    widget_t widgets[FORM_WIDGETS];
-    int count, focus, open, hover, scroll, default_result;
-    float x, y, width, height;
-    void (*changed)(form_t *form, int widget, void *context);
-    void       *context;
-};
-
-static int add_widget(form_t *form, widget_kind_t kind, const char *label) {
-    widget_t *widget = &form->widgets[form->count];
-    memset(widget, 0, sizeof *widget);
-    widget->kind = kind;
-    widget->label = label;
-    widget->enabled = ~0ull;
-    return form->count++;
-}
-
-static int wrap_lines(const char *text, float width, char lines[][160], int max) {
-    int count = 0;
-    const char *at = text;
-    while (*at && count < max) {
-        const char *end = at, *fit = at;
-        while (*end) {
-            const char *word = end;
-            while (*word == ' ') word++;
-            while (*word && *word != ' ') word++;
-            char candidate[160];
-            snprintf(candidate, sizeof candidate, "%.*s", (int)(word - at), at);
-            if (text_width(candidate) > width && fit != at) break;
-            fit = end = word;
-        }
-        snprintf(lines[count++], 160, "%.*s", (int)(fit - at), at);
-        at = fit;
-        while (*at == ' ') at++;
-    }
-    return count;
-}
-
-static void layout_form(form_t *form) {
-    int window_width, window_height;
-    SDL_GetWindowSize(main_window, &window_width, &window_height);
-    char lines[8][160];
-    int message_lines = form->message ? wrap_lines(form->message, FORM_WIDTH - 2 * FORM_PADDING, lines, 8) : 0;
-    float y = FORM_PADDING + FORM_LINE + FORM_GAP + message_lines * FORM_LINE + FORM_GAP;
-    float buttons = 0;
-    for (int i = 0; i < form->count; i++) {
-        widget_t *widget = &form->widgets[i];
-        if (widget->kind == WIDGET_BUTTON) {
-            buttons++;
-            continue;
-        }
-        widget->x = FORM_PADDING + FORM_LABEL + FORM_GAP;
-        widget->y = y + (FORM_ROW - FORM_CONTROL) / 2;
-        widget->width = FORM_WIDTH - widget->x - FORM_PADDING;
-        widget->height = FORM_CONTROL;
-        y += FORM_ROW;
-    }
-    y += FORM_GAP;
-    float right = FORM_WIDTH - FORM_PADDING;
-    for (int i = form->count - 1; i >= 0; i--) {
-        widget_t *widget = &form->widgets[i];
-        if (widget->kind != WIDGET_BUTTON) continue;
-        widget->width = FORM_BUTTON;
-        widget->height = FORM_CONTROL + 4;
-        widget->x = right - FORM_BUTTON;
-        widget->y = y;
-        right -= FORM_BUTTON + FORM_GAP;
-    }
-    form->width = FORM_WIDTH;
-    form->height = y + (buttons ? FORM_CONTROL + 4 : 0) + FORM_PADDING;
-    form->x = floorf(((float)window_width - form->width) / 2);
-    form->y = floorf(BAR_HEIGHT + ((float)window_height - BAR_HEIGHT - form->height) / 2);
-    if (form->y < BAR_HEIGHT) form->y = BAR_HEIGHT;
-    if (form->x < 0) form->x = 0;
-}
-
-static bool option_enabled(const widget_t *widget, int option) {
-    return option < 64 ? (widget->enabled >> option) & 1u : true;
-}
-
-static int visible_options(const form_t *form) {
-    int window_width, window_height;
-    SDL_GetWindowSize(main_window, &window_width, &window_height);
-    const widget_t *widget = &form->widgets[form->open];
-    float top = form->y + widget->y + widget->height;
-    int rows = (int)(((float)window_height - top - 4) / FORM_LIST_ROW);
-    if (rows < 3) rows = 3;
-    return rows < widget->count ? rows : widget->count;
-}
-
-static void draw_form(form_t *form) {
-    const palette_t *colours = palette();
-    canvas_t *canvas = &bar_canvas;
-    canvas->renderer = SDL_GetRenderer(main_window);
-    SDL_SetRenderDrawBlendMode(canvas->renderer, SDL_BLENDMODE_BLEND);
-    bake_font();
-    layout_form(form);
-    int window_width, window_height;
-    SDL_GetWindowSize(main_window, &window_width, &window_height);
-    fill_rect(canvas, 0, 0, (float)window_width, (float)window_height, colours->bar_open);
-    draw_bar(canvas->renderer);
-    float ox = form->x, oy = form->y;
-    fill_rect(canvas, ox, oy, form->width, form->height, colours->menu_border);
-    fill_rect(canvas, ox + 1, oy + 1, form->width - 2, form->height - 2, colours->menu);
-    draw_text(canvas, ox + FORM_PADDING, oy + FORM_PADDING, FORM_LINE, form->title, colours->text);
-    char lines[8][160];
-    int message_lines = form->message ? wrap_lines(form->message, FORM_WIDTH - 2 * FORM_PADDING, lines, 8) : 0;
-    for (int i = 0; i < message_lines; i++) draw_text(canvas, ox + FORM_PADDING, oy + FORM_PADDING + FORM_LINE + FORM_GAP + i * FORM_LINE, FORM_LINE, lines[i], colours->shortcut);
-    for (int i = 0; i < form->count; i++) {
-        widget_t *widget = &form->widgets[i];
-        float x = ox + widget->x, y = oy + widget->y;
-        bool focused = form->focus == i;
-        if (widget->label) {
-            float label_width = text_width(widget->label);
-            draw_text(canvas, ox + FORM_PADDING + FORM_LABEL - label_width, y, widget->height, widget->label, colours->text);
-        }
-        colour_t border = focused ? colours->highlight : colours->menu_border;
-        switch (widget->kind) {
-        case WIDGET_TEXT:
-            fill_rect(canvas, x, y, widget->width, widget->height, border);
-            fill_rect(canvas, x + 1, y + 1, widget->width - 2, widget->height - 2, colours->menu);
-            if (widget->value[0]) draw_text(canvas, x + 6, y, widget->height, widget->value, colours->text);
-            else if (widget->placeholder) draw_text(canvas, x + 6, y, widget->height, widget->placeholder, colours->disabled);
-            if (focused) fill_rect(canvas, x + 6 + text_width(widget->value) + 1, y + 5, 1, widget->height - 10, colours->text);
-            break;
-        case WIDGET_CHOICE:
-            fill_rect(canvas, x, y, widget->width, widget->height, border);
-            fill_rect(canvas, x + 1, y + 1, widget->width - 2, widget->height - 2, colours->bar);
-            if (widget->selected >= 0 && widget->selected < widget->count) draw_text(canvas, x + 6, y, widget->height, widget->options[widget->selected], colours->text);
-            draw_mark(canvas, GLYPH_ARROW, x + widget->width - 12, y + (widget->height - ROW_HEIGHT) / 2, colours->text);
-            break;
-        case WIDGET_CHECK:
-            fill_rect(canvas, x, y + 4, 16, 16, border);
-            fill_rect(canvas, x + 1, y + 5, 14, 14, colours->menu);
-            if (widget->checked) draw_mark(canvas, GLYPH_CHECK, x + 8, y + (widget->height - ROW_HEIGHT) / 2, colours->text);
-            draw_text(canvas, x + 24, y, widget->height, widget->text, colours->text);
-            break;
-        case WIDGET_BUTTON: {
-            bool primary = widget->result == form->default_result;
-            fill_rect(canvas, x, y, widget->width, widget->height, focused ? colours->highlight : colours->menu_border);
-            fill_rect(canvas, x + 1, y + 1, widget->width - 2, widget->height - 2, primary ? colours->highlight : colours->bar);
-            float label_width = text_width(widget->text);
-            draw_text(canvas, x + (widget->width - label_width) / 2, y, widget->height, widget->text, primary ? colours->highlight_text : colours->text);
-            break;
-        }
-        }
-    }
-    if (form->open >= 0) {
-        widget_t *widget = &form->widgets[form->open];
-        int rows = visible_options(form);
-        float x = ox + widget->x, y = oy + widget->y + widget->height;
-        fill_rect(canvas, x, y, widget->width, rows * FORM_LIST_ROW + 2, colours->menu_border);
-        fill_rect(canvas, x + 1, y + 1, widget->width - 2, rows * FORM_LIST_ROW, colours->menu);
-        for (int row = 0; row < rows; row++) {
-            int option = form->scroll + row;
-            if (option >= widget->count) break;
-            bool enabled_option = option_enabled(widget, option);
-            bool highlighted = enabled_option && option == form->hover;
-            float top = y + 1 + row * FORM_LIST_ROW;
-            if (highlighted) fill_rect(canvas, x + 1, top, widget->width - 2, FORM_LIST_ROW, colours->highlight);
-            colour_t text = !enabled_option ? colours->disabled : highlighted ? colours->highlight_text : colours->text;
-            draw_text(canvas, x + 6, top, FORM_LIST_ROW, widget->options[option], text);
-        }
-    }
-    SDL_RenderPresent(canvas->renderer);
-}
-
-static int widget_at(const form_t *form, float x, float y) {
-    for (int i = 0; i < form->count; i++) {
-        const widget_t *widget = &form->widgets[i];
-        float left = form->x + widget->x, top = form->y + widget->y;
-        float width = widget->kind == WIDGET_CHECK ? 24 + text_width(widget->text) : widget->width;
-        if (inside(x, y, left, top, width, widget->height)) return i;
-    }
-    return -1;
-}
-
-static int option_at(const form_t *form, float x, float y) {
-    const widget_t *widget = &form->widgets[form->open];
-    float left = form->x + widget->x, top = form->y + widget->y + widget->height + 1;
-    int rows = visible_options(form);
-    if (!inside(x, y, left, top, widget->width, rows * FORM_LIST_ROW)) return -1;
-    int option = form->scroll + (int)((y - top) / FORM_LIST_ROW);
-    return option < widget->count ? option : -1;
-}
-
-static void choose(form_t *form, int widget_index, int option) {
-    widget_t *widget = &form->widgets[widget_index];
-    if (option < 0 || option >= widget->count || !option_enabled(widget, option)) return;
-    widget->selected = option;
-    if (form->changed) form->changed(form, widget_index, form->context);
-}
-
-static void open_choice(form_t *form, int widget_index) {
-    form->open = widget_index;
-    form->hover = form->widgets[widget_index].selected;
-    int rows = visible_options(form);
-    form->scroll = form->hover >= rows ? form->hover - rows + 1 : 0;
-}
-
-static void step_choice(form_t *form, int widget_index, int step) {
-    widget_t *widget = &form->widgets[widget_index];
-    for (int option = widget->selected + step; option >= 0 && option < widget->count; option += step) {
-        if (option_enabled(widget, option)) {
-            choose(form, widget_index, option);
-            return;
-        }
-    }
-}
-
-static void move_hover(form_t *form, int step) {
-    widget_t *widget = &form->widgets[form->open];
-    for (int option = form->hover + step; option >= 0 && option < widget->count; option += step) {
-        if (!option_enabled(widget, option)) continue;
-        form->hover = option;
-        int rows = visible_options(form);
-        if (option < form->scroll) form->scroll = option;
-        if (option >= form->scroll + rows) form->scroll = option - rows + 1;
-        return;
-    }
-}
-
-static void remove_last_character(char *text) {
-    size_t length = strlen(text);
-    while (length && ((unsigned char)text[length - 1] & 0xc0) == 0x80) length--;
-    if (length) length--;
-    text[length] = 0;
-}
-
-static int press(form_t *form, int widget_index) {
-    widget_t *widget = &form->widgets[widget_index];
-    form->focus = widget_index;
-    if (widget->kind == WIDGET_CHOICE) open_choice(form, widget_index);
-    else if (widget->kind == WIDGET_CHECK) widget->checked = !widget->checked;
-    else if (widget->kind == WIDGET_BUTTON) return widget->result;
-    return INT32_MIN;
-}
-
-static int run_form(form_t *form) {
-    form->open = -1;
-    SDL_StartTextInput(main_window);
-    int result = FORM_CANCEL;
-    for (;;) {
-        draw_form(form);
-        SDL_Event event;
-        if (!SDL_WaitEvent(&event)) break;
-        int outcome = INT32_MIN;
-        switch (event.type) {
-        case SDL_EVENT_QUIT:
-        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-            SDL_PushEvent(&event);
-            outcome = FORM_CANCEL;
-            break;
-        case SDL_EVENT_MOUSE_MOTION:
-            if (form->open >= 0) {
-                int option = option_at(form, event.motion.x, event.motion.y);
-                if (option >= 0 && option_enabled(&form->widgets[form->open], option)) form->hover = option;
-            }
-            break;
-        case SDL_EVENT_MOUSE_WHEEL:
-            if (form->open >= 0) {
-                int rows = visible_options(form), count = form->widgets[form->open].count;
-                form->scroll -= event.wheel.y > 0 ? 1 : event.wheel.y < 0 ? -1 : 0;
-                if (form->scroll > count - rows) form->scroll = count - rows;
-                if (form->scroll < 0) form->scroll = 0;
-            }
-            break;
-        case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (event.button.button != SDL_BUTTON_LEFT) break;
-            if (form->open >= 0) {
-                int option = option_at(form, event.button.x, event.button.y);
-                int open = form->open;
-                form->open = -1;
-                if (option >= 0) choose(form, open, option);
-                break;
-            }
-            {
-                int widget_index = widget_at(form, event.button.x, event.button.y);
-                if (widget_index >= 0) outcome = press(form, widget_index);
-            }
-            break;
-        case SDL_EVENT_TEXT_INPUT:
-            if (form->open < 0 && form->widgets[form->focus].kind == WIDGET_TEXT) {
-                widget_t *widget = &form->widgets[form->focus];
-                size_t length = strlen(widget->value);
-                snprintf(widget->value + length, widget->value_size - length, "%s", event.text.text);
-            }
-            break;
-        case SDL_EVENT_KEY_DOWN: {
-            SDL_Keycode key = event.key.key;
-            widget_t *focused = &form->widgets[form->focus];
-            if (form->open >= 0) {
-                if (key == SDLK_ESCAPE) form->open = -1;
-                else if (key == SDLK_UP) move_hover(form, -1);
-                else if (key == SDLK_DOWN) move_hover(form, 1);
-                else if (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE) {
-                    int open = form->open;
-                    form->open = -1;
-                    choose(form, open, form->hover);
-                }
-                break;
-            }
-            if (key == SDLK_ESCAPE) outcome = FORM_CANCEL;
-            else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) outcome = focused->kind == WIDGET_BUTTON ? focused->result : form->default_result;
-            else if (key == SDLK_TAB) form->focus = (form->focus + ((event.key.mod & SDL_KMOD_SHIFT) ? form->count - 1 : 1)) % form->count;
-            else if (key == SDLK_BACKSPACE && focused->kind == WIDGET_TEXT) remove_last_character(focused->value);
-            else if (focused->kind == WIDGET_CHOICE && (key == SDLK_UP || key == SDLK_DOWN)) step_choice(form, form->focus, key == SDLK_UP ? -1 : 1);
-            else if (key == SDLK_SPACE && focused->kind != WIDGET_TEXT) outcome = press(form, form->focus);
-            break;
-        }
-        }
-        if (outcome != INT32_MIN) {
-            result = outcome;
-            break;
-        }
-    }
-    SDL_StopTextInput(main_window);
-    return result;
-}
-
-#define NEW_CREATE 1
-
-typedef struct {
-    dialog_rom_t roms[FORM_OPTIONS - 1];
-    int count;
-    dialog_probe_fn probe;
-    int rom, screen, last_rom;
-    SDL_AtomicInt picked;
-    char picked_path[1024];
-} new_machine_t;
-
-static void update_screens(form_t *form, new_machine_t *state) {
-    widget_t *rom = &form->widgets[state->rom], *screen = &form->widgets[state->screen];
-    uint32_t mask = rom->selected < state->count ? state->roms[rom->selected].screens : 1u;
-    screen->enabled = mask;
-    if (!option_enabled(screen, screen->selected)) screen->selected = 0;
-}
-
-static void picked_rom(void *userdata, const char *const *files, int filter) {
-    (void)filter;
-    new_machine_t *state = userdata;
-    if (files && files[0]) snprintf(state->picked_path, sizeof state->picked_path, "%s", files[0]);
-    else state->picked_path[0] = 0;
-    SDL_SetAtomicInt(&state->picked, 1);
-}
-
-static void rom_changed(form_t *form, int widget_index, void *context) {
-    new_machine_t *state = context;
-    if (widget_index != state->rom) return;
-    widget_t *rom = &form->widgets[state->rom];
-    if (rom->selected < state->count) {
-        state->last_rom = rom->selected;
-        update_screens(form, state);
-        return;
-    }
-    SDL_SetAtomicInt(&state->picked, 0);
-    SDL_ShowOpenFileDialog(picked_rom, state, main_window, NULL, 0, NULL, false);
-    while (!SDL_GetAtomicInt(&state->picked)) {
-        SDL_PumpEvents();
-        SDL_Delay(20);
-    }
-    rom->selected = state->last_rom;
-    char label[160];
-    uint32_t screens = state->picked_path[0] && state->count < FORM_OPTIONS - 1 ? state->probe(state->picked_path, label, sizeof label) : 0;
-    if (screens) {
-        dialog_rom_t *added = &state->roms[state->count];
-        snprintf(added->path, sizeof added->path, "%s", state->picked_path);
-        snprintf(added->label, sizeof added->label, "%s", label);
-        added->screens = screens;
-        rom->options[state->count] = added->label;
-        state->count++;
-        rom->options[state->count] = "Other ROM File" ELLIPSIS;
-        rom->count = state->count + 1;
-        rom->selected = state->last_rom = state->count - 1;
-    } else if (state->picked_path[0]) {
-        const SDL_MessageBoxButtonData buttons[] = { { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 0, "OK" } };
-        const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_WARNING, main_window, "Not a Velo ROM", "That file isn't a ROM this emulator can run.", 1, buttons, NULL };
-        int chosen;
-        SDL_ShowMessageBox(&dialog, &chosen);
-    }
-    update_screens(form, state);
-}
-
-bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_count, dialog_probe_fn probe, dialog_machine_t *result) {
-    (void)window;
-    static new_machine_t state;
-    memset(&state, 0, sizeof state);
-    state.probe = probe;
-    state.count = rom_count < FORM_OPTIONS - 1 ? rom_count : FORM_OPTIONS - 1;
-    memcpy(state.roms, roms, (size_t)state.count * sizeof roms[0]);
-    form_t form = { "New Machine", DIALOG_NEW_MACHINE_MESSAGE, { { 0 } }, 0, 0, -1, 0, 0, NEW_CREATE, 0, 0, 0, 0, rom_changed, &state };
-    int name = add_widget(&form, WIDGET_TEXT, "Name:");
-    form.widgets[name].value = result->name;
-    form.widgets[name].value_size = sizeof result->name;
-    form.widgets[name].placeholder = "Named from the settings below";
-    state.rom = add_widget(&form, WIDGET_CHOICE, "Version:");
-    widget_t *rom = &form.widgets[state.rom];
-    for (int i = 0; i < state.count; i++) {
-        rom->options[i] = state.roms[i].label;
-        if (!strcmp(state.roms[i].path, result->rom)) rom->selected = state.last_rom = i;
-    }
-    rom->options[state.count] = "Other ROM File" ELLIPSIS;
-    rom->count = state.count + 1;
-    state.screen = add_widget(&form, WIDGET_CHOICE, "Screen:");
-    widget_t *screen = &form.widgets[state.screen];
-    for (int i = 0; i < SCREEN_PRESET_COUNT && dialog_screen_label(i); i++) {
-        screen->options[screen->count++] = dialog_screen_label(i);
-        if (SCREEN_PRESETS[i].width == result->screen.width && SCREEN_PRESETS[i].height == result->screen.height) screen->selected = i;
-    }
-    int memory = add_widget(&form, WIDGET_CHOICE, "Memory:");
-    for (int i = 0; i < DIALOG_MEMORY_COUNT; i++) {
-        form.widgets[memory].options[form.widgets[memory].count++] = DIALOG_MEMORY_LABELS[i];
-        if (DIALOG_MEMORY_SIZES[i] == result->memory) form.widgets[memory].selected = i;
-    }
-    int clock = add_widget(&form, WIDGET_CHECK, NULL);
-    form.widgets[clock].text = DIALOG_CLOCK_LABEL;
-    form.widgets[clock].checked = result->host_time;
-    int cancel = add_widget(&form, WIDGET_BUTTON, NULL);
-    form.widgets[cancel].text = "Cancel";
-    form.widgets[cancel].result = FORM_CANCEL;
-    int create = add_widget(&form, WIDGET_BUTTON, NULL);
-    form.widgets[create].text = "Create";
-    form.widgets[create].result = NEW_CREATE;
-    update_screens(&form, &state);
-    if (run_form(&form) != NEW_CREATE) return false;
-    if (rom->selected >= state.count) return false;
-    snprintf(result->rom, sizeof result->rom, "%s", state.roms[rom->selected].path);
-    result->screen = SCREEN_PRESETS[screen->selected];
-    result->memory = DIALOG_MEMORY_SIZES[form.widgets[memory].selected];
-    result->host_time = form.widgets[clock].checked;
-    return true;
-}
-
-dialog_manage_t dialog_manage_machines(SDL_Window *window, const char *const *names, int count, int current, int *chosen) {
-    (void)window;
-    static char titles[FORM_OPTIONS][120];
-    form_t form = { "Manage Machines", DIALOG_MANAGE_MESSAGE, { { 0 } }, 0, 0, -1, 0, 0, DIALOG_MANAGE_CLOSE, 0, 0, 0, 0, NULL, NULL };
-    int list = add_widget(&form, WIDGET_CHOICE, "Machine:");
-    for (int i = 0; i < count && i < FORM_OPTIONS; i++) {
-        snprintf(titles[i], sizeof titles[i], "%s%s", names[i], i == current ? " (running)" : "");
-        form.widgets[list].options[form.widgets[list].count++] = titles[i];
-    }
-    form.widgets[list].selected = *chosen >= 0 && *chosen < count ? *chosen : 0;
-    static const struct { const char *title; int result; } BUTTONS[] = {
-        { "Delete" ELLIPSIS, DIALOG_MANAGE_DELETE }, { "Reset" ELLIPSIS, DIALOG_MANAGE_RESET }, { "Done", DIALOG_MANAGE_CLOSE },
-    };
-    for (int i = 0; i < 3; i++) {
-        int button = add_widget(&form, WIDGET_BUTTON, NULL);
-        form.widgets[button].text = BUTTONS[i].title;
-        form.widgets[button].result = BUTTONS[i].result;
-    }
-    int result = run_form(&form);
-    *chosen = form.widgets[list].selected;
-    return result == DIALOG_MANAGE_RESET || result == DIALOG_MANAGE_DELETE ? (dialog_manage_t)result : DIALOG_MANAGE_CLOSE;
 }

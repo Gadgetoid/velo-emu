@@ -38,7 +38,7 @@ LDFLAGS  += -framework Cocoa
 else ifeq ($(MENU),android)
 SRC_MENU  = src/frontend/android/menu.c src/frontend/common/menu_state.c src/frontend/android/android.c src/vendor/truetype.c
 else
-SRC_MENU  = src/frontend/linux/menu.c src/frontend/common/menu_state.c src/vendor/truetype.c
+SRC_MENU  = src/frontend/linux/menu.c src/frontend/linux/dialog.c src/frontend/linux/ui.c src/frontend/common/menu_state.c src/vendor/truetype.c
 endif
 
 ifeq ($(shell $(PKG_CONFIG) --exists slirp && echo yes),yes)
