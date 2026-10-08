@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include "util/file.h"
@@ -45,7 +46,7 @@ static int compare_name_pointers(const void *a, const void *b) {
 
 static bool has_state_extension(const char *name) {
     const char *extension = strrchr(name, '.');
-    return extension && !strcmp(extension, ".state");
+    return extension && !strcasecmp(extension, ".state");
 }
 
 static void prune_backups(const char *path, const char *prefix) {
