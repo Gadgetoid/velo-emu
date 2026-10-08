@@ -129,6 +129,7 @@ typedef struct {
     double   backlight_times[8];
     int      backlight_count;
     double   cable_at, net_at, replug_at, realtime;
+    int      tcp_port;
     uint32_t watches[MACHINE_WATCH_MAX];
     int      watch_count;
     net_gateway_options_t net_options;
@@ -150,7 +151,7 @@ typedef struct {
 enum {
     OPT_HEADING_RUN, OPT_SECONDS, OPT_LOAD, OPT_SAVE, OPT_CARD, OPT_DISK, OPT_MEMORY, OPT_SCREEN, OPT_SPEED, OPT_REALTIME, OPT_HOST_TIME, OPT_OPTIMISATIONS,
     OPT_HEADING_INPUT, OPT_TAP, OPT_KEY, OPT_TYPE, OPT_POWER, OPT_BACKLIGHT, OPT_SOFT_RESET, OPT_INSERT_DISK, OPT_EJECT_DISK,
-    OPT_HEADING_NET, OPT_NET, OPT_RAPI, OPT_RAPI_PORT, OPT_AGENT, OPT_USER_AGENT, OPT_REPLUG, OPT_CABLE, OPT_CABLE_SEND,
+    OPT_HEADING_NET, OPT_NET, OPT_RAPI, OPT_RAPI_PORT, OPT_TCP, OPT_AGENT, OPT_USER_AGENT, OPT_REPLUG, OPT_CABLE, OPT_CABLE_SEND,
     OPT_HEADING_OUTPUT, OPT_PGM, OPT_PNG, OPT_PNG_CELL, OPT_PNG_BACKLIGHT, OPT_WAV, OPT_TRACE_PC, OPT_WATCH_PC, OPT_DEBUG_OUTPUT, OPT_GDB,
     OPT_GDB_PROCESS,
 };
@@ -182,6 +183,7 @@ static const option_t OPTIONS[] = {
     [OPT_AGENT] = { "agent", "SOCKET", "pass messages between a guest agent's break 0x51CE mailbox and one client on this Unix socket", 0 },
     [OPT_RAPI] = { "rapi", "SOCKET", "expose the Velo's RAPI port on a Unix socket, for velo-rapi --socket", 0 },
     [OPT_RAPI_PORT] = { "rapi-port", "PORT", "expose the Velo's RAPI port on this TCP port on all interfaces, for velo-rapi --connect", 0 },
+    [OPT_TCP] = { "tcp", "PORT", "offer COM1 as raw bytes on this TCP port on all interfaces, with the cable connected while a client is attached", 0 },
     [OPT_USER_AGENT] = { "user-agent", "TEXT", "the web proxy's user agent", 0 },
     [OPT_REPLUG] = { "replug", "SECONDS", "unplug the --net cable and plug it back in 2 seconds later, as the app does after a speed change", 0 },
     [OPT_CABLE] = { "cable", "SECONDS", "connect a bare serial cable, with nothing at the other end", 0 },
@@ -294,6 +296,12 @@ static bool parse_option(void *context, int option, const char *value, char *err
         run->net_options.rapi_port = (int)port;
         return true;
     }
+    case OPT_TCP: {
+        long port;
+        if (!option_integer(value, 10, &port) || port < 1 || port > 65535) return false;
+        run->tcp_port = (int)port;
+        return true;
+    }
     case OPT_AGENT: run->agent_socket = value; return true;
     case OPT_USER_AGENT: run->net_options.user_agent = value; return true;
     case OPT_REPLUG: return option_number(value, &run->replug_at) && run->replug_at >= 0;
@@ -365,6 +373,12 @@ int main(int argc, char **argv) {
     if (run.net_at > latest) latest = run.net_at;
     if (run.replug_at >= 0 && run.replug_at + 2 > latest) latest = run.replug_at + 2;
     if (latest >= run.seconds) fprintf(stderr, "headless: an event at %.2f s is at or after --seconds=%.2f and won't happen\n", latest, run.seconds);
+    if (run.tcp_port) {
+        if (run.net_at >= 0) { fprintf(stderr, "headless: --net and --tcp can't both be given\n"); return 2; }
+        serial.tcp_port = run.tcp_port;
+        const char *failure = serial_link_open(&serial, SERIAL_TCP, NULL);
+        if (failure) { fprintf(stderr, "headless: %s\n", failure); return 1; }
+    }
     if (run.agent_socket && !(agent = agent_create(run.agent_socket, log_stderr))) {
         fprintf(stderr, "cannot listen on agent socket %s\n", run.agent_socket);
         return 1;
@@ -505,6 +519,7 @@ int main(int argc, char **argv) {
                 advance(machine, step);
                 pace(machine, run.realtime, wall_start, cycles_start);
                 serial_link_pump(&serial, machine);
+                if (serial.mode == SERIAL_TCP && serial_link_attached(&serial) != machine_serial_connected(machine)) machine_serial_connect(machine, serial_link_attached(&serial));
             }
         } else {
             advance(machine, slice);

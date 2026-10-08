@@ -1,12 +1,22 @@
 #include "net/serial_link.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
+
+#ifdef MSG_NOSIGNAL
+#define SEND_FLAGS MSG_NOSIGNAL
+#else
+#define SEND_FLAGS 0
+#endif
 
 #define DEVICE_DEFAULT_SPEED B19200
 
@@ -16,15 +26,18 @@ void serial_link_init(serial_link_t *link, net_gateway_log_fn log) {
     link->options = (net_gateway_options_t){ NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0 };
     link->fd = -1;
     link->pty_slave = -1;
+    link->listener = -1;
 }
 
 void serial_link_close(serial_link_t *link) {
     if (link->gateway) net_gateway_destroy(link->gateway);
     if (link->fd >= 0) close(link->fd);
     if (link->pty_slave >= 0) close(link->pty_slave);
+    if (link->listener >= 0) close(link->listener);
     link->gateway = NULL;
     link->fd = -1;
     link->pty_slave = -1;
+    link->listener = -1;
     link->queued = 0;
     link->baud = 0;
     link->dtr = false;
@@ -70,6 +83,22 @@ static const char *open_device(serial_link_t *link, const char *device) {
     return NULL;
 }
 
+static const char *open_tcp(serial_link_t *link) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    int enabled = 1;
+    if (listener >= 0) setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof enabled);
+    struct sockaddr_in address = { .sin_family = AF_INET, .sin_port = htons((uint16_t)link->tcp_port), .sin_addr.s_addr = htonl(INADDR_ANY) };
+    if (listener < 0 || link->tcp_port <= 0 || link->tcp_port > 65535 || bind(listener, (struct sockaddr *)&address, sizeof address) != 0 || listen(listener, 1) != 0) {
+        snprintf(link->name, sizeof link->name, "could not listen on port %d: %s", link->tcp_port, strerror(errno));
+        if (listener >= 0) close(listener);
+        return link->name;
+    }
+    fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK);
+    link->listener = listener;
+    snprintf(link->name, sizeof link->name, "port %d", link->tcp_port);
+    return NULL;
+}
+
 const char *serial_link_open(serial_link_t *link, serial_mode_t mode, const char *device) {
     serial_link_close(link);
     const char *failure = NULL;
@@ -80,6 +109,8 @@ const char *serial_link_open(serial_link_t *link, serial_mode_t mode, const char
         failure = open_pty(link);
     } else if (mode == SERIAL_DEVICE) {
         failure = open_device(link, device);
+    } else if (mode == SERIAL_TCP) {
+        failure = open_tcp(link);
     }
     if (failure) {
         serial_link_close(link);
@@ -135,6 +166,44 @@ static void pump_network(serial_link_t *link, machine_t *machine) {
     machine_serial_send(machine, buffer, count);
 }
 
+static void link_log(serial_link_t *link, const char *message) {
+    if (link->log) link->log(message);
+}
+
+static void drop_client(serial_link_t *link) {
+    close(link->fd);
+    link->fd = -1;
+    link->queued = 0;
+    link_log(link, "serial: TCP client disconnected\n");
+}
+
+static void accept_client(serial_link_t *link) {
+    int client = accept(link->listener, NULL, NULL);
+    if (client < 0) return;
+    if (link->fd >= 0) {
+        close(client);
+        return;
+    }
+    int enabled = 1;
+#ifdef SO_NOSIGPIPE
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof enabled);
+#endif
+    setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof enabled);
+    fcntl(client, F_SETFL, fcntl(client, F_GETFL) | O_NONBLOCK);
+    link->fd = client;
+    link->queued = 0;
+    link_log(link, "serial: TCP client connected\n");
+}
+
+static bool would_block(void) {
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+}
+
+static ssize_t send_bytes(serial_link_t *link, const uint8_t *data, size_t length) {
+    if (link->mode == SERIAL_TCP) return send(link->fd, data, length, SEND_FLAGS);
+    return write(link->fd, data, length);
+}
+
 static void pump_host(serial_link_t *link, machine_t *machine) {
     uint8_t buffer[4096];
     size_t count;
@@ -143,7 +212,11 @@ static void pump_host(serial_link_t *link, machine_t *machine) {
         link->queued += count;
     }
     if (link->queued) {
-        ssize_t written = write(link->fd, link->queue, link->queued);
+        ssize_t written = send_bytes(link, link->queue, link->queued);
+        if (written < 0 && link->mode == SERIAL_TCP && !would_block()) {
+            drop_client(link);
+            return;
+        }
         if (written > 0) {
             memmove(link->queue, link->queue + written, link->queued - (size_t)written);
             link->queued -= (size_t)written;
@@ -154,11 +227,28 @@ static void pump_host(serial_link_t *link, machine_t *machine) {
     if (!space) return;
     ssize_t got = read(link->fd, buffer, space);
     if (got > 0) machine_serial_send(machine, buffer, (size_t)got);
+    else if (link->mode == SERIAL_TCP && (got == 0 || !would_block())) drop_client(link);
+}
+
+static void pump_tcp(serial_link_t *link, machine_t *machine) {
+    accept_client(link);
+    if (link->fd >= 0) {
+        pump_host(link, machine);
+        return;
+    }
+    uint8_t discard[4096];
+    while (machine_serial_take(machine, discard, sizeof discard) > 0) {}
 }
 
 void serial_link_pump(serial_link_t *link, machine_t *machine) {
     if (link->mode == SERIAL_NETWORK && link->gateway) pump_network(link, machine);
     else if ((link->mode == SERIAL_PTY || link->mode == SERIAL_DEVICE) && link->fd >= 0) pump_host(link, machine);
+    else if (link->mode == SERIAL_TCP && link->listener >= 0) pump_tcp(link, machine);
+}
+
+bool serial_link_attached(const serial_link_t *link) {
+    if (link->mode == SERIAL_TCP) return link->fd >= 0;
+    return link->mode != SERIAL_OFF;
 }
 
 static bool is_serial_port(const char *name) {
