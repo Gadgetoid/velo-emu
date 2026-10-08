@@ -1,6 +1,6 @@
 #include "core/screen.h"
 
-#include "core/lzw.h"
+#include "native/lzw.h"
 
 #include <stdio.h>
 #include <stdlib.h>

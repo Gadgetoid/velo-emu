@@ -256,7 +256,7 @@ CPU Speed > Optimisations (`--optimisations=on`, on by default on Android) does 
 - CE 1.0's LZW and CE 2.0's LZ ROM compression run natively, with the same results as CE's own code. CE uses them to load programs and files from ROM and for its RAM object store.
 - When CE keeps polling the RTC or `GetTickCount` until the time changes, the CPU waits for the next tick instead. This never skips past an interrupt or input.
 
-With it off, the emulation matches the original instruction for instruction.
+The native routines are in `src/native`, shared with sh3-emu, and don't depend on the CPU; `src/core/optimiser.c` has the MIPS calling convention and the two systems' profiles: where each function is and its code. With it off, the emulation matches the original instruction for instruction.
 
 ## Headless
 

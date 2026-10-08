@@ -1,4 +1,4 @@
-#include "core/lzw.h"
+#include "native/lzw.h"
 
 #include <string.h>
 

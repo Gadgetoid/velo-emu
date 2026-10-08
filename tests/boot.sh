@@ -33,6 +33,7 @@ CALIBRATE="--key=8:4B --key=10:4B --tap=12:240:120 --tap=14:96:48 --tap=16:96:19
 WIZARD="--tap=26:452:227 --tap=29:452:227 --tap=32:452:227 --tap=35:452:227 --tap=38:452:227 --tap=41:452:227"
 check wizard   3a4cc79486ecf4d3329ab251349f2cfecaca43246e2f5c197eb7fc99e60d5d28   --seconds=8
 check desktop  2eb469a6f1f8a86900314a036e30b0e725df989e4adf0962a797091ebff39033  --seconds=44 $CALIBRATE $WIZARD
+check desktop_optimised 2eb469a6f1f8a86900314a036e30b0e725df989e4adf0962a797091ebff39033 --optimisations --seconds=44 $CALIBRATE $WIZARD
 ./headless "$ROM" --seconds=44 --save="$OUT/desktop.state" $CALIBRATE $WIZARD 2>/dev/null
 check resumed 2eb469a6f1f8a86900314a036e30b0e725df989e4adf0962a797091ebff39033 --seconds=1 --load="$OUT/desktop.state"
 if ./headless "$ROM" --host-time --seconds=1 2>&1 | grep -q "clock: set from the host"; then echo "ok   host_time"; else echo "FAIL host_time"; exit 1; fi
@@ -220,6 +221,7 @@ if [ -f "$CE2_ROM" ]; then
     if ./headless "$ROM" --host-time --seconds=1 2>&1 | grep -q "clock: set from the host"; then echo "ok   ce2_host_time"; else echo "FAIL ce2_host_time"; exit 1; fi
     if ./headless "$ROM" --debug-output --seconds=3 2>&1 | grep -q "^debug: Configuring 480x240, 4bpp display"; then echo "ok   ce2_debug_output"; else echo "FAIL ce2_debug_output"; exit 1; fi
     check ce2_desktop aa64f3fba1031ff617de1871716776d2323a5a189c896269be719d5317119e5e --seconds=20
+    check ce2_desktop_optimised aa64f3fba1031ff617de1871716776d2323a5a189c896269be719d5317119e5e --optimisations --seconds=20
     ./headless "$ROM" --seconds=20 --save="$OUT/ce2_desktop.state" 2>/dev/null
     if [ "$(./velo-state "$OUT/ce2_desktop.state" reg get HKLM/init Launch50)" = 'string "explorer.exe"' ] &&
        ./velo-state "$OUT/ce2_desktop.state" ls | grep -q "36  Shortcut to Templates.lnk"; then echo "ok   ce2_state_reader"; else echo "FAIL ce2_state_reader"; exit 1; fi

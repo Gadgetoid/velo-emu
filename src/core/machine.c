@@ -7,10 +7,10 @@
 #include <time.h>
 #include <zlib.h>
 
-#include "core/accel.h"
 #include "core/ce.h"
 #include "core/mailbox.h"
 #include "core/mips.h"
+#include "core/optimiser.h"
 #include "core/pccard.h"
 #include "core/uart.h"
 #include "core/vdisk.h"
@@ -186,7 +186,7 @@ struct machine {
     uint32_t rom2_pa;
     bool in_place;
     bool optimisations;
-    accel_hooks_t accel;
+    optimiser_t optimiser;
     uint32_t entry_va;
     uint64_t rom_hash;
     uint64_t rom_base_hash;
@@ -1379,6 +1379,8 @@ static bool raw_rom_region(const uint8_t *rom, size_t rom_size, rom_region_t *re
     return true;
 }
 
+static uint8_t *optimiser_map(void *context, uint32_t va, bool write);
+
 static const uint8_t *rom_at(void *context, uint32_t pa, uint32_t length) {
     machine_t *m = context;
     if (pa >= m->rom_pa && pa - m->rom_pa <= m->rom_size && length <= m->rom_size - (pa - m->rom_pa)) return m->rom + (pa - m->rom_pa);
@@ -1426,11 +1428,15 @@ static machine_t *machine_build(rom_region_t regions[2], int region_count, uint3
     machine_power_on(m);
     m->set_time_va = find_set_real_time(m);
     find_debug_output(m);
-    accel_find(rom_at, m, &m->accel);
-    uint32_t hooks[] = { m->set_time_va, m->debug_string_va, m->debug_print_va, m->accel.decode_va, m->accel.encode_va };
+    optimiser_init(&m->optimiser, rom_at, m, (native_memory_t){ m, optimiser_map });
+    uint32_t hooks[] = { m->set_time_va, m->debug_string_va, m->debug_print_va };
     for (size_t i = 0; i < sizeof hooks / sizeof hooks[0]; i++) {
         if (!hooks[i]) continue;
         m->cpu.watch[m->cpu.watch_count++] = hooks[i];
+        m->cpu.on_watch = on_watch;
+    }
+    for (int i = 0; i < m->optimiser.hook_count && m->cpu.watch_count < MIPS_WATCH_MAX; i++) {
+        m->cpu.watch[m->cpu.watch_count++] = m->optimiser.hooks[i].va;
         m->cpu.on_watch = on_watch;
     }
     return m;
@@ -2150,7 +2156,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     uint8_t *rom2 = m->rom2;
     uint32_t rom2_size = m->rom2_size, rom2_pa = m->rom2_pa;
     bool in_place = m->in_place, fast = m->optimisations;
-    accel_hooks_t accel = m->accel;
+    optimiser_t optimiser = m->optimiser;
     uint64_t rom_hash = m->rom_hash, rom_base_hash = m->rom_base_hash;
     screen_size_t screen = m->screen, screen_next = m->screen_next;
     screen_patch_t screen_patch = m->screen_patch;
@@ -2199,7 +2205,7 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     m->rom2_pa = rom2_pa;
     m->in_place = in_place;
     m->optimisations = fast;
-    m->accel = accel;
+    m->optimiser = optimiser;
     m->entry_va = entry_va;
     m->rom_hash = rom_hash;
     m->rom_base_hash = rom_base_hash;
@@ -2486,7 +2492,7 @@ static void capture_debug_string(machine_t *m, uint32_t va) {
     for (uint32_t i = 0; i < length; i++) debug_character(m, text[i]);
 }
 
-static uint8_t *accel_map(void *context, uint32_t va, bool write) {
+static uint8_t *optimiser_map(void *context, uint32_t va, bool write) {
     machine_t *m = context;
     uint32_t pa;
     if (!mips_translate(&m->cpu, va, write, &pa)) {
@@ -2504,12 +2510,8 @@ static uint8_t *accel_map(void *context, uint32_t va, bool write) {
 
 static void on_watch(void *context, uint32_t pc) {
     machine_t *m = context;
-    if (m->accel.system && (pc == m->accel.decode_va || pc == m->accel.encode_va)) {
-        if (!m->optimisations) return;
-        accel_memory_t memory = { m, accel_map };
-        bool decode = pc == m->accel.decode_va;
-        if (m->accel.system == 1) decode ? accel_ce1_decode(&m->cpu, &memory) : accel_ce1_encode(&m->cpu, &memory);
-        else decode ? accel_ce2_decode(&m->cpu, &memory) : accel_ce2_encode(&m->cpu, &memory);
+    if (optimiser_hooked(&m->optimiser, pc)) {
+        if (m->optimisations) optimiser_call(&m->optimiser, &m->cpu, pc);
         return;
     }
     if (pc == m->set_time_va) apply_host_time(m);
