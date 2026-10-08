@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 uint8_t *file_read(const char *path, size_t *size) {
     FILE *file = fopen(path, "rb");
@@ -20,4 +21,9 @@ uint8_t *file_read(const char *path, size_t *size) {
 const char *file_leaf_name(const char *path) {
     const char *slash = strrchr(path, '/');
     return slash && slash[1] ? slash + 1 : path;
+}
+
+bool file_has_extension(const char *path, const char *extension) {
+    const char *dot = strrchr(path, '.');
+    return dot && !strcasecmp(dot, extension);
 }

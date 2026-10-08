@@ -21,6 +21,7 @@
 #include "app/menu.h"
 #include "app/notices.h"
 #include "app/paths.h"
+#include "app/picks.h"
 #include "app/profiles.h"
 #include "app/rom_catalog.h"
 #include "app/runner.h"
@@ -68,22 +69,6 @@
 
 #define SERIAL_PORT_MAX   16
 #define PORT_SCAN_SECONDS 2.0
-
-typedef enum { PICK_SEND = 1, PICK_FETCH, PICK_SHARED, PICK_SAVE_SNAPSHOT, PICK_LOAD_SNAPSHOT, PICK_CARD, PICK_DISK, PICK_NEW_DISK } pick_kind_t;
-
-#define PICK_MAX 64
-
-typedef struct {
-    pick_kind_t kind;
-    int count;
-    char paths[PICK_MAX][1024];
-    char export_uri[1024];
-} picked_t;
-
-typedef struct {
-    char paths[PICK_MAX][1024];
-    int count;
-} dropped_t;
 
 typedef struct {
     settings_t settings;
@@ -214,122 +199,6 @@ static void serial_restored(serial_link_t *serial, machine_t *machine, const cha
     }
 }
 
-static Uint32 pick_event_type = 0;
-
-static void pick_done(void *userdata, const char *const *files, int filter) {
-    (void)filter;
-    if (!pick_event_type || !files || !files[0]) return;
-    picked_t *picked = malloc(sizeof *picked);
-    if (!picked) return;
-    picked->kind = (pick_kind_t)(intptr_t)userdata;
-    picked->count = 0;
-    picked->export_uri[0] = 0;
-    while (files[picked->count] && picked->count < PICK_MAX) {
-        snprintf(picked->paths[picked->count], sizeof picked->paths[0], "%s", files[picked->count]);
-        picked->count++;
-    }
-    SDL_Event event;
-    SDL_zero(event);
-    event.type = pick_event_type;
-    event.user.data1 = picked;
-    if (!SDL_PushEvent(&event)) free(picked);
-}
-
-#define BLANK_DISK_BYTES (32 * 1024 * 1024)
-
-static bool create_blank_disk(const char *path) {
-    FILE *file = fopen(path, "wb");
-    if (!file) return false;
-    bool sized = fseek(file, BLANK_DISK_BYTES - 1, SEEK_SET) == 0 && fputc(0, file) == 0;
-    return fclose(file) == 0 && sized;
-}
-
-static bool has_extension(const char *path, const char *extension) {
-    const char *dot = strrchr(path, '.');
-    return dot && !strcasecmp(dot, extension);
-}
-
-static bool is_directory(const char *path) {
-    struct stat info;
-    return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
-}
-
-static const char *handle_drop(dropped_t *dropped, machine_t *machine, desktop_t *desktop, bool online) {
-    static char message[1200];
-    int files = 0, scripts = -1, cards = -1;
-    const char *list[PICK_MAX + 1];
-    for (int i = 0; i < dropped->count; i++) {
-        const char *path = dropped->paths[i];
-        if (is_directory(path)) continue;
-        if (has_extension(path, ".img") && cards < 0) cards = i;
-        else if (has_extension(path, ".load") && scripts < 0) scripts = i;
-        list[files++] = path;
-    }
-    list[files] = NULL;
-    dropped->count = 0;
-    if (cards >= 0 && files == 1) {
-        snprintf(message, sizeof message, machine_insert_card(machine, list[0]) ? "inserted %s" : "could not open %s", file_leaf_name(list[0]));
-        return message;
-    }
-    if (!files) return "drop files, a .load script or a card image";
-    if (!online) return "connect Devices > Network (PPP) to send files to the Velo";
-    if (scripts >= 0) {
-        snprintf(message, sizeof message, "installing %s", file_leaf_name(dropped->paths[scripts]));
-        return desktop_load(desktop, dropped->paths[scripts]) ? message : "busy with the last transfer";
-    }
-    return desktop_send(desktop, list) ? "sending to \\My Documents" : "busy with the last transfer";
-}
-
-static void print_debug_line(void *context, const char *line) {
-    app_t *app = context;
-    if (app->debugger) gdb_debug_line(app->debugger, line);
-    debug_log_line(line);
-}
-
-#ifdef __ANDROID__
-static void localize_picked(picked_t *picked) {
-    if (picked->kind == PICK_NEW_DISK) return;
-    char folder[1100];
-    if (picked->kind == PICK_CARD || picked->kind == PICK_DISK) {
-        char base[1024];
-        app_data_folder(base, sizeof base);
-        snprintf(folder, sizeof folder, "%s/%s", base, picked->kind == PICK_CARD ? "cards" : "disks");
-    } else {
-        snprintf(folder, sizeof folder, "%s", getenv("TMPDIR") ? getenv("TMPDIR") : ".");
-    }
-    SDL_CreateDirectory(folder);
-    for (int i = 0; i < picked->count; i++) {
-        char uri[1024], path[1024];
-        snprintf(uri, sizeof uri, "%s", picked->paths[i]);
-        bool local;
-        if (picked->kind == PICK_SAVE_SNAPSHOT) {
-            local = android_local_path(uri, folder, path, sizeof path);
-            snprintf(picked->export_uri, sizeof picked->export_uri, "%s", uri);
-        } else {
-            local = android_import(uri, folder, path, sizeof path);
-        }
-        snprintf(picked->paths[i], sizeof picked->paths[i], "%s", local ? path : "");
-    }
-}
-
-static picked_t *new_disk_pick(void) {
-    picked_t *picked = calloc(1, sizeof *picked);
-    if (!picked) return NULL;
-    char base[1024], folder[1100], stamp[64];
-    app_data_folder(base, sizeof base);
-    snprintf(folder, sizeof folder, "%s/disks", base);
-    SDL_CreateDirectory(folder);
-    time_t now = time(NULL);
-    struct tm local;
-    localtime_r(&now, &local);
-    strftime(stamp, sizeof stamp, "%Y-%m-%d %H.%M.%S", &local);
-    picked->kind = PICK_NEW_DISK;
-    picked->count = 1;
-    snprintf(picked->paths[0], sizeof picked->paths[0], "%s/Velo Disk %s.img", folder, stamp);
-    return picked;
-}
-#endif
-
 static bool confirm_reset(SDL_Window *window, const char *name) {
     char title[160];
     snprintf(title, sizeof title, "Reset %s?", name);
@@ -382,6 +251,12 @@ static void fit_window(SDL_Window *window, view_t *view, uint32_t scale) {
     SDL_SetWindowSize(window, width, height);
 }
 
+static void print_debug_line(void *context, const char *line) {
+    app_t *app = context;
+    if (app->debugger) gdb_debug_line(app->debugger, line);
+    debug_log_line(line);
+}
+
 static bool poll_host_events(app_t *app) {
     machine_t *machine = app->session.machine;
     bool events_seen = false;
@@ -428,7 +303,7 @@ static bool poll_host_events(app_t *app) {
         case SDL_EVENT_DROP_COMPLETE:
             if (app->dropped.count) {
                 bool online = app->serial.gateway && net_gateway_online(app->serial.gateway);
-                notice_show(&app->notice, handle_drop(&app->dropped, machine, app->desktop, online && !desktop_busy(app->desktop)), NOTICE_MEDIUM);
+                notice_show(&app->notice, picks_handle_drop(&app->dropped, machine, app->desktop, online && !desktop_busy(app->desktop)), NOTICE_MEDIUM);
             }
             break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -465,15 +340,14 @@ static bool poll_host_events(app_t *app) {
                 input_add(&app->input, machine, INPUT_PEN, false, x, y, 0);
             }
             break;
-        default:
-            if (pick_event_type && event.type == pick_event_type) {
+        default: {
+            picked_t *picked = picks_take(&event);
+            if (picked) {
                 free(app->picked);
-                app->picked = event.user.data1;
-#ifdef __ANDROID__
-                localize_picked(app->picked);
-#endif
+                app->picked = picked;
             }
             break;
+        }
         }
     }
     return events_seen;
@@ -637,14 +511,14 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state" } };
         static char default_snapshot[1200];
         snapshot_store_default_name(&app->snapshots, default_snapshot, sizeof default_snapshot);
-        SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_SAVE_SNAPSHOT, app->window, filters, 1, default_snapshot);
+        SDL_ShowSaveFileDialog(picks_done, (void *)(intptr_t)PICK_SAVE_SNAPSHOT, app->window, filters, 1, default_snapshot);
         break;
     }
     case MENU_LOAD_SNAPSHOT: {
         static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state;bin" } };
         static char folder[1100];
         snapshot_store_folder(&app->snapshots, folder, sizeof folder);
-        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_LOAD_SNAPSHOT, app->window, filters, 1, folder, false);
+        SDL_ShowOpenFileDialog(picks_done, (void *)(intptr_t)PICK_LOAD_SNAPSHOT, app->window, filters, 1, folder, false);
         break;
     }
     case MENU_SHOW_DEBUG_OUTPUT: {
@@ -682,22 +556,22 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         break;
     case MENU_INSERT_CARD: {
         static const SDL_DialogFileFilter filters[] = { { "Card images", "img;bin;raw" }, { "All files", "*" } };
-        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_CARD, app->window, filters, 2, NULL, false);
+        SDL_ShowOpenFileDialog(picks_done, (void *)(intptr_t)PICK_CARD, app->window, filters, 2, NULL, false);
         break;
     }
     case MENU_INSERT_DISK: {
         static const SDL_DialogFileFilter filters[] = { { "Disk images", "img;bin;raw" }, { "All files", "*" } };
-        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_DISK, app->window, filters, 2, NULL, false);
+        SDL_ShowOpenFileDialog(picks_done, (void *)(intptr_t)PICK_DISK, app->window, filters, 2, NULL, false);
         break;
     }
     case MENU_NEW_DISK: {
 #ifdef __ANDROID__
         free(app->picked);
-        app->picked = new_disk_pick();
+        app->picked = picks_new_disk();
         break;
 #endif
         static const SDL_DialogFileFilter filters[] = { { "Disk images", "img" } };
-        SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_NEW_DISK, app->window, filters, 1, "Velo Disk.img");
+        SDL_ShowSaveFileDialog(picks_done, (void *)(intptr_t)PICK_NEW_DISK, app->window, filters, 1, "Velo Disk.img");
         break;
     }
     case MENU_EJECT_DISK:
@@ -781,14 +655,14 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         break;
     }
     case MENU_SEND_FILES:
-        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_SEND, app->window, NULL, 0, NULL, true);
+        SDL_ShowOpenFileDialog(picks_done, (void *)(intptr_t)PICK_SEND, app->window, NULL, 0, NULL, true);
         break;
 #ifndef __ANDROID__
     case MENU_FETCH_DOCUMENTS:
-        SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_FETCH, app->window, NULL, false);
+        SDL_ShowOpenFolderDialog(picks_done, (void *)(intptr_t)PICK_FETCH, app->window, NULL, false);
         break;
     case MENU_SHARED_FOLDER:
-        SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_SHARED, app->window, settings->shared_folder[0] ? settings->shared_folder : NULL, false);
+        SDL_ShowOpenFolderDialog(picks_done, (void *)(intptr_t)PICK_SHARED, app->window, settings->shared_folder[0] ? settings->shared_folder : NULL, false);
         break;
 #endif
     case MENU_SYNC_NOW:
@@ -872,8 +746,8 @@ static void handle_picked(app_t *app, bool velo_online) {
         notice_show(&app->notice, machine_insert_disk(machine, picked->paths[0], false) ? "disk inserted" : "could not open disk image", NOTICE_SHORT);
     } else if (picked->kind == PICK_NEW_DISK) {
         char path[1100];
-        snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".img") ? "" : ".img");
-        bool made = create_blank_disk(path) && machine_insert_disk(machine, path, false);
+        snprintf(path, sizeof path, "%s%s", picked->paths[0], file_has_extension(picked->paths[0], ".img") ? "" : ".img");
+        bool made = picks_create_blank_disk(path) && machine_insert_disk(machine, path, false);
         char message[1200];
         snprintf(message, sizeof message, made ? "inserted new disk %s; the Velo offers to format it" : "could not create %s", file_leaf_name(path));
         notice_show(&app->notice, message, NOTICE_MEDIUM);
@@ -884,7 +758,7 @@ static void handle_picked(app_t *app, bool velo_online) {
         desktop_send(app->desktop, files);
     } else if (picked->kind == PICK_SAVE_SNAPSHOT) {
         char path[1100];
-        snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".state") ? "" : ".state");
+        snprintf(path, sizeof path, "%s%s", picked->paths[0], file_has_extension(picked->paths[0], ".state") ? "" : ".state");
         bool saved = machine_save(machine, path, (int64_t)time(NULL));
 #ifdef __ANDROID__
         if (saved && picked->export_uri[0]) {
@@ -1231,7 +1105,7 @@ static bool open_window(app_t *app) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return false;
     }
-    pick_event_type = SDL_RegisterEvents(1);
+    picks_init();
     int window_width, window_height;
     window_size((view_display_t)app->settings.display, app->settings.scale, &window_width, &window_height);
     app->window = SDL_CreateWindow("Philips Velo 1", window_width, window_height, SDL_WINDOW_HIGH_PIXEL_DENSITY);
