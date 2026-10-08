@@ -295,17 +295,26 @@ static void serial_close(serial_link_t *serial, machine_t *machine) {
     machine_serial_connect(machine, false);
 }
 
+static bool serial_keeps_link(const serial_link_t *serial, serial_mode_t mode, const char *device) {
+    if (mode == SERIAL_OFF || mode == SERIAL_NETWORK || serial->mode != mode) return false;
+    return mode != SERIAL_DEVICE || (device && !strcmp(serial->name, device));
+}
+
 static const char *serial_open(serial_link_t *serial, machine_t *machine, serial_mode_t mode, const char *device) {
     static char rapi_socket[1024];
     static char notice[SERIAL_LINK_PORT_NAME + 16];
-    serial_close(serial, machine);
-    if (mode == SERIAL_NETWORK) {
-        rapi_socket_path(rapi_socket, sizeof rapi_socket);
-        serial->options.rapi_socket = rapi_socket;
+    if (serial_keeps_link(serial, mode, device)) {
+        machine_serial_connect(machine, false);
+    } else {
+        serial_close(serial, machine);
+        if (mode == SERIAL_NETWORK) {
+            rapi_socket_path(rapi_socket, sizeof rapi_socket);
+            serial->options.rapi_socket = rapi_socket;
+        }
+        const char *failure = serial_link_open(serial, mode, device);
+        if (failure) return failure;
+        if (mode == SERIAL_PTY) fprintf(stderr, "serial: COM1 on %s\n", serial->name);
     }
-    const char *failure = serial_link_open(serial, mode, device);
-    if (failure) return failure;
-    if (mode == SERIAL_PTY) fprintf(stderr, "serial: COM1 on %s\n", serial->name);
     machine_set_serial_tag(machine, (uint32_t)mode);
     if (mode != SERIAL_OFF) machine_serial_connect(machine, true);
     if (mode == SERIAL_NETWORK) return "network cable connected";
@@ -320,11 +329,14 @@ static const char *serial_open(serial_link_t *serial, machine_t *machine, serial
 static void serial_restored(serial_link_t *serial, machine_t *machine, const char *device, uint64_t *reconnect_at, serial_mode_t *reconnect_mode) {
     bool was_connected = machine_serial_connected(machine);
     serial_mode_t mode = (serial_mode_t)machine_serial_tag(machine);
-    serial_close(serial, machine);
+    machine_serial_connect(machine, false);
     *reconnect_at = 0;
     if (was_connected && (mode == SERIAL_NETWORK || mode == SERIAL_PTY || (mode == SERIAL_DEVICE && device && device[0]))) {
         *reconnect_mode = mode;
         *reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
+        if (!serial_keeps_link(serial, mode, device)) serial_link_close(serial);
+    } else {
+        serial_link_close(serial);
     }
 }
 
@@ -1989,7 +2001,8 @@ int main(int argc, char **argv) {
                     notice_left = NOTICE_SECONDS * 2;
                 } else {
                     serial_mode_t mode = serial.mode;
-                    serial_close(&serial, machine);
+                    if (serial_keeps_link(&serial, mode, settings.serial_device)) machine_serial_connect(machine, false);
+                    else serial_close(&serial, machine);
                     if (pen_down) machine_touch(machine, false, 0, 0);
                     input_clear(&input);
                     pen_down = false;
