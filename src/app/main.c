@@ -1033,8 +1033,9 @@ static bool handle_view_menu(settings_t *settings, SDL_Window *window, view_t *v
     return false;
 }
 
-int main(int argc, char **argv) {
-    const char *rom_path = NULL;
+static int initialize_launch(int argc, char **argv, settings_t *settings, launch_t *launch, const char **rom_path, bool *continue_start) {
+    *rom_path = NULL;
+    *continue_start = false;
 #ifdef __ANDROID__
     const char *storage = SDL_GetAndroidExternalStoragePath();
     if (storage) {
@@ -1050,75 +1051,113 @@ int main(int argc, char **argv) {
     char base[1024];
     app_data_folder(base, sizeof base);
     snapshot_store_init(&snapshots, base);
-    settings_t settings = settings_load();
-    machine_session_hooks_t session_hooks = { log_message, print_debug_line, start_debug_log, insert_library_card };
-    launch_t launch = { &settings, settings.connect_at_launch ? SERIAL_NETWORK : SERIAL_OFF, NULL, NULL, NULL, NULL, false, 0, NULL, NULL };
+    *settings = settings_load();
+    *launch = (launch_t){ settings, settings->connect_at_launch ? SERIAL_NETWORK : SERIAL_OFF,
+                          NULL, NULL, NULL, NULL, false, 0, NULL, NULL };
     const char *positional[1];
     int positional_count;
-    options_result_t parsed = options_parse(&LAUNCH_SPEC, argc, argv, launch_option, &launch, positional, 1, &positional_count);
+    options_result_t parsed = options_parse(&LAUNCH_SPEC, argc, argv, launch_option, launch, positional, 1, &positional_count);
     if (parsed == OPTIONS_EXIT) return 0;
     if (parsed == OPTIONS_ERROR) return 2;
-    if (positional_count) rom_path = positional[0];
-    serial_mode_t serial_mode = launch.serial_mode;
-    const char *card = launch.card, *disk = launch.disk, *state_file = launch.state_file;
-    bool fresh = launch.fresh;
-    rom_set_t roms = { 0 };
-    find_roms(&roms);
+    if (positional_count) *rom_path = positional[0];
+    *continue_start = true;
+    return 0;
+}
+
+typedef struct {
+    rom_set_t roms;
     char profiles_folder[1100];
-    machines_folder(profiles_folder, sizeof profiles_folder);
-    profiles_t profiles = { 0 };
-    profiles_load(&profiles, profiles_folder);
-    if (!profiles.count) machine_session_migrate_profiles(&profiles, &roms, &settings, profiles_folder);
-    profile_t current = { 0 };
-    int current_index = -1;
+    profiles_t profiles;
+    profile_t current;
+    int current_index;
+    machine_session_t session;
+    const char *startup_notice;
+    char fallback_notice[1600];
+} machine_startup_t;
+
+static int initialize_machine(machine_startup_t *startup, settings_t *settings, const launch_t *launch, const char *rom_path,
+                              const machine_session_hooks_t *session_hooks) {
+    find_roms(&startup->roms);
+    machines_folder(startup->profiles_folder, sizeof startup->profiles_folder);
+    profiles_load(&startup->profiles, startup->profiles_folder);
+    if (!startup->profiles.count) machine_session_migrate_profiles(&startup->profiles, &startup->roms, settings, startup->profiles_folder);
+    startup->current_index = -1;
     if (rom_path) {
-        current = (profile_t){ .memory = settings.memory, .screen = settings.screen, .host_time = settings.host_time != 0 };
-        snprintf(current.rom, sizeof current.rom, "%s", rom_path);
-        snprintf(current.name, sizeof current.name, "%s", file_leaf_name(rom_path));
+        startup->current = (profile_t){ .memory = settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
+        snprintf(startup->current.rom, sizeof startup->current.rom, "%s", rom_path);
+        snprintf(startup->current.name, sizeof startup->current.name, "%s", file_leaf_name(rom_path));
     } else {
-        if (launch.machine) {
-            current_index = profile_find(&profiles, launch.machine);
-            if (current_index < 0) { fprintf(stderr, "no machine called %s\n", launch.machine); return 2; }
+        if (launch->machine) {
+            startup->current_index = profile_find(&startup->profiles, launch->machine);
+            if (startup->current_index < 0) {
+                fprintf(stderr, "no machine called %s\n", launch->machine);
+                return 2;
+            }
         } else {
-            current_index = settings.machine[0] ? profile_find(&profiles, settings.machine) : -1;
-            if (current_index < 0) current_index = profiles.count ? 0 : -1;
+            startup->current_index = settings->machine[0] ? profile_find(&startup->profiles, settings->machine) : -1;
+            if (startup->current_index < 0) startup->current_index = startup->profiles.count ? 0 : -1;
         }
 #ifdef __ANDROID__
-        while (current_index < 0 && first_run_import()) {
-            find_roms(&roms);
-            machine_session_migrate_profiles(&profiles, &roms, &settings, profiles_folder);
-            current_index = profiles.count ? 0 : -1;
+        while (startup->current_index < 0 && first_run_import()) {
+            find_roms(&startup->roms);
+            machine_session_migrate_profiles(&startup->profiles, &startup->roms, settings, startup->profiles_folder);
+            startup->current_index = startup->profiles.count ? 0 : -1;
         }
 #endif
-        if (current_index < 0) return no_roms_dialog() ? 0 : 1;
-        current = profiles.entries[current_index];
+        if (startup->current_index < 0) return no_roms_dialog() ? 0 : 1;
+        startup->current = startup->profiles.entries[startup->current_index];
     }
-    const char *startup_notice = NULL;
-    char fallback_notice[1600] = { 0 };
-    machine_session_t session = { 0 };
-    bool started = machine_session_start(&session, &current, settings.speed, settings.optimisations != 0,
-                                         state_file, fresh, &startup_notice, &snapshots, &session_hooks);
-    machine_t *machine = session.machine;
-    if (!started && current_index >= 0 && !launch.machine) {
-        snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", current.name, startup_notice);
-        fprintf(stderr, "%s\n", fallback_notice);
-        for (int i = 0; i < profiles.count && !started; i++) {
-            if (i == current_index) continue;
-            current = profiles.entries[i];
-            started = machine_session_start(&session, &current, settings.speed, settings.optimisations != 0,
-                                            NULL, false, &startup_notice, &snapshots, &session_hooks);
+    bool started = machine_session_start(&startup->session, &startup->current, settings->speed, settings->optimisations != 0,
+                                         launch->state_file, launch->fresh, &startup->startup_notice, &snapshots, session_hooks);
+    if (!started && startup->current_index >= 0 && !launch->machine) {
+        snprintf(startup->fallback_notice, sizeof startup->fallback_notice, "Couldn't start %s: %s",
+                 startup->current.name, startup->startup_notice);
+        fprintf(stderr, "%s\n", startup->fallback_notice);
+        for (int i = 0; i < startup->profiles.count && !started; i++) {
+            if (i == startup->current_index) continue;
+            startup->current = startup->profiles.entries[i];
+            started = machine_session_start(&startup->session, &startup->current, settings->speed, settings->optimisations != 0,
+                                            NULL, false, &startup->startup_notice, &snapshots, session_hooks);
             if (started) {
-                machine = session.machine;
-                current_index = i;
-                startup_notice = fallback_notice;
+                startup->current_index = i;
+                startup->startup_notice = startup->fallback_notice;
             }
         }
     }
-    if (!started) { fprintf(stderr, "%s\n", startup_notice); return 1; }
-    if (current_index >= 0) {
-        snprintf(settings.machine, sizeof settings.machine, "%s", current.id);
-        settings_save(&settings);
+    if (!started) {
+        fprintf(stderr, "%s\n", startup->startup_notice);
+        return 1;
     }
+    if (startup->current_index >= 0) {
+        snprintf(settings->machine, sizeof settings->machine, "%s", startup->current.id);
+        settings_save(settings);
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    settings_t settings;
+    launch_t launch;
+    const char *rom_path;
+    bool continue_start;
+    int result = initialize_launch(argc, argv, &settings, &launch, &rom_path, &continue_start);
+    if (result || !continue_start) return result;
+    machine_session_hooks_t session_hooks = { log_message, print_debug_line, start_debug_log, insert_library_card };
+    machine_startup_t machine_startup = { 0 };
+    result = initialize_machine(&machine_startup, &settings, &launch, rom_path, &session_hooks);
+    if (result) return result;
+    serial_mode_t serial_mode = launch.serial_mode;
+    const char *card = launch.card, *disk = launch.disk;
+    rom_set_t roms = machine_startup.roms;
+    char profiles_folder[sizeof machine_startup.profiles_folder];
+    snprintf(profiles_folder, sizeof profiles_folder, "%s", machine_startup.profiles_folder);
+    profiles_t profiles = machine_startup.profiles;
+    profile_t current = machine_startup.current;
+    int current_index = machine_startup.current_index;
+    machine_session_t session = machine_startup.session;
+    machine_startup.session.machine = NULL;
+    const char *startup_notice = machine_startup.startup_notice;
+    machine_t *machine = session.machine;
     key_layout_t key_layout = machine_key_layout(machine);
     screen_size_t screen = machine_screen_size(machine);
     lcd_set_size(screen.width, screen.height);
