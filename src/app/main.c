@@ -1068,7 +1068,6 @@ typedef struct {
     rom_set_t roms;
     char profiles_folder[1100];
     profiles_t profiles;
-    profile_t current;
     int current_index;
     machine_session_t session;
     const char *startup_notice;
@@ -1076,16 +1075,16 @@ typedef struct {
 } machine_startup_t;
 
 static int initialize_machine(machine_startup_t *startup, settings_t *settings, const launch_t *launch, const char *rom_path,
-                              const machine_session_hooks_t *session_hooks) {
+                              profile_t *current, const machine_session_hooks_t *session_hooks) {
     find_roms(&startup->roms);
     machines_folder(startup->profiles_folder, sizeof startup->profiles_folder);
     profiles_load(&startup->profiles, startup->profiles_folder);
     if (!startup->profiles.count) machine_session_migrate_profiles(&startup->profiles, &startup->roms, settings, startup->profiles_folder);
     startup->current_index = -1;
     if (rom_path) {
-        startup->current = (profile_t){ .memory = settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
-        snprintf(startup->current.rom, sizeof startup->current.rom, "%s", rom_path);
-        snprintf(startup->current.name, sizeof startup->current.name, "%s", file_leaf_name(rom_path));
+        *current = (profile_t){ .memory = settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
+        snprintf(current->rom, sizeof current->rom, "%s", rom_path);
+        snprintf(current->name, sizeof current->name, "%s", file_leaf_name(rom_path));
     } else {
         if (launch->machine) {
             startup->current_index = profile_find(&startup->profiles, launch->machine);
@@ -1105,18 +1104,18 @@ static int initialize_machine(machine_startup_t *startup, settings_t *settings, 
         }
 #endif
         if (startup->current_index < 0) return no_roms_dialog() ? 0 : 1;
-        startup->current = startup->profiles.entries[startup->current_index];
+        *current = startup->profiles.entries[startup->current_index];
     }
-    bool started = machine_session_start(&startup->session, &startup->current, settings->speed, settings->optimisations != 0,
+    bool started = machine_session_start(&startup->session, current, settings->speed, settings->optimisations != 0,
                                          launch->state_file, launch->fresh, &startup->startup_notice, &snapshots, session_hooks);
     if (!started && startup->current_index >= 0 && !launch->machine) {
         snprintf(startup->fallback_notice, sizeof startup->fallback_notice, "Couldn't start %s: %s",
-                 startup->current.name, startup->startup_notice);
+                 current->name, startup->startup_notice);
         fprintf(stderr, "%s\n", startup->fallback_notice);
         for (int i = 0; i < startup->profiles.count && !started; i++) {
             if (i == startup->current_index) continue;
-            startup->current = startup->profiles.entries[i];
-            started = machine_session_start(&startup->session, &startup->current, settings->speed, settings->optimisations != 0,
+            *current = startup->profiles.entries[i];
+            started = machine_session_start(&startup->session, current, settings->speed, settings->optimisations != 0,
                                             NULL, false, &startup->startup_notice, &snapshots, session_hooks);
             if (started) {
                 startup->current_index = i;
@@ -1129,7 +1128,7 @@ static int initialize_machine(machine_startup_t *startup, settings_t *settings, 
         return 1;
     }
     if (startup->current_index >= 0) {
-        snprintf(settings->machine, sizeof settings->machine, "%s", startup->current.id);
+        snprintf(settings->machine, sizeof settings->machine, "%s", current->id);
         settings_save(settings);
     }
     return 0;
@@ -1144,7 +1143,8 @@ int main(int argc, char **argv) {
     if (result || !continue_start) return result;
     machine_session_hooks_t session_hooks = { log_message, print_debug_line, start_debug_log, insert_library_card };
     machine_startup_t machine_startup = { 0 };
-    result = initialize_machine(&machine_startup, &settings, &launch, rom_path, &session_hooks);
+    profile_t current = { 0 };
+    result = initialize_machine(&machine_startup, &settings, &launch, rom_path, &current, &session_hooks);
     if (result) return result;
     serial_mode_t serial_mode = launch.serial_mode;
     const char *card = launch.card, *disk = launch.disk;
@@ -1152,7 +1152,6 @@ int main(int argc, char **argv) {
     char profiles_folder[sizeof machine_startup.profiles_folder];
     snprintf(profiles_folder, sizeof profiles_folder, "%s", machine_startup.profiles_folder);
     profiles_t profiles = machine_startup.profiles;
-    profile_t current = machine_startup.current;
     int current_index = machine_startup.current_index;
     machine_session_t session = machine_startup.session;
     machine_startup.session.machine = NULL;
