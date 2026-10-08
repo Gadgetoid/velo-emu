@@ -5,12 +5,12 @@
 
 static NSMenuItem *items[MENU_COUNT];
 
-@interface VeloMenuTarget : NSObject
+@interface MenuTarget : NSObject
 @end
 
-static VeloMenuTarget *target = nil;
+static MenuTarget *target = nil;
 
-@implementation VeloMenuTarget
+@implementation MenuTarget
 - (void)fire:(NSMenuItem *)item {
     menu_queue_push((int)item.tag);
 }
@@ -61,7 +61,7 @@ static NSEventModifierFlags cocoa_modifiers(int modifiers) {
 
 void menu_install(SDL_Window *window) {
     (void)window;
-    target = [[VeloMenuTarget alloc] init];
+    target = [[MenuTarget alloc] init];
     NSMenu *stack[4];
     int depth = 0;
     for (int i = 0; i < MENU_ENTRY_COUNT; i++) {

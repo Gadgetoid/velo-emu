@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-@interface VeloMachineForm : NSObject
+@interface MachineForm : NSObject
 @property(strong) NSAlert *alert;
 @property(strong) NSTextField *name;
 @property(strong) NSPopUpButton *memory;
@@ -17,7 +17,7 @@
 @property(assign) NSInteger lastRom;
 @end
 
-@implementation VeloMachineForm
+@implementation MachineForm
 
 - (void)updateScreens {
     NSInteger index = self.rom.indexOfSelectedItem;
@@ -37,7 +37,7 @@
     panel.canChooseFiles = YES;
     panel.canChooseDirectories = NO;
     panel.allowsMultipleSelection = NO;
-    panel.message = @"Choose a Velo 1 ROM: a CE 1.0 nk.bin, a CE 2.0 card ROM or merged image, or a B000FF image.";
+    panel.message = [NSString stringWithUTF8String:DIALOG_ROM_PROMPT];
     if ([panel runModal] == NSModalResponseOK && panel.URL) {
         const char *path = panel.URL.fileSystemRepresentation;
         char label[160];
@@ -53,7 +53,7 @@
             return;
         }
         NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Not a Velo ROM";
+        alert.messageText = [NSString stringWithUTF8String:DIALOG_NOT_A_ROM];
         alert.informativeText = [NSString stringWithFormat:@"%@ isn't a ROM this emulator can run.", panel.URL.lastPathComponent];
         [alert runModal];
     }
@@ -75,8 +75,8 @@ static NSPopUpButton *popup(void) {
     return button;
 }
 
-static VeloMachineForm *new_machine_form(const dialog_rom_t *roms, int rom_count, dialog_probe_fn probe, const dialog_machine_t *result) {
-    VeloMachineForm *form = [[VeloMachineForm alloc] init];
+static MachineForm *new_machine_form(const dialog_rom_t *roms, int rom_count, dialog_probe_fn probe, const dialog_machine_t *result) {
+    MachineForm *form = [[MachineForm alloc] init];
     form.probe = probe;
     form.paths = [NSMutableArray array];
     form.screens = [NSMutableArray array];
@@ -149,7 +149,7 @@ static VeloMachineForm *new_machine_form(const dialog_rom_t *roms, int rom_count
 bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_count, dialog_probe_fn probe, dialog_machine_t *result) {
     (void)window;
     @autoreleasepool {
-        VeloMachineForm *form = new_machine_form(roms, rom_count, probe, result);
+        MachineForm *form = new_machine_form(roms, rom_count, probe, result);
         NSTextField *name = form.name;
         NSPopUpButton *memory = form.memory;
         NSButton *clock = form.clock;
@@ -159,7 +159,7 @@ bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_co
         if (rom < 0 || rom >= (NSInteger)form.paths.count) {
             NSAlert *missing = [[NSAlert alloc] init];
             missing.messageText = @"No ROM chosen";
-            missing.informativeText = @"Put a Velo ROM in the roms folder, or choose Other ROM File\u2026.";
+            missing.informativeText = [NSString stringWithUTF8String:DIALOG_NO_ROM_HINT];
             [missing runModal];
             return false;
         }

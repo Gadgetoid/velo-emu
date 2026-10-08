@@ -6,13 +6,15 @@
 
 #include "core/screen.h"
 
-#define DIALOG_MEMORY_COUNT 5
-
-extern const uint32_t DIALOG_MEMORY_SIZES[DIALOG_MEMORY_COUNT];
-extern const char *const DIALOG_MEMORY_LABELS[DIALOG_MEMORY_COUNT];
+extern const int DIALOG_MEMORY_COUNT;
+extern const uint32_t DIALOG_MEMORY_SIZES[];
+extern const char *const DIALOG_MEMORY_LABELS[];
 extern const char *const DIALOG_NEW_MACHINE_MESSAGE;
 extern const char *const DIALOG_MANAGE_MESSAGE;
 extern const char *const DIALOG_CLOCK_LABEL;
+extern const char *const DIALOG_ROM_PROMPT;
+extern const char *const DIALOG_NOT_A_ROM;
+extern const char *const DIALOG_NO_ROM_HINT;
 
 typedef struct {
     char path[1024];

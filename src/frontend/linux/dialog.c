@@ -423,7 +423,7 @@ static void rom_changed(form_t *form, int widget_index, void *context) {
         rom->selected = state->last_rom = state->count - 1;
     } else if (state->picked_path[0]) {
         const SDL_MessageBoxButtonData buttons[] = { { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 0, "OK" } };
-        const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_WARNING, form->window, "Not a Velo ROM", "That file isn't a ROM this emulator can run.", 1, buttons, NULL };
+        const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_WARNING, form->window, DIALOG_NOT_A_ROM, "That file isn't a ROM this emulator can run.", 1, buttons, NULL };
         int chosen;
         SDL_ShowMessageBox(&dialog, &chosen);
     }
