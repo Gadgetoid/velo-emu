@@ -79,11 +79,6 @@ static const button_t BUTTONS[] = {
 #define BUTTON_COUNT (int)(sizeof BUTTONS / sizeof BUTTONS[0])
 #define FIRST_GROUP  8
 
-static const int UNSUPPORTED[] = {
-    MENU_SHOW_DEBUG_OUTPUT, MENU_SHOW_STATE, MENU_SCALE_50, MENU_SCALE_75, MENU_SCALE_100, MENU_SCALE_150,
-    MENU_SCALE_200, MENU_ZOOM_IN, MENU_ZOOM_OUT, MENU_FULL_SCREEN, MENU_SERIAL_PTY,
-};
-
 typedef struct {
     SDL_FRect buttons[BUTTON_COUNT];
     int left, top, right, bottom;
@@ -368,14 +363,6 @@ static int button_at(float x, float y) {
     return -1;
 }
 
-static bool supported(int tag) {
-    if (tag >= MENU_SERIAL_PORT_FIRST && tag <= MENU_SERIAL_PORT_LAST) return false;
-    for (size_t i = 0; i < sizeof UNSUPPORTED / sizeof UNSUPPORTED[0]; i++) {
-        if (UNSUPPORTED[i] == tag) return false;
-    }
-    return true;
-}
-
 static int page_entries(int *starts) {
     int count = 0;
     for (int i = 0; i < MENU_ENTRY_COUNT && count < PAGE_MAX; i++) {
@@ -385,7 +372,7 @@ static int page_entries(int *starts) {
 }
 
 static bool visible_item(const menu_entry_t *entry) {
-    return entry->kind == MENU_ENTRY_ITEM && supported(entry->tag) && !menu_state_hidden(entry->tag);
+    return entry->kind == MENU_ENTRY_ITEM && !menu_state_hidden(entry->tag);
 }
 
 static bool section_has_items(int from) {
@@ -628,7 +615,6 @@ static bool panel_event(const SDL_Event *event) {
 
 void menu_install(SDL_Window *window) {
     main_window = window;
-    menu_set_title(MENU_COPY_SCREEN, "Share Screen" ELLIPSIS);
 }
 
 int menu_bar_height(void) {

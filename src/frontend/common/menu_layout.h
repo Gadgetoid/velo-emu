@@ -9,6 +9,12 @@
 #define MENU_SCREENSHOT_PLACE "Pictures"
 #endif
 
+#ifdef __ANDROID__
+#define MENU_COPY_SCREEN_TITLE "Share Screen" ELLIPSIS
+#else
+#define MENU_COPY_SCREEN_TITLE "Copy Screen"
+#endif
+
 typedef enum {
     MENU_ENTRY_MENU,
     MENU_ENTRY_SUBMENU,
@@ -74,7 +80,9 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_ITEM, MENU_OPTIMISATIONS, "Optimisations", 0, 0 },
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
+#ifndef __ANDROID__
     { MENU_ENTRY_ITEM, MENU_SHOW_DEBUG_OUTPUT, "Show Debug Output", 0, 0 },
+#endif
     { MENU_ENTRY_ITEM, MENU_GDB_SERVER, "GDB Server", 0, 0 },
 #ifndef __APPLE__
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
@@ -88,18 +96,21 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SAVE_SNAPSHOT, "Save Snapshot" ELLIPSIS, 's', MENU_KEY_PRIMARY | MENU_KEY_CONTROL },
     { MENU_ENTRY_ITEM, MENU_LOAD_SNAPSHOT, "Load Snapshot" ELLIPSIS, 'l', MENU_KEY_PRIMARY | MENU_KEY_CONTROL },
+#ifndef __ANDROID__
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SHOW_STATE, "Show State Folder", 0, 0 },
+#endif
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
 
     { MENU_ENTRY_MENU, 0, "Edit", 0, 0 },
-    { MENU_ENTRY_ITEM, MENU_COPY_SCREEN, "Copy Screen", 'c', MENU_KEY_PRIMARY },
+    { MENU_ENTRY_ITEM, MENU_COPY_SCREEN, MENU_COPY_SCREEN_TITLE, 'c', MENU_KEY_PRIMARY },
     { MENU_ENTRY_ITEM, MENU_PASTE, "Paste as Typing", 'v', MENU_KEY_PRIMARY },
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SAVE_SCREENSHOT, "Save Screenshot to " MENU_SCREENSHOT_PLACE, 's', MENU_KEY_PRIMARY | MENU_KEY_SHIFT },
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
 
     { MENU_ENTRY_MENU, 0, "View", 0, 0 },
+#ifndef __ANDROID__
     { MENU_ENTRY_ITEM, MENU_SCALE_50, "50%", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SCALE_75, "75%", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SCALE_100, "Actual Size", '0', MENU_KEY_PRIMARY },
@@ -108,13 +119,16 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_ITEM, MENU_ZOOM_IN, "Zoom In", '=', MENU_KEY_PRIMARY },
     { MENU_ENTRY_ITEM, MENU_ZOOM_OUT, "Zoom Out", '-', MENU_KEY_PRIMARY },
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
+#endif
     { MENU_ENTRY_ITEM, MENU_DISPLAY_SIMULATED, "Simulated LCD", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_DISPLAY_SHARP, "Sharp Pixels", 0, 0 },
 #ifdef __ANDROID__
     { MENU_ENTRY_ITEM, MENU_FULL_BRIGHTNESS, "Full Brightness with Backlight", 0, 0 },
 #endif
+#ifndef __ANDROID__
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_FULL_SCREEN, "Full Screen", 'f', MENU_KEY_PRIMARY | MENU_KEY_CONTROL },
+#endif
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
 
     { MENU_ENTRY_MENU, 0, "Devices", 0, 0 },
@@ -129,8 +143,11 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_HEADING, 0, "Serial Port", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_OFF, "Not Connected", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_NETWORK, "Network (PPP)", 'n', MENU_KEY_PRIMARY | MENU_KEY_SHIFT },
+#ifndef __ANDROID__
     { MENU_ENTRY_ITEM, MENU_SERIAL_PTY, "Pseudo-terminal", 0, 0 },
+#endif
     { MENU_ENTRY_ITEM, MENU_SERIAL_TCP, "TCP Port", 0, 0 },
+#ifndef __ANDROID__
     { MENU_ENTRY_SUBMENU, 0, "Host Serial Port", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_PORT_FIRST + 0, "", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_PORT_FIRST + 1, "", 0, 0 },
@@ -149,6 +166,7 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_ITEM, MENU_SERIAL_PORT_FIRST + 14, "", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_PORT_FIRST + 15, "", 0, 0 },
     { MENU_ENTRY_END, 0, NULL, 0, 0 },
+#endif
     { MENU_ENTRY_ITEM, MENU_CONNECT_AT_LAUNCH, "Connect Network at Launch", 0, 0 },
     { MENU_ENTRY_SEPARATOR, 0, NULL, 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SOUND, "Sound", 0, 0 },
