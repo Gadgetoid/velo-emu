@@ -126,6 +126,7 @@ bool mips_translate(mips_cpu_t *cpu, uint32_t va, bool write, uint32_t *pa);
 void mips_raise_tlb_miss(mips_cpu_t *cpu, uint32_t va);
 void mips_raise_tlb_store_miss(mips_cpu_t *cpu, uint32_t va);
 void mips_flush_translations(mips_cpu_t *cpu);
+void mips_jump(mips_cpu_t *cpu, uint32_t target);
 void mips_return(mips_cpu_t *cpu, uint32_t value);
 void mips_debug_filter_add(mips_debug_t *debug, uint32_t va);
 bool mips_user_mode(const mips_cpu_t *cpu);

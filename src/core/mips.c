@@ -179,13 +179,17 @@ static translate_result_t translate(mips_cpu_t *cpu, uint32_t va, bool write, ui
     return TRANSLATE_OK;
 }
 
-void mips_return(mips_cpu_t *cpu, uint32_t value) {
-    cpu->gpr[2] = value;
-    cpu->pc = cpu->gpr[31];
-    cpu->next_pc = cpu->pc + 4;
+void mips_jump(mips_cpu_t *cpu, uint32_t target) {
+    cpu->pc = target;
+    cpu->next_pc = target + 4;
     cpu->next_in_delay_slot = false;
     cpu->fault = true;
     cpu->epoch++;
+}
+
+void mips_return(mips_cpu_t *cpu, uint32_t value) {
+    cpu->gpr[2] = value;
+    mips_jump(cpu, cpu->gpr[31]);
 }
 
 bool mips_translate(mips_cpu_t *cpu, uint32_t va, bool write, uint32_t *pa) {

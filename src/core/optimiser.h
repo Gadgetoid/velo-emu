@@ -16,6 +16,7 @@ typedef struct {
     const uint32_t *code;
     uint32_t words;
     native_fn run;
+    uint32_t next;
     optimiser_state_t state;
 } optimiser_hook_t;
 

@@ -34,12 +34,19 @@ static const uint32_t CE2_ENCODE_CODE[] = {
     0x3C010100u, 0x0281082Bu, 0x50200064u, 0x2402FFFFu, 0x12C00011u, 0x2EA10003u,
 };
 
+static const uint32_t EXPORT_CE2_CODE[] = {
+    0x27BDFFC0u, 0xAFB40028u, 0xAFB30024u, 0x00A09825u, 0x0080A025u, 0xAFBF002Cu,
+    0xAFB20020u, 0xAFB1001Cu, 0xAFB00018u, 0x8E86007Cu, 0x50C0002Eu, 0x00001025u,
+    0x8E830050u, 0x00008825u, 0x00669021u, 0x8E4F001Cu,
+};
+
 typedef struct {
     uint32_t va;
     const uint32_t *code;
     uint32_t words;
     native_fn run;
     bool in_rom;
+    uint32_t next;
 } hook_spec_t;
 
 typedef struct {
@@ -52,13 +59,14 @@ typedef struct {
 #define COUNT(table) (int)(sizeof(table) / sizeof((table)[0]))
 
 static const hook_spec_t CE1_HOOKS[] = {
-    { 0x9F41F80Cu, CODE(CE1_DECODE_CODE), native_ce1_decode, true },
-    { 0x9F41FA94u, CODE(CE1_ENCODE_CODE), native_ce1_encode, true },
+    { 0x9F41F80Cu, CODE(CE1_DECODE_CODE), native_ce1_decode, true, 0 },
+    { 0x9F41FA94u, CODE(CE1_ENCODE_CODE), native_ce1_encode, true, 0 },
 };
 
 static const hook_spec_t CE2_HOOKS[] = {
-    { 0x9005B000u, CODE(CE2_DECODE_CODE), native_ce2_decode, true },
-    { 0x9005ADECu, CODE(CE2_ENCODE_CODE), native_ce2_encode, true },
+    { 0x9005B000u, CODE(CE2_DECODE_CODE), native_ce2_decode, true, 0 },
+    { 0x9005ADECu, CODE(CE2_ENCODE_CODE), native_ce2_encode, true, 0 },
+    { 0x900412A0u, CODE(EXPORT_CE2_CODE), native_export_lookup, true, 0x90043D2Cu },
 };
 
 static const profile_t PROFILES[] = {
@@ -80,7 +88,7 @@ void optimiser_init(optimiser_t *optimiser, optimiser_rom_fn rom, void *rom_cont
         for (int i = 0; i < profile->hook_count && optimiser->hook_count < OPTIMISER_HOOKS_MAX; i++) {
             const hook_spec_t *spec = &profile->hooks[i];
             if (spec->in_rom && !in_rom(rom, rom_context, spec)) continue;
-            optimiser->hooks[optimiser->hook_count++] = (optimiser_hook_t){ spec->va, spec->code, spec->words, spec->run, spec->in_rom ? OPTIMISER_MATCHED : OPTIMISER_UNCHECKED };
+            optimiser->hooks[optimiser->hook_count++] = (optimiser_hook_t){ spec->va, spec->code, spec->words, spec->run, spec->next, spec->in_rom ? OPTIMISER_MATCHED : OPTIMISER_UNCHECKED };
         }
         return;
     }
@@ -120,9 +128,17 @@ bool optimiser_call(optimiser_t *optimiser, mips_cpu_t *cpu, uint32_t pc) {
             if (!readable) return false;
             hook->state = matches ? OPTIMISER_MATCHED : OPTIMISER_MISMATCHED;
         }
-        uint32_t arguments[NATIVE_ARGUMENTS], result;
+        uint32_t arguments[NATIVE_ARGUMENTS];
+        native_result_t result = { 0, false };
         if (hook->state != OPTIMISER_MATCHED || !mips_arguments(optimiser, cpu, arguments) || !hook->run(&optimiser->memory, arguments, &result)) return false;
-        mips_return(cpu, result);
+        if (result.call_next && !hook->next) return false;
+        if (result.call_next) {
+            cpu->gpr[4] = arguments[0];
+            cpu->gpr[5] = result.value;
+            mips_jump(cpu, hook->next);
+        } else {
+            mips_return(cpu, result.value);
+        }
         return true;
     }
     return false;

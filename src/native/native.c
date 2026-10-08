@@ -11,6 +11,14 @@
 #define FILL_MAX     0x4000000u
 #define STRING_MAX   0x10000u
 #define RANGE_STEPS  32
+#define EXPORTS_MAX  0x10000u
+#define MODULE_EXPORTS 124u
+#define MODULE_BASE  80u
+#define EXPORT_FUNCTIONS 20u
+#define EXPORT_NAMES 24u
+#define EXPORT_FUNCTION_TABLE 28u
+#define EXPORT_NAME_TABLE 32u
+#define EXPORT_ORDINAL_TABLE 36u
 
 bool native_read(const native_memory_t *memory, uint32_t va, uint8_t *data, uint32_t length) {
     while (length) {
@@ -62,7 +70,7 @@ static bool guest_writable_strided(const native_memory_t *memory, uint32_t va, u
     return last >= va;
 }
 
-bool native_ce1_decode(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_ce1_decode(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     static uint8_t input[CODEC_MAX], output[CODEC_MAX];
     static uint16_t runs[CODEC_MAX];
     uint32_t source = arguments[0], length = arguments[1], destination = arguments[2], capacity_va = arguments[3];
@@ -91,10 +99,10 @@ bool native_ce1_decode(const native_memory_t *memory, const uint32_t *arguments,
     }
     uint8_t count[4] = { (uint8_t)written, (uint8_t)(written >> 8), (uint8_t)(written >> 16), (uint8_t)(written >> 24) };
     guest_write(memory, capacity_va, count, 4);
-    *result = 0;
+    result->value = 0;
     return true;
 }
-bool native_ce1_encode(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_ce1_encode(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     static uint8_t input[CODEC_MAX], output[CODEC_MAX];
     uint32_t source = arguments[0], length = arguments[1] & 0xFFFF, destination = arguments[2], capacity_va = arguments[3];
     uint8_t capacity_bytes[2];
@@ -112,14 +120,14 @@ bool native_ce1_encode(const native_memory_t *memory, const uint32_t *arguments,
     if (destination) guest_write(memory, destination, output, (uint32_t)produced);
     uint8_t written[2] = { (uint8_t)produced, (uint8_t)(produced >> 8) };
     guest_write(memory, capacity_va, written, 2);
-    *result = 0;
+    result->value = 0;
     return true;
 }
 static uint32_t read24(const uint8_t *bytes) {
     return (uint32_t)bytes[0] | (uint32_t)bytes[1] << 8 | (uint32_t)bytes[2] << 16;
 }
 
-bool native_ce2_decode(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_ce2_decode(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     static uint8_t data[CE2_DATA_MAX], output[CODEC_MAX], table[3 * (LZ_WINDOW_BLOCKS + 2)];
     uint32_t source = arguments[0], length = arguments[1], destination = arguments[2], capacity = arguments[3];
     uint32_t skip = arguments[4], stride = arguments[5];
@@ -139,10 +147,10 @@ bool native_ce2_decode(const native_memory_t *memory, const uint32_t *arguments,
     if (lz_decode_window(data, starts[0], starts[span] - starts[0], starts, first, span, skip, output, count) != (long)count) return false;
     if (!guest_writable(memory, destination, count)) return false;
     guest_write(memory, destination, output, count);
-    *result = count;
+    result->value = count;
     return true;
 }
-bool native_ce2_encode(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_ce2_encode(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     static uint8_t input[CODEC_MAX], output[CODEC_MAX * 2];
     uint32_t source = arguments[0], length = arguments[1], destination = arguments[2], capacity = arguments[3];
     uint32_t stride = arguments[4];
@@ -153,10 +161,10 @@ bool native_ce2_encode(const native_memory_t *memory, const uint32_t *arguments,
     if (all_zero || !produced || produced > capacity) return false;
     if (!guest_writable(memory, destination, (uint32_t)produced)) return false;
     guest_write(memory, destination, output, (uint32_t)produced);
-    *result = (uint32_t)produced;
+    result->value = (uint32_t)produced;
     return true;
 }
-bool native_fill32(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_fill32(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     uint32_t destination = arguments[0], value = arguments[1], length = arguments[2];
     if ((destination & 3) || (length & 3) || length > FILL_MAX) return false;
     if (!guest_writable(memory, destination, length)) return false;
@@ -168,14 +176,14 @@ bool native_fill32(const native_memory_t *memory, const uint32_t *arguments, uin
         for (uint32_t i = 0; i < chunk; i += 4) memcpy(host + i, word, 4);
         at += chunk;
     }
-    *result = 0;
+    result->value = 0;
     return true;
 }
 static bool guest_byte(const native_memory_t *memory, uint32_t va, uint8_t *value) {
     return native_read(memory, va, value, 1);
 }
 
-bool native_strcmp(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_strcmp(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     uint32_t left = arguments[0], right = arguments[1];
     uint8_t a = 0, b = 0;
     uint32_t i = 0;
@@ -184,10 +192,10 @@ bool native_strcmp(const native_memory_t *memory, const uint32_t *arguments, uin
         if (!a || a != b) break;
     }
     if (i == STRING_MAX) return false;
-    *result = (uint32_t)a - b;
+    result->value = (uint32_t)a - b;
     return true;
 }
-bool native_widen(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_widen(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     static uint8_t text[STRING_MAX];
     uint32_t destination = arguments[0], source = arguments[1];
     int32_t limit = (int32_t)arguments[2];
@@ -202,10 +210,10 @@ bool native_widen(const native_memory_t *memory, const uint32_t *arguments, uint
         uint8_t wide[2] = { i < count ? text[i] : 0, 0 };
         guest_write(memory, destination + i * 2, wide, 2);
     }
-    *result = 0;
+    result->value = 0;
     return true;
 }
-bool native_range_lookup(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_range_lookup(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     uint32_t table = arguments[0];
     int32_t character = (int32_t)arguments[2], low = 0, high = (int32_t)arguments[1] - 1;
     uint32_t found = arguments[2];
@@ -225,21 +233,71 @@ bool native_range_lookup(const native_memory_t *memory, const uint32_t *argument
             break;
         }
     }
-    *result = found;
+    result->value = found;
     return true;
 }
-bool native_wcslen(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_wcslen(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     uint32_t start = arguments[0], count = 0;
     for (uint8_t wide[2];; count++) {
         if (count == STRING_MAX || !native_read(memory, start + count * 2, wide, 2)) return false;
         if (!wide[0] && !wide[1]) break;
     }
-    *result = count;
+    result->value = count;
     return true;
 }
-bool native_return_zero(const native_memory_t *memory, const uint32_t *arguments, uint32_t *result) {
+bool native_return_zero(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     (void)memory;
     (void)arguments;
-    *result = 0;
+    result->value = 0;
+    return true;
+}
+
+static bool names_equal(const native_memory_t *memory, uint32_t left, uint32_t right, bool *equal) {
+    for (uint32_t i = 0; i < STRING_MAX; i++) {
+        uint8_t a, b;
+        if (!guest_byte(memory, left + i, &a) || !guest_byte(memory, right + i, &b)) return false;
+        if (a != b) {
+            *equal = false;
+            return true;
+        }
+        if (!a) {
+            *equal = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool native_export_lookup(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    uint32_t module = arguments[0], name = arguments[1], exports, base;
+    if (!guest_word(memory, module + MODULE_EXPORTS, &exports)) return false;
+    if (!exports) {
+        result->value = 0;
+        return true;
+    }
+    if (!guest_word(memory, module + MODULE_BASE, &base)) return false;
+    uint32_t directory = base + exports, functions, count, function_table, name_table, ordinal_table;
+    if (!guest_word(memory, directory + EXPORT_FUNCTIONS, &functions) || !guest_word(memory, directory + EXPORT_NAMES, &count) ||
+        !guest_word(memory, directory + EXPORT_FUNCTION_TABLE, &function_table) || !guest_word(memory, directory + EXPORT_NAME_TABLE, &name_table) ||
+        !guest_word(memory, directory + EXPORT_ORDINAL_TABLE, &ordinal_table)) {
+        return false;
+    }
+    if (count > EXPORTS_MAX) return false;
+    uint32_t index = 0;
+    for (; index < count; index++) {
+        uint32_t entry;
+        bool equal;
+        if (!guest_word(memory, base + name_table + index * 4, &entry) || !names_equal(memory, name, base + entry, &equal)) return false;
+        if (equal) break;
+    }
+    if (index == count || index >= functions) {
+        result->value = 0;
+        return true;
+    }
+    uint8_t ordinal[2];
+    uint32_t address;
+    if (!native_read(memory, base + ordinal_table + index * 2, ordinal, 2) || !guest_word(memory, base + function_table + (uint32_t)(ordinal[0] | ordinal[1] << 8) * 4, &address)) return false;
+    result->value = address;
+    result->call_next = true;
     return true;
 }
