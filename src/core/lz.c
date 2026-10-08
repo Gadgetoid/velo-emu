@@ -103,15 +103,15 @@ long lz_decode(const uint8_t *in, size_t in_size, size_t skip, uint8_t *out, siz
 
 typedef struct {
     const uint8_t *block;
-    size_t   length, position;
-    int16_t  heads[HASH_SIZE];
+    size_t length, position;
+    int16_t heads[HASH_SIZE];
     uint16_t chain_source[BLOCK];
-    int16_t  chain_next[BLOCK];
-    int      chain_count;
+    int16_t chain_next[BLOCK];
+    int chain_count;
     uint8_t *out;
-    size_t   out_size, produced, flag_offset;
-    int      flag_bit;
-    bool     all_zero, overflow;
+    size_t out_size, produced, flag_offset;
+    int flag_bit;
+    bool all_zero, overflow;
 } encoder_t;
 
 static uint32_t hash_pair(uint8_t first, uint8_t second) {

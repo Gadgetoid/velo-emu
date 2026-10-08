@@ -13,14 +13,14 @@
 
 typedef struct {
     machine_t *machine;
-    int        version;
-    uint32_t   process_array;
-    uint32_t   process_stride;
-    uint32_t   module_list;
+    int version;
+    uint32_t process_array;
+    uint32_t process_stride;
+    uint32_t module_list;
 } ce_t;
 
 typedef struct {
-    char     name[CE_NAME_MAX];
+    char name[CE_NAME_MAX];
     uint32_t base;
     uint32_t in_use;
 } ce_module_t;

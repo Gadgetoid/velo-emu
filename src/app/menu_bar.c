@@ -39,17 +39,17 @@ typedef enum { ITEM_ACTION, ITEM_SEPARATOR, ITEM_SUBMENU, ITEM_HEADING } item_ki
 
 typedef struct {
     item_kind_t kind;
-    int         tag;
-    int         submenu;
-    char        title[96];
-    char        shortcut[32];
+    int tag;
+    int submenu;
+    char title[96];
+    char shortcut[32];
     SDL_Keycode key;
-    SDL_Keymod  modifiers;
+    SDL_Keymod modifiers;
 } item_t;
 
 typedef struct {
-    char  title[32];
-    int   first, count;
+    char title[32];
+    int first, count;
     float bar_x, bar_width;
 } menu_t;
 
@@ -57,13 +57,13 @@ typedef struct {
     SDL_Window   *window;
     SDL_Renderer *renderer;
     SDL_Texture  *glyphs;
-    int           glyph_generation;
+    int glyph_generation;
 } canvas_t;
 
 typedef struct {
-    int      menu;
-    int      hover;
-    float    width, height;
+    int menu;
+    int hover;
+    float width, height;
     canvas_t canvas;
 } level_t;
 
@@ -90,35 +90,35 @@ static int EXTRA_CODEPOINTS[GLYPH_EXTRA_COUNT] = { 0x2026, 0x2713, 0x25b8 };
 
 static struct {
     unsigned char   *data;
-    stbtt_fontinfo   info;
+    stbtt_fontinfo info;
     stbtt_packedchar ascii[ASCII_COUNT];
     stbtt_packedchar extra[GLYPH_EXTRA_COUNT];
-    bool             has_extra[GLYPH_EXTRA_COUNT];
+    bool has_extra[GLYPH_EXTRA_COUNT];
     unsigned char   *atlas;
     Uint32          *atlas_pixels;
-    float            density;
-    float            ascent, line_height;
-    int              generation;
-    bool             loaded, baked;
+    float density;
+    float ascent, line_height;
+    int generation;
+    bool loaded, baked;
 } font;
 
 static SDL_Window *main_window;
-static float       density = 1.0f;
-static canvas_t    bar_canvas;
-static menu_t      menus[MAX_MENUS];
-static int         menu_count;
-static int         top_menus[MAX_MENUS];
-static int         top_count;
-static item_t      items[MAX_ITEMS];
-static int         item_count;
-static int         item_of_tag[MENU_COUNT];
-static bool        enabled[MENU_COUNT], checked[MENU_COUNT], hidden[MENU_COUNT];
-static level_t     levels[MAX_DEPTH];
-static int         depth;
-static int         open_top = -1;
-static int         queue[MENU_QUEUE];
-static int         queued;
-static bool        popup_failed;
+static float density = 1.0f;
+static canvas_t bar_canvas;
+static menu_t menus[MAX_MENUS];
+static int menu_count;
+static int top_menus[MAX_MENUS];
+static int top_count;
+static item_t items[MAX_ITEMS];
+static int item_count;
+static int item_of_tag[MENU_COUNT];
+static bool enabled[MENU_COUNT], checked[MENU_COUNT], hidden[MENU_COUNT];
+static level_t levels[MAX_DEPTH];
+static int depth;
+static int open_top = -1;
+static int queue[MENU_QUEUE];
+static int queued;
+static bool popup_failed;
 
 static const char *FONT_PATHS[] = {
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -700,7 +700,8 @@ void menu_install(SDL_Window *window) {
     bake_font();
 }
 
-void menu_ensure(void) {}
+void menu_ensure(void) {
+}
 
 int menu_bar_height(void) {
     return (int)BAR_HEIGHT;
@@ -883,24 +884,24 @@ typedef struct {
     const char   *label;
     const char   *text;
     char         *value;
-    size_t        value_size;
+    size_t value_size;
     const char   *placeholder;
     const char   *options[FORM_OPTIONS];
-    int           count, selected;
-    uint64_t      enabled;
-    bool          checked;
-    int           result;
-    float         x, y, width, height;
+    int count, selected;
+    uint64_t enabled;
+    bool checked;
+    int result;
+    float x, y, width, height;
 } widget_t;
 
 typedef struct form form_t;
 
 struct form {
     const char *title, *message;
-    widget_t    widgets[FORM_WIDGETS];
-    int         count, focus, open, hover, scroll, default_result;
-    float       x, y, width, height;
-    void      (*changed)(form_t *form, int widget, void *context);
+    widget_t widgets[FORM_WIDGETS];
+    int count, focus, open, hover, scroll, default_result;
+    float x, y, width, height;
+    void (*changed)(form_t *form, int widget, void *context);
     void       *context;
 };
 
@@ -1224,12 +1225,12 @@ static const char *MEMORY_LABELS[DIALOG_MEMORY_COUNT] = {
 };
 
 typedef struct {
-    dialog_rom_t    roms[FORM_OPTIONS - 1];
-    int             count;
+    dialog_rom_t roms[FORM_OPTIONS - 1];
+    int count;
     dialog_probe_fn probe;
-    int             rom, screen, last_rom;
-    SDL_AtomicInt   picked;
-    char            picked_path[1024];
+    int rom, screen, last_rom;
+    SDL_AtomicInt picked;
+    char picked_path[1024];
 } new_machine_t;
 
 static void update_screens(form_t *form, new_machine_t *state) {

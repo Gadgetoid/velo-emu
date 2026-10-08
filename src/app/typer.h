@@ -8,10 +8,10 @@
 #define PASTE_MAX 8192
 
 typedef struct {
-    char     text[PASTE_MAX];
-    size_t   length, position;
-    bool     pressed, shifted;
-    uint8_t  scancode;
+    char text[PASTE_MAX];
+    size_t length, position;
+    bool pressed, shifted;
+    uint8_t scancode;
     uint64_t next_at;
     key_layout_t layout;
 } typer_t;

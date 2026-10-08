@@ -4,9 +4,11 @@ PROXYCHECK = proxycheck
 VELORAPI  = velo-rapi
 VELOSTATE = velo-state
 BUILD     = build
+UNCRUSTIFY ?= uncrustify
 ROM      ?= rom/nk.bin
 CE2_ROM  ?= rom/nk-ce2.bin
 VELO_TOOLCHAIN ?= ../velo-toolchain
+C_STYLE_SOURCES = $(filter-out src/vendor/%,$(shell git ls-files 'src/**/*.c' 'src/**/*.h' 'tools/*.c' 'guest/**/*.c' 'guest/**/*.h'))
 
 .DEFAULT_GOAL := all
 
@@ -143,12 +145,18 @@ vdisk: guest
 clean:
 	rm -rf $(BUILD) $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE) Velo.app
 
-.PHONY: all run clean test check app apk apk-push apk-install icons guest vdisk FORCE
+.PHONY: all run clean test check format format-check app apk apk-push apk-install icons guest vdisk FORCE
 
 -include $(OBJ_APP:.o=.d) $(OBJ_HEADLESS:.o=.d) $(BUILD)/tools/proxy_check.d $(BUILD)/tools/velo_rapi.d $(BUILD)/tools/velo_state.d $(BUILD)/tools/icon.d
 
 check: $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE)
 	sh tests/check.sh
+
+format:
+	$(UNCRUSTIFY) -c .uncrustify.cfg --replace --no-backup $(C_STYLE_SOURCES)
+
+format-check:
+	$(UNCRUSTIFY) -c .uncrustify.cfg --check $(C_STYLE_SOURCES)
 
 test: $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE)
 	sh tests/boot.sh $(ROM) $(CE2_ROM)

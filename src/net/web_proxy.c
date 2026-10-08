@@ -50,18 +50,18 @@ typedef struct {
 } buffer_t;
 
 typedef struct {
-    char     method[16];
-    char     url[URL_MAX];
+    char method[16];
+    char url[URL_MAX];
     char    *headers;
     buffer_t body;
 } request_t;
 
 typedef struct {
     CURLcode result;
-    long     status;
+    long status;
     buffer_t headers;
     buffer_t body;
-    char     redirect[URL_MAX];
+    char redirect[URL_MAX];
 } response_t;
 
 typedef struct {
@@ -72,7 +72,7 @@ typedef struct {
 
 typedef struct {
     char url[URL_MAX];
-    int  width, height;
+    int width, height;
 } image_hint_t;
 
 static image_hint_t hints[HINT_COUNT];
@@ -535,23 +535,23 @@ static long legacy_status(long status) {
 
 static const char *reason_phrase(long status) {
     switch (status) {
-        case 200: return "OK";
-        case 201: return "Created";
-        case 204: return "No Content";
-        case 206: return "Partial Content";
-        case 301: return "Moved Permanently";
-        case 302: return "Moved Temporarily";
-        case 304: return "Not Modified";
-        case 400: return "Bad Request";
-        case 401: return "Unauthorized";
-        case 403: return "Forbidden";
-        case 404: return "Not Found";
-        case 405: return "Method Not Allowed";
-        case 500: return "Internal Server Error";
-        case 501: return "Not Implemented";
-        case 502: return "Bad Gateway";
-        case 503: return "Service Unavailable";
-        case 504: return "Gateway Timeout";
+    case 200: return "OK";
+    case 201: return "Created";
+    case 204: return "No Content";
+    case 206: return "Partial Content";
+    case 301: return "Moved Permanently";
+    case 302: return "Moved Temporarily";
+    case 304: return "Not Modified";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
     }
     return status < 300 ? "OK" : status < 400 ? "Redirect" : "Error";
 }
@@ -673,7 +673,7 @@ static void send_response(int client, const request_t *request, response_t *resp
     find_image_hint(request->url, &hint_width, &hint_height);
     if (image && response->body.length &&
         web_image_convert((const uint8_t *)response->body.data, response->body.length, !strcmp(mime, "image/svg+xml"),
-                         hint_width, hint_height, &gif, &gif_length)) {
+                          hint_width, hint_height, &gif, &gif_length)) {
         free(response->body.data);
         response->body = (buffer_t){ (char *)gif, gif_length, gif_length };
         snprintf(content_type, sizeof content_type, "image/gif");

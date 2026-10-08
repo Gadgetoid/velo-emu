@@ -97,10 +97,10 @@ static void tlb_read(mips_cpu_t *cpu) {
     const mips_tlb_entry_t *entry = &cpu->tlb[(cpu->cp0[CP0_INDEX] >> INDEX_SHIFT) & INDEX_MASK];
     cpu->cp0[CP0_ENTRYHI] = entry->vpn | (entry->pid << ENTRYHI_PID_SHIFT);
     cpu->cp0[CP0_ENTRYLO] = entry->pfn
-                          | (entry->noncache ? ENTRYLO_N : 0)
-                          | (entry->dirty ? ENTRYLO_D : 0)
-                          | (entry->valid ? ENTRYLO_V : 0)
-                          | (entry->global ? ENTRYLO_G : 0);
+                            | (entry->noncache ? ENTRYLO_N : 0)
+                            | (entry->dirty ? ENTRYLO_D : 0)
+                            | (entry->valid ? ENTRYLO_V : 0)
+                            | (entry->global ? ENTRYLO_G : 0);
 }
 
 static void tlb_probe(mips_cpu_t *cpu) {
@@ -126,7 +126,7 @@ static void raise_exception(mips_cpu_t *cpu, uint32_t code, uint32_t faulting_pc
     cpu->cp0[CP0_STATUS] = (status & ~0x3Fu) | ((status << 2) & 0x3Cu);
     bool bev = (status & STATUS_BEV) != 0;
     bool utlb = (code == MIPS_EXC_TLBL || code == MIPS_EXC_TLBS) && cpu->cp0[CP0_BADVADDR] < 0x80000000u
-             && tlb_find(cpu, cpu->cp0[CP0_BADVADDR] & ENTRYHI_VPN_MASK, tlb_pid(cpu)) < 0;
+                && tlb_find(cpu, cpu->cp0[CP0_BADVADDR] & ENTRYHI_VPN_MASK, tlb_pid(cpu)) < 0;
     uint32_t vector = bev ? (utlb ? VEC_UTLB_BEV : VEC_GENERAL_BEV) : (utlb ? VEC_UTLB : VEC_GENERAL);
     cpu->pc = vector;
     cpu->next_pc = vector + 4;
@@ -194,11 +194,11 @@ bool mips_translate(mips_cpu_t *cpu, uint32_t va, bool write, uint32_t *pa) {
 
 static bool translate_or_fault(mips_cpu_t *cpu, uint32_t va, bool write, uint32_t *pa) {
     switch (translate(cpu, va, write, pa)) {
-        case TRANSLATE_OK: return true;
-        case TRANSLATE_ADDRESS: address_fault(cpu, write ? MIPS_EXC_ADES : MIPS_EXC_ADEL, va); return false;
-        case TRANSLATE_MISS:
-        case TRANSLATE_INVALID: tlb_fault(cpu, write ? MIPS_EXC_TLBS : MIPS_EXC_TLBL, va); return false;
-        case TRANSLATE_MODIFIED: tlb_fault(cpu, MIPS_EXC_MOD, va); return false;
+    case TRANSLATE_OK: return true;
+    case TRANSLATE_ADDRESS: address_fault(cpu, write ? MIPS_EXC_ADES : MIPS_EXC_ADEL, va); return false;
+    case TRANSLATE_MISS:
+    case TRANSLATE_INVALID: tlb_fault(cpu, write ? MIPS_EXC_TLBS : MIPS_EXC_TLBL, va); return false;
+    case TRANSLATE_MODIFIED: tlb_fault(cpu, MIPS_EXC_MOD, va); return false;
     }
     return false;
 }
@@ -342,41 +342,43 @@ static bool coprocessor_usable(mips_cpu_t *cpu, int unit) {
 
 static uint32_t read_cp0(mips_cpu_t *cpu, int reg) {
     switch (reg) {
-        case CP0_RANDOM: return tlb_random_index(cpu) << INDEX_SHIFT;
-        case CP0_CAUSE:  return (cpu->cp0[CP0_CAUSE] & ~(CAUSE_IP_MASK & ~CAUSE_SW_MASK)) | cpu->external_ip;
-        default:         return cpu->cp0[reg];
+    case CP0_RANDOM: return tlb_random_index(cpu) << INDEX_SHIFT;
+    case CP0_CAUSE:  return (cpu->cp0[CP0_CAUSE] & ~(CAUSE_IP_MASK & ~CAUSE_SW_MASK)) | cpu->external_ip;
+    default:         return cpu->cp0[reg];
     }
 }
 
 static void write_cp0(mips_cpu_t *cpu, int reg, uint32_t value) {
     cpu->epoch++;
     switch (reg) {
-        case CP0_RANDOM:
-        case CP0_BADVADDR:
-        case CP0_PRID:
-            return;
-        case CP0_INDEX:
-            cpu->cp0[reg] = (cpu->cp0[reg] & INDEX_PROBE_FAIL) | (value & (INDEX_MASK << INDEX_SHIFT));
-            return;
-        case CP0_ENTRYHI:
-            cpu->cp0[reg] = value & (ENTRYHI_VPN_MASK | (ENTRYHI_PID_MASK << ENTRYHI_PID_SHIFT));
-            break;
-        case CP0_ENTRYLO:
-            cpu->cp0[reg] = value & 0xFFFFFF00u;
-            return;
-        case CP0_CONTEXT:
-            cpu->cp0[reg] = (value & CONTEXT_PTE_BASE) | (cpu->cp0[reg] & CONTEXT_BAD_VPN);
-            return;
-        case CP0_CAUSE:
-            cpu->cp0[reg] = (cpu->cp0[reg] & ~CAUSE_SW_MASK) | (value & CAUSE_SW_MASK);
-            return;
-        default:
-            cpu->cp0[reg] = value;
-            break;
+    case CP0_RANDOM:
+    case CP0_BADVADDR:
+    case CP0_PRID:
+        return;
+    case CP0_INDEX:
+        cpu->cp0[reg] = (cpu->cp0[reg] & INDEX_PROBE_FAIL) | (value & (INDEX_MASK << INDEX_SHIFT));
+        return;
+    case CP0_ENTRYHI:
+        cpu->cp0[reg] = value & (ENTRYHI_VPN_MASK | (ENTRYHI_PID_MASK << ENTRYHI_PID_SHIFT));
+        break;
+    case CP0_ENTRYLO:
+        cpu->cp0[reg] = value & 0xFFFFFF00u;
+        return;
+    case CP0_CONTEXT:
+        cpu->cp0[reg] = (value & CONTEXT_PTE_BASE) | (cpu->cp0[reg] & CONTEXT_BAD_VPN);
+        return;
+    case CP0_CAUSE:
+        cpu->cp0[reg] = (cpu->cp0[reg] & ~CAUSE_SW_MASK) | (value & CAUSE_SW_MASK);
+        return;
+    default:
+        cpu->cp0[reg] = value;
+        break;
     }
 }
 
-static inline int32_t sign16(uint32_t value) { return (int16_t)(value & 0xFFFFu); }
+static inline int32_t sign16(uint32_t value) {
+    return (int16_t)(value & 0xFFFFu);
+}
 
 static void execute(mips_cpu_t *cpu, uint32_t op) {
     uint32_t *r = cpu->gpr;
@@ -711,7 +713,7 @@ typedef enum { FAST_SLOW, FAST_DONE, FAST_BUS, FAST_SETTLE } fast_result_t;
 
 typedef struct {
     uint32_t pa, size, value, reg;
-    bool     write, sign;
+    bool write, sign;
 } bus_access_t;
 
 static ALWAYS_INLINE fast_result_t fast_load(mips_cpu_t *cpu, uint32_t va, uint32_t size, uint32_t reg, bool sign, bus_access_t *access) {

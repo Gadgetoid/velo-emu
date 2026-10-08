@@ -24,16 +24,16 @@
 
 typedef struct {
     uint8_t *data;
-    size_t   length, capacity;
-    bool     failed;
+    size_t length, capacity;
+    bool failed;
 } bytes_t;
 
 typedef struct {
     bytes_t *out;
-    uint8_t  block[255];
-    int      block_length;
+    uint8_t block[255];
+    int block_length;
     uint32_t bits;
-    int      bit_count;
+    int bit_count;
 } packer_t;
 
 static const uint8_t bayer[8][8] = {
@@ -111,7 +111,7 @@ static bool compress(bytes_t *out, const uint8_t *pixels, size_t count) {
         }
         pack(&packer, current, code_size);
         first_after_clear = false;
-        children[current][next] = (uint16_t)++max_code;
+        children[current][next] = (uint16_t)++ max_code;
         if (max_code >= (1 << code_size)) code_size++;
         if (max_code == MAX_CODE) {
             pack(&packer, CLEAR_CODE, code_size);

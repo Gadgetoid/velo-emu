@@ -8,4 +8,4 @@ typedef struct {
 } rapi_sync_result_t;
 
 bool rapi_sync_run(rapi_t *rapi, const char *folder, const char *remote_root, const char *manifest_path,
-                  rapi_sync_log_fn log, void *context, rapi_sync_result_t *result);
+                   rapi_sync_log_fn log, void *context, rapi_sync_result_t *result);

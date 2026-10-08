@@ -53,8 +53,8 @@ typedef enum { BUTTON_TOGGLE, BUTTON_MENU, BUTTON_KEYBOARD, BUTTON_KEY, BUTTON_M
 typedef struct {
     const char   *label;
     button_kind_t kind;
-    SDL_Keycode   key;
-    int           item;
+    SDL_Keycode key;
+    int item;
 } button_t;
 
 static const button_t BUTTONS[] = {
@@ -85,66 +85,66 @@ static const int UNSUPPORTED[] = {
 
 typedef struct {
     SDL_FRect buttons[BUTTON_COUNT];
-    int       left, top, right, bottom;
-    float     label_size;
+    int left, top, right, bottom;
+    float label_size;
 } layout_t;
 
 typedef enum { ROW_ITEM, ROW_HEADING, ROW_SEPARATOR } row_kind_t;
 
 typedef struct {
-    row_kind_t  kind;
-    int         tag;
+    row_kind_t kind;
+    int tag;
     const char *title;
-    bool        checked, disabled;
+    bool checked, disabled;
 } row_t;
 
 typedef struct {
     const char *tabs[TAB_MAX];
-    int         tab_count, tab_selected;
-    row_t       rows[ROW_MAX];
-    int         row_count;
+    int tab_count, tab_selected;
+    row_t rows[ROW_MAX];
+    int row_count;
 } list_t;
 
 typedef struct {
     bool tapped;
-    int  tab, tag;
+    int tab, tag;
 } tap_t;
 
 static SDL_Window *main_window;
-static bool        collapsed;
-static int         pressed = -1;
-static bool        latched[BUTTON_COUNT];
-static bool        checked[MENU_COUNT];
-static bool        hidden[MENU_COUNT];
-static bool        disabled[MENU_COUNT];
-static char        titles[MENU_COUNT][TITLE_MAX];
-static int         queue[MENU_QUEUE];
-static int         queued;
+static bool collapsed;
+static int pressed = -1;
+static bool latched[BUTTON_COUNT];
+static bool checked[MENU_COUNT];
+static bool hidden[MENU_COUNT];
+static bool disabled[MENU_COUNT];
+static char titles[MENU_COUNT][TITLE_MAX];
+static int queue[MENU_QUEUE];
+static int queued;
 
-static char  toast[256];
-static bool  panel_open;
-static int   page;
+static char toast[256];
+static bool panel_open;
+static int page;
 static float scroll;
-static bool  touching, dragging;
+static bool touching, dragging;
 static float touch_x, touch_y, touch_scroll;
 static float velocity, last_motion_y;
 static uint64_t last_motion_ns, last_frame_ns;
 
 typedef struct {
-    float            size;
-    float            ascent;
+    float size;
+    float ascent;
     stbtt_packedchar characters[CHARACTER_COUNT];
     stbtt_packedchar ellipsis;
     SDL_Texture     *texture;
-    uint64_t         used;
+    uint64_t used;
 } font_size_t;
 
 static struct {
     unsigned char *data;
     stbtt_fontinfo info;
-    bool           tried, loaded;
-    font_size_t    sizes[FONT_SIZES];
-    uint64_t       clock;
+    bool tried, loaded;
+    font_size_t sizes[FONT_SIZES];
+    uint64_t clock;
 } font;
 
 static const char *FONT_PATHS[] = {
@@ -797,7 +797,8 @@ void menu_draw(SDL_Renderer *renderer) {
     if (toast[0]) draw_toast(renderer);
 }
 
-void menu_ensure(void) {}
+void menu_ensure(void) {
+}
 
 int menu_poll(void) {
     if (!queued) return -1;

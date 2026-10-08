@@ -10,7 +10,7 @@ typedef struct net_gateway net_gateway_t;
 typedef struct {
     const char *user_agent;
     const char *rapi_socket;
-    int         rapi_port;
+    int rapi_port;
 } net_gateway_options_t;
 
 typedef void (*net_gateway_log_fn)(const char *message);

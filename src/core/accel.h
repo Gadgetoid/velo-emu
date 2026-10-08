@@ -12,7 +12,7 @@ typedef struct {
 typedef const uint8_t *(*accel_rom_fn)(void *context, uint32_t pa, uint32_t length);
 
 typedef struct {
-    int      system;
+    int system;
     uint32_t decode_va, encode_va;
 } accel_hooks_t;
 

@@ -21,7 +21,7 @@
 typedef struct rapi rapi_t;
 
 typedef struct {
-    char     name[RAPI_NAME_MAX];
+    char name[RAPI_NAME_MAX];
     uint32_t attributes;
     uint32_t size;
     uint64_t write_time;

@@ -8,6 +8,18 @@ on:
   workflow_dispatch:
 
 jobs:
+  style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install formatter
+        run: python -m pip install -r requirements-style.txt
+      - name: Check C formatting
+        run: make format-check
+
   macos:
     runs-on: macos-latest
     steps:

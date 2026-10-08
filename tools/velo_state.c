@@ -71,31 +71,31 @@ typedef struct {
     uint32_t log;
     uint32_t section_va[2];
     uint32_t section_size[2];
-    int      section_count;
+    int section_count;
     uint32_t handle_block[MAX_HANDLE_BLOCKS];
-    int      handle_block_count;
+    int handle_block_count;
     uint16_t registry_roots;
-    bool     ce2;
+    bool ce2;
     uint8_t *registry;
     uint32_t registry_size;
 } store_t;
 
 typedef struct {
-    int      type;
+    int type;
     uint32_t size;
-    uint8_t  data[RECORD_MAX];
+    uint8_t data[RECORD_MAX];
 } record_t;
 
 typedef struct {
-    int      type;
+    int type;
     uint16_t id, parent, sibling, child;
     uint16_t attributes;
-    char     name[NAME_MAX_UTF8];
+    char name[NAME_MAX_UTF8];
 } node_t;
 
 typedef struct {
     char   **lines;
-    size_t   count, capacity;
+    size_t count, capacity;
 } lines_t;
 
 static uint16_t get16(const uint8_t *p) {
@@ -714,7 +714,7 @@ typedef struct {
     const char *path;
     lines_t    *lines;
     const char *wanted;
-    bool        found;
+    bool found;
 } value_context_t;
 
 static bool add_line(lines_t *lines, const char *text) {

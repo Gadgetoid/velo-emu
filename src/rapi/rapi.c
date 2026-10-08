@@ -58,16 +58,16 @@
 #endif
 
 struct rapi {
-    int      socket;
+    int socket;
     uint32_t os_major;
     uint8_t *reply;
-    size_t   reply_length, reply_offset;
-    char     error[512];
+    size_t reply_length, reply_offset;
+    char error[512];
 };
 
 typedef struct {
     uint8_t *data;
-    size_t   length, capacity;
+    size_t length, capacity;
 } message_t;
 
 static void set_error(rapi_t *rapi, const char *format, ...) {
@@ -79,15 +79,15 @@ static void set_error(rapi_t *rapi, const char *format, ...) {
 
 static const char *error_name(uint32_t code) {
     switch (code) {
-        case 2: return "file not found";
-        case 3: return "path not found";
-        case 5: return "access denied";
-        case 32: return "file in use";
-        case 80: return "file exists";
-        case 112: return "not enough storage";
-        case 123: return "invalid name";
-        case 145: return "folder not empty";
-        case 183: return "already exists";
+    case 2: return "file not found";
+    case 3: return "path not found";
+    case 5: return "access denied";
+    case 32: return "file in use";
+    case 80: return "file exists";
+    case 112: return "not enough storage";
+    case 123: return "invalid name";
+    case 145: return "folder not empty";
+    case 183: return "already exists";
     }
     return "error";
 }

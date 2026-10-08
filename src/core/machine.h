@@ -16,7 +16,7 @@ typedef struct machine machine_t;
 
 typedef struct {
     uint32_t base, stride, width, height, bpp;
-    uint8_t  shades[16];
+    uint8_t shades[16];
 } machine_lcd_t;
 
 typedef void (*machine_log_fn)(const char *message);

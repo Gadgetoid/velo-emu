@@ -11,19 +11,19 @@
 extern const uint32_t DIALOG_MEMORY_SIZES[DIALOG_MEMORY_COUNT];
 
 typedef struct {
-    char     path[1024];
-    char     label[160];
+    char path[1024];
+    char label[160];
     uint32_t screens;
 } dialog_rom_t;
 
 typedef uint32_t (*dialog_probe_fn)(const char *path, char *label, size_t label_size);
 
 typedef struct {
-    char          name[96];
-    char          rom[1024];
+    char name[96];
+    char rom[1024];
     screen_size_t screen;
-    uint32_t      memory;
-    bool          host_time;
+    uint32_t memory;
+    bool host_time;
 } dialog_machine_t;
 
 typedef enum { DIALOG_MANAGE_CLOSE, DIALOG_MANAGE_RESET, DIALOG_MANAGE_DELETE } dialog_manage_t;

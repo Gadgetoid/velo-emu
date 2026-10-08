@@ -19,12 +19,12 @@
 #define INPUT_MAX    (FRAME_HEADER + MAILBOX_MESSAGE_MAX)
 
 struct agent {
-    int          listener;
-    int          client;
-    char         path[sizeof ((struct sockaddr_un *)0)->sun_path];
+    int listener;
+    int client;
+    char path[sizeof ((struct sockaddr_un *)0)->sun_path];
     agent_log_fn log;
-    uint8_t      input[INPUT_MAX];
-    size_t       input_length;
+    uint8_t input[INPUT_MAX];
+    size_t input_length;
 };
 
 static void agent_log(agent_t *agent, const char *message) {

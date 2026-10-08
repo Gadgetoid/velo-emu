@@ -17,19 +17,19 @@ typedef struct {
     uint16_t mfio_dataout, mfio_dir, mfio_sel;
     uint16_t ctrl;
     uint16_t prev_datain;
-    bool     int_asserted;
-    bool     reset_asserted;
+    bool int_asserted;
+    bool reset_asserted;
 
-    bool     inserted;
-    bool     powered;
-    bool     card_irq;
+    bool inserted;
+    bool powered;
+    bool card_irq;
 
-    uint8_t  feature, error, sector_count, sector_number, cylinder_low, cylinder_high, drive_head;
-    uint8_t  status, device_control, cor;
-    uint8_t  buffer[512];
+    uint8_t feature, error, sector_count, sector_number, cylinder_low, cylinder_high, drive_head;
+    uint8_t status, device_control, cor;
+    uint8_t buffer[512];
     uint32_t buffer_position;
     uint32_t sectors_left;
-    bool     writing;
+    bool writing;
     uint64_t total_sectors;
 } pccard_t;
 

@@ -38,22 +38,22 @@ typedef struct {
     uint32_t vpn;
     uint32_t pid;
     uint32_t pfn;
-    bool     global;
-    bool     valid;
-    bool     dirty;
-    bool     noncache;
+    bool global;
+    bool valid;
+    bool dirty;
+    bool noncache;
 } mips_tlb_entry_t;
 
 typedef struct mips_cpu mips_cpu_t;
 
 typedef struct {
     void    *context;
-    bool   (*read)(void *context, uint32_t pa, int size, uint32_t *value);
-    bool   (*write)(void *context, uint32_t pa, int size, uint32_t value);
+    bool (*read)(void *context, uint32_t pa, int size, uint32_t *value);
+    bool (*write)(void *context, uint32_t pa, int size, uint32_t value);
     uint8_t *(*fetch_page)(void *context, uint32_t pa);
     uint8_t  *dram;
-    uint32_t  dram_mask;
-    uint32_t  dram_end;
+    uint32_t dram_mask;
+    uint32_t dram_end;
 } mips_bus_t;
 
 #define MIPS_WATCH_MAX 8
@@ -63,27 +63,27 @@ typedef struct {
 typedef struct {
     uint32_t tag;
     uint32_t pfn;
-    bool     dirty;
+    bool dirty;
 } mips_page_cache_t;
 
 typedef struct {
     uint32_t tag;
     uint8_t *page;
-    bool     watched;
+    bool watched;
 } mips_fetch_cache_t;
 #define MIPS_SLOT_SIZE 0x02000000u
 
 typedef struct {
     void    *context;
-    bool   (*before)(void *context, uint32_t pc);
-    bool   (*access)(void *context, uint32_t va, int size, bool write);
-    void   (*exception)(void *context, uint32_t code, uint32_t pc, bool user);
+    bool (*before)(void *context, uint32_t pc);
+    bool (*access)(void *context, uint32_t va, int size, bool write);
+    void (*exception)(void *context, uint32_t code, uint32_t pc, bool user);
     uint32_t filter[128];
     uint32_t pc;
-    bool     every;
-    bool     data;
-    bool     stop;
-    bool     undo;
+    bool every;
+    bool data;
+    bool stop;
+    bool undo;
 } mips_debug_t;
 
 struct mips_cpu {
@@ -91,10 +91,10 @@ struct mips_cpu {
     uint32_t hi, lo;
     uint32_t pc;
     uint32_t next_pc;
-    bool     in_delay_slot;
-    bool     next_in_delay_slot;
+    bool in_delay_slot;
+    bool next_in_delay_slot;
     uint32_t current_pc;
-    bool     current_in_delay_slot;
+    bool current_in_delay_slot;
     uint32_t epoch;
     uint64_t run_until, run_base_cycles;
     uint32_t run_base_count, run_base_budget, run_stash, run_window_epoch;
@@ -106,17 +106,17 @@ struct mips_cpu {
     uint32_t speed;
     uint32_t speed_count;
     uint64_t exceptions[16];
-    bool     fault;
-    bool     yield;
+    bool fault;
+    bool yield;
     mips_bus_t bus;
     mips_fetch_cache_t fetch_cache[MIPS_FETCH_CACHE];
     mips_page_cache_t page_cache[MIPS_PAGE_CACHE];
     uint32_t watch[MIPS_WATCH_MAX];
-    int      watch_count;
+    int watch_count;
     uint32_t watch_filter[128];
-    void   (*on_watch)(void *context, uint32_t pc);
+    void (*on_watch)(void *context, uint32_t pc);
     mips_debug_t *debug;
-    bool   (*on_break)(void *context, uint32_t code);
+    bool (*on_break)(void *context, uint32_t code);
 };
 
 void mips_reset(mips_cpu_t *cpu, uint32_t entry);

@@ -19,26 +19,40 @@ const int SCREEN_PRESET_COUNT = (int)(sizeof SCREEN_PRESETS / sizeof SCREEN_PRES
 
 enum { AT = 1, V0 = 2, A0 = 4, T1 = 9, T3 = 11, T4 = 12, T5 = 13, T6 = 14, T7 = 15, T8 = 24, T9 = 25 };
 
-static uint32_t lui(int rt, uint32_t imm) { return 0x3C000000u | (uint32_t)rt << 16 | (imm & 0xFFFF); }
-static uint32_t ori(int rt, int rs, uint32_t imm) { return 0x34000000u | (uint32_t)rs << 21 | (uint32_t)rt << 16 | (imm & 0xFFFF); }
-static uint32_t addiu(int rt, int rs, uint32_t imm) { return 0x24000000u | (uint32_t)rs << 21 | (uint32_t)rt << 16 | (imm & 0xFFFF); }
-static uint32_t sw(int rt, int32_t offset, int base) { return 0xAC000000u | (uint32_t)base << 21 | (uint32_t)rt << 16 | ((uint32_t)offset & 0xFFFF); }
-static uint32_t lw(int rt, int32_t offset, int base) { return 0x8C000000u | (uint32_t)base << 21 | (uint32_t)rt << 16 | ((uint32_t)offset & 0xFFFF); }
-static uint32_t multu(int rs, int rt) { return (uint32_t)rs << 21 | (uint32_t)rt << 16 | 0x19; }
-static uint32_t mflo(int rd) { return (uint32_t)rd << 11 | 0x12; }
+static uint32_t lui(int rt, uint32_t imm) {
+    return 0x3C000000u | (uint32_t)rt << 16 | (imm & 0xFFFF);
+}
+static uint32_t ori(int rt, int rs, uint32_t imm) {
+    return 0x34000000u | (uint32_t)rs << 21 | (uint32_t)rt << 16 | (imm & 0xFFFF);
+}
+static uint32_t addiu(int rt, int rs, uint32_t imm) {
+    return 0x24000000u | (uint32_t)rs << 21 | (uint32_t)rt << 16 | (imm & 0xFFFF);
+}
+static uint32_t sw(int rt, int32_t offset, int base) {
+    return 0xAC000000u | (uint32_t)base << 21 | (uint32_t)rt << 16 | ((uint32_t)offset & 0xFFFF);
+}
+static uint32_t lw(int rt, int32_t offset, int base) {
+    return 0x8C000000u | (uint32_t)base << 21 | (uint32_t)rt << 16 | ((uint32_t)offset & 0xFFFF);
+}
+static uint32_t multu(int rs, int rt) {
+    return (uint32_t)rs << 21 | (uint32_t)rt << 16 | 0x19;
+}
+static uint32_t mflo(int rd) {
+    return (uint32_t)rd << 11 | 0x12;
+}
 
 typedef struct {
     uint32_t pa, length;
-    uint8_t  bytes[4];
+    uint8_t bytes[4];
     uint8_t *block;
 } planned_t;
 
 typedef struct {
     screen_rom_t *roms;
-    int           rom_count;
-    planned_t     writes[PLAN_MAX];
-    int           count;
-    bool          failed;
+    int rom_count;
+    planned_t writes[PLAN_MAX];
+    int count;
+    bool failed;
 } plan_t;
 
 static uint8_t *rom_bytes(const plan_t *plan, uint32_t va, uint32_t length) {
@@ -144,7 +158,9 @@ static void plan_ce1(plan_t *plan, screen_size_t size) {
 #define CE2_DDI_TEXT       0x90079000u
 #define CE2_DDI_TEXT_REAL  0x03FD1000u
 
-static uint32_t stock_ddi(uint32_t real) { return CE2_DDI_TEXT + real - CE2_DDI_TEXT_REAL; }
+static uint32_t stock_ddi(uint32_t real) {
+    return CE2_DDI_TEXT + real - CE2_DDI_TEXT_REAL;
+}
 
 static bool read_string(const plan_t *plan, uint32_t va, char *out, size_t size) {
     for (size_t i = 0; i < size; i++) {

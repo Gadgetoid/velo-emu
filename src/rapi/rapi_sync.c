@@ -18,13 +18,13 @@
 #define MANIFEST_HEADER RAPI_SYNC_MANIFEST
 
 typedef struct {
-    char     path[PATH_SIZE];
-    bool     on_mac, on_device, in_manifest, failed;
-    int64_t  mac_time;
+    char path[PATH_SIZE];
+    bool on_mac, on_device, in_manifest, failed;
+    int64_t mac_time;
     uint64_t mac_size;
     uint64_t device_time;
     uint32_t device_size;
-    int64_t  known_mac_time;
+    int64_t known_mac_time;
     uint64_t known_mac_size;
     uint64_t known_device_time;
     uint32_t known_device_size;
@@ -32,18 +32,18 @@ typedef struct {
 
 typedef struct {
     entry_t *items;
-    size_t   count, capacity;
+    size_t count, capacity;
 } entries_t;
 
 typedef struct {
     rapi_t            *rapi;
     const char        *folder;
     const char        *remote_root;
-    rapi_sync_log_fn    log;
+    rapi_sync_log_fn log;
     void              *context;
     rapi_sync_result_t *result;
-    uint64_t           free_space;
-    bool               disconnected;
+    uint64_t free_space;
+    bool disconnected;
 } sync_t;
 
 static void sync_log(sync_t *sync, const char *format, ...) {
@@ -447,7 +447,7 @@ static bool apply(sync_t *sync, entries_t *entries, size_t index) {
 }
 
 bool rapi_sync_run(rapi_t *rapi, const char *folder, const char *remote_root, const char *manifest_path,
-                  rapi_sync_log_fn log, void *context, rapi_sync_result_t *result) {
+                   rapi_sync_log_fn log, void *context, rapi_sync_result_t *result) {
     rapi_sync_result_t counts = { 0 };
     sync_t sync = { rapi, folder, remote_root, log, context, &counts, 0, false };
     entries_t entries = { 0 };

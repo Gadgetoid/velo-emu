@@ -17,10 +17,10 @@
 
 typedef struct {
     rapi_t          *rapi;
-    char             source[PATH_SIZE];
-    char             dest[PATH_SIZE];
-    char             app_name[PATH_SIZE];
-    rapi_load_log_fn  log;
+    char source[PATH_SIZE];
+    char dest[PATH_SIZE];
+    char app_name[PATH_SIZE];
+    rapi_load_log_fn log;
     void            *context;
 } loader_t;
 

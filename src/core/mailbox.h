@@ -18,8 +18,8 @@ typedef struct {
 
 typedef struct {
     mailbox_message_t messages[MAILBOX_QUEUE];
-    int               first;
-    int               count;
+    int first;
+    int count;
 } mailbox_queue_t;
 
 #define MAILBOX_EMULATOR_SEQUENCE 0x8000u
@@ -29,7 +29,7 @@ typedef struct {
     mailbox_queue_t to_host;
     mailbox_queue_t to_guest_from_emulator;
     mailbox_queue_t to_emulator;
-    bool            connected;
+    bool connected;
 } mailbox_t;
 
 typedef bool (*mailbox_copy_fn)(void *context, uint32_t va, uint8_t *data, uint32_t length, bool write);

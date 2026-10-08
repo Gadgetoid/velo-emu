@@ -176,16 +176,16 @@ struct machine {
     uint8_t *card_dram;
     uint32_t card_dram_size;
     uint32_t card_dram_size_next;
-    uint8_t  eeprom_phase, eeprom_shift, eeprom_bit, eeprom_addr;
-    bool     eeprom_selected, eeprom_read, eeprom_in_ack, eeprom_scl, eeprom_sda, eeprom_sda_out;
+    uint8_t eeprom_phase, eeprom_shift, eeprom_bit, eeprom_addr;
+    bool eeprom_selected, eeprom_read, eeprom_in_ack, eeprom_scl, eeprom_sda, eeprom_sda_out;
     uint8_t *rom;
     uint32_t rom_size;
     uint32_t rom_pa;
     uint8_t *rom2;
     uint32_t rom2_size;
     uint32_t rom2_pa;
-    bool     in_place;
-    bool     optimisations;
+    bool in_place;
+    bool optimisations;
     accel_hooks_t accel;
     uint32_t entry_va;
     uint64_t rom_hash;
@@ -199,19 +199,19 @@ struct machine {
     uint32_t regs[REG_COUNT];
     pccard_t pccard;
     pccard_socket_t card_socket;
-    char     card_path[1024];
+    char card_path[1024];
     FILE    *pending_card;
-    char     pending_card_path[1024];
+    char pending_card_path[1024];
     uint64_t card_insert_at;
     uint64_t card_lost_at;
-    bool     card_lost;
-    bool     ir_cardet;
-    uart_t   uart_a;
+    bool card_lost;
+    bool ir_cardet;
+    uart_t uart_a;
     uart_port_t uart_port;
-    vdisk_t  vdisk;
+    vdisk_t vdisk;
     vdisk_port_t vdisk_port;
-    char     vdisk_path[1024];
-    bool     serial_connected;
+    char vdisk_path[1024];
+    bool serial_connected;
     uint32_t serial_tag;
 
     uint32_t intc_status[INTC_SETS];
@@ -224,7 +224,7 @@ struct machine {
     uint64_t periodic_next;
     uint64_t rtc_base;
     uint64_t rtc_anchor;
-    bool     host_clock;
+    bool host_clock;
     uint32_t set_time_va;
     uint32_t debug_string_va, debug_print_va, debug_print_buffer;
     machine_debug_fn debug_sink;
@@ -232,20 +232,20 @@ struct machine {
     uint32_t debug_refill_va;
     mailbox_t mailbox;
     uint32_t mailbox_fault_va;
-    int      mailbox_fault_tries;
-    int      debug_refill_tries;
-    char     debug_line[256];
-    size_t   debug_length;
-    spin_t   rtc_spin, line_spin;
+    int mailbox_fault_tries;
+    int debug_refill_tries;
+    char debug_line[256];
+    size_t debug_length;
+    spin_t rtc_spin, line_spin;
     uint64_t run_target;
     uint64_t alarm;
-    bool     alarm_armed;
+    bool alarm_armed;
     uint64_t alarm_next;
 
     uint32_t power_ctl;
-    bool     cpu_stopped;
-    bool     suspended;
-    bool     power_button;
+    bool cpu_stopped;
+    bool suspended;
+    bool power_button;
     uint64_t suspended_at;
     uint64_t suspended_cycles;
     uint64_t stopped_cycles;
@@ -258,9 +258,9 @@ struct machine {
     uint32_t mfio_dout, mfio_direc, mfio_sel;
 
     uint32_t spi_ctl;
-    uint8_t  key_queue[KEY_QUEUE_SIZE];
-    int      key_head, key_count;
-    bool     keyboard_enabled;
+    uint8_t key_queue[KEY_QUEUE_SIZE];
+    int key_head, key_count;
+    bool keyboard_enabled;
 
     uint32_t sib_ctl;
     uint32_t sib_sf0_aux;
@@ -268,22 +268,22 @@ struct machine {
     uint32_t sib_dma_ctl;
     uint32_t snd_size;
     uint32_t snd_tx_start;
-    bool     sound_active;
+    bool sound_active;
     uint32_t sound_half;
     uint64_t sound_next;
-    int16_t  audio[AUDIO_RING];
+    int16_t audio[AUDIO_RING];
     uint32_t audio_head, audio_count;
     uint32_t audio_rate;
     uint16_t ucb_regs[16];
     uint16_t ucb_adc_data;
     uint16_t pen_irq_armed;
     uint16_t pen_irq_status;
-    bool     pen_down;
-    int      pen_x, pen_y;
-    bool     touch_legacy;
+    bool pen_down;
+    int pen_x, pen_y;
+    bool touch_legacy;
 
     uint32_t logged[LOGGED_ADDRESSES];
-    int      logged_count;
+    int logged_count;
 };
 
 static void machine_logf(machine_t *m, const char *format, ...) {
@@ -524,18 +524,18 @@ static uint16_t touch_y_adc(const machine_t *m, int y) {
 
 static uint16_t ucb_read(machine_t *m, uint8_t reg) {
     switch (reg & 0xF) {
-        case UCB_IE_STATUS: return m->pen_irq_status;
-        case UCB_TS_CR: {
-            uint16_t value = m->ucb_regs[UCB_TS_CR];
-            if (m->pen_down) value |= UCB_PEN_BITS;
-            else value &= (uint16_t)~UCB_PEN_BITS;
-            return value;
-        }
-        case UCB_ADC_DATA: return m->ucb_adc_data;
-        case UCB_ID: return UCB_ID_1100;
-        case UCB_NULL: return 0xFFFF;
-        case UCB_IO_DATA: return m->ucb_regs[UCB_IO_DATA];
-        default: return m->ucb_regs[reg & 0xF];
+    case UCB_IE_STATUS: return m->pen_irq_status;
+    case UCB_TS_CR: {
+        uint16_t value = m->ucb_regs[UCB_TS_CR];
+        if (m->pen_down) value |= UCB_PEN_BITS;
+        else value &= (uint16_t) ~UCB_PEN_BITS;
+        return value;
+    }
+    case UCB_ADC_DATA: return m->ucb_adc_data;
+    case UCB_ID: return UCB_ID_1100;
+    case UCB_NULL: return 0xFFFF;
+    case UCB_IO_DATA: return m->ucb_regs[UCB_IO_DATA];
+    default: return m->ucb_regs[reg & 0xF];
     }
 }
 
@@ -559,10 +559,10 @@ static void ucb_convert(machine_t *m, uint16_t adc_cr) {
 static void ucb_write(machine_t *m, uint8_t reg, uint16_t value) {
     m->ucb_regs[reg & 0xF] = value;
     switch (reg & 0xF) {
-        case UCB_ADC_CR: if (value & (1u << 7)) ucb_convert(m, value); break;
-        case UCB_IE_FAL: m->pen_irq_armed = value & UCB_PEN_BITS; break;
-        case UCB_IE_STATUS: m->pen_irq_status &= (uint16_t)~value; break;
-        default: break;
+    case UCB_ADC_CR: if (value & (1u << 7)) ucb_convert(m, value); break;
+    case UCB_IE_FAL: m->pen_irq_armed = value & UCB_PEN_BITS; break;
+    case UCB_IE_STATUS: m->pen_irq_status &= (uint16_t) ~value; break;
+    default: break;
     }
 }
 
@@ -597,7 +597,7 @@ static void sound_capture_half(machine_t *m) {
 
 static void sound_update(machine_t *m) {
     bool armed = (m->sib_ctl & SIB_ENSIB) && (m->sib_ctl & SIB_ENSND) && (m->sib_dma_ctl & SIB_DMA_ENTXSND)
-              && sound_bytes(m) >= 4;
+                 && sound_bytes(m) >= 4;
     if (armed && !m->sound_active) {
         m->sound_active = true;
         m->sound_half = 0;
@@ -619,15 +619,15 @@ enum { EEPROM_IDLE, EEPROM_CONTROL, EEPROM_WORD, EEPROM_WRITE, EEPROM_TRANSMIT }
 
 static uint8_t eeprom_byte(const machine_t *m, uint8_t address) {
     switch (address) {
-        case 16: return 0x99;
-        case 59: return 1;
-        case 64: return 2;
-        case 67: return (uint8_t)(((m->card_dram_size >> 20) - 1) & 0x3F);
-        case 96: return 12;
-        case 97: return 11;
-        case 98: return 1;
-        case 101: return 127;
-        default: return 0;
+    case 16: return 0x99;
+    case 59: return 1;
+    case 64: return 2;
+    case 67: return (uint8_t)(((m->card_dram_size >> 20) - 1) & 0x3F);
+    case 96: return 12;
+    case 97: return 11;
+    case 98: return 1;
+    case 101: return 127;
+    default: return 0;
     }
 }
 
@@ -681,20 +681,20 @@ static void eeprom_pins(machine_t *m) {
             m->eeprom_in_ack = false;
             m->eeprom_bit = 0;
             switch (m->eeprom_phase) {
-                case EEPROM_CONTROL:
-                    if (!m->eeprom_selected) { m->eeprom_phase = EEPROM_IDLE; eeprom_drive(m, true); }
-                    else if (m->eeprom_read) { m->eeprom_phase = EEPROM_TRANSMIT; eeprom_load_byte(m); }
-                    else { m->eeprom_phase = EEPROM_WORD; eeprom_drive(m, true); }
-                    break;
-                case EEPROM_WORD:
-                    m->eeprom_phase = EEPROM_WRITE;
-                    eeprom_drive(m, true);
-                    break;
-                case EEPROM_TRANSMIT:
-                    eeprom_load_byte(m);
-                    break;
-                default:
-                    break;
+            case EEPROM_CONTROL:
+                if (!m->eeprom_selected) { m->eeprom_phase = EEPROM_IDLE; eeprom_drive(m, true); }
+                else if (m->eeprom_read) { m->eeprom_phase = EEPROM_TRANSMIT; eeprom_load_byte(m); }
+                else { m->eeprom_phase = EEPROM_WORD; eeprom_drive(m, true); }
+                break;
+            case EEPROM_WORD:
+                m->eeprom_phase = EEPROM_WRITE;
+                eeprom_drive(m, true);
+                break;
+            case EEPROM_TRANSMIT:
+                eeprom_load_byte(m);
+                break;
+            default:
+                break;
             }
             return;
         }
@@ -741,69 +741,69 @@ static const struct { uint16_t offset; uint32_t defined; } soc_reserved_bits[] =
 static uint32_t soc_register_read(machine_t *m, uint32_t offset, int size) {
     uint32_t index = offset / 4;
     switch (offset & ~3u) {
-        case 0x0A0: return m->regs[0x0A0 / 4] | (m->ir_cardet ? IR_CARDET : 0);
-        case 0x074: return m->sib_ctl | (m->pen_irq_status ? SIB_IRQ : 0);
-        case 0x080: return m->sib_sf0_aux;
-        case 0x088: return m->sib_sf0_stat;
-        case 0x090: return m->sib_dma_ctl;
-        case 0x100: case 0x104: case 0x108: case 0x10C: case 0x110:
-            return m->intc_status[(offset - 0x100) / 4];
-        case 0x114: {
-            uint32_t value = (high_priority_level(m) & 0xFu) << 2;
-            if (irq_high(m)) value |= 1u << 31;
-            if (irq_low(m)) value |= 1u << 30;
-            return value;
+    case 0x0A0: return m->regs[0x0A0 / 4] | (m->ir_cardet ? IR_CARDET : 0);
+    case 0x074: return m->sib_ctl | (m->pen_irq_status ? SIB_IRQ : 0);
+    case 0x080: return m->sib_sf0_aux;
+    case 0x088: return m->sib_sf0_stat;
+    case 0x090: return m->sib_dma_ctl;
+    case 0x100: case 0x104: case 0x108: case 0x10C: case 0x110:
+        return m->intc_status[(offset - 0x100) / 4];
+    case 0x114: {
+        uint32_t value = (high_priority_level(m) & 0xFu) << 2;
+        if (irq_high(m)) value |= 1u << 31;
+        if (irq_low(m)) value |= 1u << 30;
+        return value;
+    }
+    case 0x118: case 0x11C: case 0x120: case 0x124: case 0x128:
+        return m->intc_enable[(offset - 0x118) / 4];
+    case 0x12C: return m->intc_enable6;
+    case 0x140: return (uint32_t)(rtc_count(m) >> 32);
+    case 0x144: return rtc_low_read(m);
+    case 0x028: return lcd_control_read(m);
+    case 0x148: return (uint32_t)(m->alarm >> 32);
+    case 0x14C: return (uint32_t)m->alarm;
+    case 0x150: return m->timer_ctl;
+    case 0x154: {
+        uint32_t count = m->perval;
+        if ((m->timer_ctl & TIMER_ENPERTIMER) && m->periodic_next != NO_EVENT) {
+            uint64_t remaining = m->periodic_next > m->cpu.cycles ? (m->periodic_next - m->cpu.cycles) / 32 : 0;
+            count = remaining > m->perval ? m->perval : (uint32_t)remaining;
         }
-        case 0x118: case 0x11C: case 0x120: case 0x124: case 0x128:
-            return m->intc_enable[(offset - 0x118) / 4];
-        case 0x12C: return m->intc_enable6;
-        case 0x140: return (uint32_t)(rtc_count(m) >> 32);
-        case 0x144: return rtc_low_read(m);
-        case 0x028: return lcd_control_read(m);
-        case 0x148: return (uint32_t)(m->alarm >> 32);
-        case 0x14C: return (uint32_t)m->alarm;
-        case 0x150: return m->timer_ctl;
-        case 0x154: {
-            uint32_t count = m->perval;
-            if ((m->timer_ctl & TIMER_ENPERTIMER) && m->periodic_next != NO_EVENT) {
-                uint64_t remaining = m->periodic_next > m->cpu.cycles ? (m->periodic_next - m->cpu.cycles) / 32 : 0;
-                count = remaining > m->perval ? m->perval : (uint32_t)remaining;
-            }
-            return (count << 16) | m->perval;
+        return (count << 16) | m->perval;
+    }
+    case 0x160: return m->spi_ctl | SPI_EMPTY | ((m->spi_ctl & SPI_ENSPI) ? SPI_SPION : 0);
+    case 0x164: {
+        if (!m->key_count) return 0;
+        uint8_t byte = m->key_queue[m->key_head];
+        m->key_head = (m->key_head + 1) % KEY_QUEUE_SIZE;
+        m->key_count--;
+        if (m->key_count) intc_set_pending(m, STATUS5_SET, STATUS5_SPIRCV);
+        return byte;
+    }
+    case 0x180: {
+        uint32_t direction = (m->io_ctl >> 16) & 0x7F;
+        uint32_t board = IODIN_MMODULE_ATTACHED | (m->serial_connected ? 0 : IODIN_SERIAL_DCD) | (m->card_dram_size ? 0 : IODIN_MINICARD1_ABSENT) | IODIN_MINICARD2_ABSENT;
+        uint32_t din = ((m->io_ctl >> 8) & direction) | (board & ~direction & 0x7F);
+        return m->io_ctl | din;
+    }
+    case 0x184: return m->mfio_dout;
+    case 0x188: return m->mfio_direc;
+    case 0x18C: {
+        uint32_t outputs = m->mfio_direc & m->mfio_sel;
+        uint32_t inputs = (m->serial_connected ? 0 : MFIO_SERIAL_CTS) | ((m->card_dram_size && m->eeprom_sda_out) ? MFIO_EEPROM_SDA : 0);
+        return (m->mfio_dout & outputs) | (inputs & ~outputs);
+    }
+    case 0x0B0: case 0x0B4: case 0x0B8: case 0x0BC: case 0x0C0: case 0x0C4:
+        return uart_read(&m->uart_port, offset - 0x0B0);
+    case 0x190: return m->mfio_sel;
+    case 0x1C4: return m->power_ctl | POWER_PWROK | (m->power_button ? POWER_ONBUTN : 0);
+    default:
+        if (index < REG_COUNT) {
+            note_access(m, "soc read", REGS_PA + offset, size, m->regs[index]);
+            return m->regs[index];
         }
-        case 0x160: return m->spi_ctl | SPI_EMPTY | ((m->spi_ctl & SPI_ENSPI) ? SPI_SPION : 0);
-        case 0x164: {
-            if (!m->key_count) return 0;
-            uint8_t byte = m->key_queue[m->key_head];
-            m->key_head = (m->key_head + 1) % KEY_QUEUE_SIZE;
-            m->key_count--;
-            if (m->key_count) intc_set_pending(m, STATUS5_SET, STATUS5_SPIRCV);
-            return byte;
-        }
-        case 0x180: {
-            uint32_t direction = (m->io_ctl >> 16) & 0x7F;
-            uint32_t board = IODIN_MMODULE_ATTACHED | (m->serial_connected ? 0 : IODIN_SERIAL_DCD) | (m->card_dram_size ? 0 : IODIN_MINICARD1_ABSENT) | IODIN_MINICARD2_ABSENT;
-            uint32_t din = ((m->io_ctl >> 8) & direction) | (board & ~direction & 0x7F);
-            return m->io_ctl | din;
-        }
-        case 0x184: return m->mfio_dout;
-        case 0x188: return m->mfio_direc;
-        case 0x18C: {
-            uint32_t outputs = m->mfio_direc & m->mfio_sel;
-            uint32_t inputs = (m->serial_connected ? 0 : MFIO_SERIAL_CTS) | ((m->card_dram_size && m->eeprom_sda_out) ? MFIO_EEPROM_SDA : 0);
-            return (m->mfio_dout & outputs) | (inputs & ~outputs);
-        }
-        case 0x0B0: case 0x0B4: case 0x0B8: case 0x0BC: case 0x0C0: case 0x0C4:
-            return uart_read(&m->uart_port, offset - 0x0B0);
-        case 0x190: return m->mfio_sel;
-        case 0x1C4: return m->power_ctl | POWER_PWROK | (m->power_button ? POWER_ONBUTN : 0);
-        default:
-            if (index < REG_COUNT) {
-                note_access(m, "soc read", REGS_PA + offset, size, m->regs[index]);
-                return m->regs[index];
-            }
-            note_access(m, "soc read (out of range)", REGS_PA + offset, size, 0);
-            return 0;
+        note_access(m, "soc read (out of range)", REGS_PA + offset, size, 0);
+        return 0;
     }
 }
 
@@ -847,118 +847,118 @@ static void soc_write(machine_t *m, uint32_t offset, int size, uint32_t value) {
     uint32_t index = offset / 4;
     if (size != 4) note_access(m, "soc narrow write", REGS_PA + offset, size, value);
     switch (offset & ~3u) {
-        case 0x028:
-            m->regs[index] = value & 0x003FFFFFu;
-            lcd_schedule(m);
-            if (!(value & LCD_ENVID)) m->lcd_next = m->df_next = NO_EVENT;
-            return;
-        case 0x02C:
+    case 0x028:
+        m->regs[index] = value & 0x003FFFFFu;
+        lcd_schedule(m);
+        if (!(value & LCD_ENVID)) m->lcd_next = m->df_next = NO_EVENT;
+        return;
+    case 0x02C:
+        m->regs[index] = value;
+        m->lcd_next = NO_EVENT;
+        lcd_schedule(m);
+        return;
+    case 0x074: {
+        m->sib_ctl = value & 0x7FFFFFFFu;
+        bool active = (m->sib_ctl & (SIB_ENSIB | SIB_ENSF0)) == (SIB_ENSIB | SIB_ENSF0);
+        intc_free_running(m, 0, STATUS1_SIBSF0 | STATUS1_SIBSF1, active);
+        if (value & 0x6000002Cu) note_access(m, "sib ctl unmodelled bits", REGS_PA + offset, size, value);
+        sound_update(m);
+        return;
+    }
+    case 0x060:
+        m->snd_size = (value >> 18) & 0xFFF;
+        return;
+    case 0x068:
+        m->snd_tx_start = value & ~3u;
+        return;
+    case 0x090: {
+        m->sib_dma_ctl = value;
+        if (value & 0x8002C003u) note_access(m, "sib dma ctl unmodelled channel", REGS_PA + offset, size, value);
+        sound_update(m);
+        return;
+    }
+    case 0x080: {
+        m->sib_sf0_aux = value;
+        uint8_t reg = (uint8_t)((value >> 27) & 0xF);
+        uint16_t data = (uint16_t)(value & 0xFFFF);
+        if (value & (1u << 26)) ucb_write(m, reg, data);
+        else m->sib_sf0_stat = ucb_read(m, reg);
+        return;
+    }
+    case 0x100: case 0x104: case 0x108: case 0x10C: case 0x110: {
+        int set = (int)((offset - 0x100) / 4);
+        m->intc_status[set] &= ~value;
+        m->intc_status[set] |= m->intc_free_running[set];
+        intc_update(m);
+        return;
+    }
+    case 0x118: case 0x11C: case 0x120: case 0x124: case 0x128: {
+        int set = (int)((offset - 0x118) / 4);
+        m->intc_enable[set] = value;
+        intc_update(m);
+        intc_enable_written(m, set, value);
+        return;
+    }
+    case 0x12C:
+        m->intc_enable6 = value & (ENABLE6_GLOBALEN | 0xFFFFu);
+        intc_update(m);
+        return;
+    case 0x148:
+        m->alarm = ((uint64_t)(value & 0xFF) << 32) | (m->alarm & 0xFFFFFFFFull);
+        m->alarm_armed = true;
+        alarm_schedule(m);
+        return;
+    case 0x14C:
+        m->alarm = (m->alarm & ~0xFFFFFFFFull) | value;
+        m->alarm_armed = true;
+        alarm_schedule(m);
+        return;
+    case 0x150: {
+        bool was_clear = (m->timer_ctl & TIMER_RTCCLR) != 0;
+        bool was_periodic = (m->timer_ctl & TIMER_ENPERTIMER) != 0;
+        if (value & 0xE7u) note_access(m, "timer ctl unmodelled bits", REGS_PA + offset, size, value);
+        m->timer_ctl = value & 0xFFu;
+        if (was_clear && !(value & TIMER_RTCCLR)) {
+            m->rtc_base = 0;
+            m->rtc_anchor = m->cpu.cycles;
+        }
+        if ((value & TIMER_ENPERTIMER) && !was_periodic) m->periodic_next = m->cpu.cycles + periodic_period(m);
+        if (!(value & TIMER_ENPERTIMER)) m->periodic_next = NO_EVENT;
+        alarm_schedule(m);
+        return;
+    }
+    case 0x154: m->perval = value & 0xFFFF; return;
+    case 0x0B0: case 0x0B4: case 0x0B8: case 0x0BC: case 0x0C0: case 0x0C4:
+        uart_write(&m->uart_port, offset - 0x0B0, value, m->cpu.cycles);
+        m->cpu.yield = true;
+        return;
+    case 0x0A0: m->regs[0x0A0 / 4] = value & 0x00FF000Cu; return;
+    case 0x160:
+        m->spi_ctl = value & 0x0000FF37u;
+        intc_free_running(m, STATUS5_SET, STATUS5_SPIBUFAVAIL, (m->spi_ctl & SPI_ENSPI) != 0);
+        return;
+    case 0x164: return;
+    case 0x180: m->io_ctl = value & 0x7F7F7F00u; return;
+    case 0x184: m->mfio_dout = value; eeprom_pins(m); return;
+    case 0x188: m->mfio_direc = value; eeprom_pins(m); return;
+    case 0x190: m->mfio_sel = value; eeprom_pins(m); return;
+    case 0x1C4: power_write(m, value); return;
+    default:
+        if (index < REG_COUNT) {
             m->regs[index] = value;
-            m->lcd_next = NO_EVENT;
-            lcd_schedule(m);
-            return;
-        case 0x074: {
-            m->sib_ctl = value & 0x7FFFFFFFu;
-            bool active = (m->sib_ctl & (SIB_ENSIB | SIB_ENSF0)) == (SIB_ENSIB | SIB_ENSF0);
-            intc_free_running(m, 0, STATUS1_SIBSF0 | STATUS1_SIBSF1, active);
-            if (value & 0x6000002Cu) note_access(m, "sib ctl unmodelled bits", REGS_PA + offset, size, value);
-            sound_update(m);
+            note_access(m, "soc write", REGS_PA + offset, size, value);
             return;
         }
-        case 0x060:
-            m->snd_size = (value >> 18) & 0xFFF;
-            return;
-        case 0x068:
-            m->snd_tx_start = value & ~3u;
-            return;
-        case 0x090: {
-            m->sib_dma_ctl = value;
-            if (value & 0x8002C003u) note_access(m, "sib dma ctl unmodelled channel", REGS_PA + offset, size, value);
-            sound_update(m);
-            return;
-        }
-        case 0x080: {
-            m->sib_sf0_aux = value;
-            uint8_t reg = (uint8_t)((value >> 27) & 0xF);
-            uint16_t data = (uint16_t)(value & 0xFFFF);
-            if (value & (1u << 26)) ucb_write(m, reg, data);
-            else m->sib_sf0_stat = ucb_read(m, reg);
-            return;
-        }
-        case 0x100: case 0x104: case 0x108: case 0x10C: case 0x110: {
-            int set = (int)((offset - 0x100) / 4);
-            m->intc_status[set] &= ~value;
-            m->intc_status[set] |= m->intc_free_running[set];
-            intc_update(m);
-            return;
-        }
-        case 0x118: case 0x11C: case 0x120: case 0x124: case 0x128: {
-            int set = (int)((offset - 0x118) / 4);
-            m->intc_enable[set] = value;
-            intc_update(m);
-            intc_enable_written(m, set, value);
-            return;
-        }
-        case 0x12C:
-            m->intc_enable6 = value & (ENABLE6_GLOBALEN | 0xFFFFu);
-            intc_update(m);
-            return;
-        case 0x148:
-            m->alarm = ((uint64_t)(value & 0xFF) << 32) | (m->alarm & 0xFFFFFFFFull);
-            m->alarm_armed = true;
-            alarm_schedule(m);
-            return;
-        case 0x14C:
-            m->alarm = (m->alarm & ~0xFFFFFFFFull) | value;
-            m->alarm_armed = true;
-            alarm_schedule(m);
-            return;
-        case 0x150: {
-            bool was_clear = (m->timer_ctl & TIMER_RTCCLR) != 0;
-            bool was_periodic = (m->timer_ctl & TIMER_ENPERTIMER) != 0;
-            if (value & 0xE7u) note_access(m, "timer ctl unmodelled bits", REGS_PA + offset, size, value);
-            m->timer_ctl = value & 0xFFu;
-            if (was_clear && !(value & TIMER_RTCCLR)) {
-                m->rtc_base = 0;
-                m->rtc_anchor = m->cpu.cycles;
-            }
-            if ((value & TIMER_ENPERTIMER) && !was_periodic) m->periodic_next = m->cpu.cycles + periodic_period(m);
-            if (!(value & TIMER_ENPERTIMER)) m->periodic_next = NO_EVENT;
-            alarm_schedule(m);
-            return;
-        }
-        case 0x154: m->perval = value & 0xFFFF; return;
-        case 0x0B0: case 0x0B4: case 0x0B8: case 0x0BC: case 0x0C0: case 0x0C4:
-            uart_write(&m->uart_port, offset - 0x0B0, value, m->cpu.cycles);
-            m->cpu.yield = true;
-            return;
-        case 0x0A0: m->regs[0x0A0 / 4] = value & 0x00FF000Cu; return;
-        case 0x160:
-            m->spi_ctl = value & 0x0000FF37u;
-            intc_free_running(m, STATUS5_SET, STATUS5_SPIBUFAVAIL, (m->spi_ctl & SPI_ENSPI) != 0);
-            return;
-        case 0x164: return;
-        case 0x180: m->io_ctl = value & 0x7F7F7F00u; return;
-        case 0x184: m->mfio_dout = value; eeprom_pins(m); return;
-        case 0x188: m->mfio_direc = value; eeprom_pins(m); return;
-        case 0x190: m->mfio_sel = value; eeprom_pins(m); return;
-        case 0x1C4: power_write(m, value); return;
-        default:
-            if (index < REG_COUNT) {
-                m->regs[index] = value;
-                note_access(m, "soc write", REGS_PA + offset, size, value);
-                return;
-            }
-            note_access(m, "soc write (out of range)", REGS_PA + offset, size, value);
-            return;
+        note_access(m, "soc write (out of range)", REGS_PA + offset, size, value);
+        return;
     }
 }
 
 static inline uint32_t read_host(const uint8_t *base, int size) {
     switch (size) {
-        case 1: return base[0];
-        case 2: return (uint32_t)base[0] | (uint32_t)base[1] << 8;
-        default: return (uint32_t)base[0] | (uint32_t)base[1] << 8 | (uint32_t)base[2] << 16 | (uint32_t)base[3] << 24;
+    case 1: return base[0];
+    case 2: return (uint32_t)base[0] | (uint32_t)base[1] << 8;
+    default: return (uint32_t)base[0] | (uint32_t)base[1] << 8 | (uint32_t)base[2] << 16 | (uint32_t)base[3] << 24;
     }
 }
 
@@ -1361,7 +1361,9 @@ static bool on_break(void *context, uint32_t code) {
     return true;
 }
 
-mailbox_t *machine_mailbox(machine_t *m) { return &m->mailbox; }
+mailbox_t *machine_mailbox(machine_t *m) {
+    return &m->mailbox;
+}
 
 static bool raw_rom_region(const uint8_t *rom, size_t rom_size, rom_region_t *region, uint32_t *start, char *error, size_t error_size) {
     uint32_t window_end = ROM_WINDOW_END;
@@ -1498,7 +1500,9 @@ void machine_destroy(machine_t *m) {
     free(m);
 }
 
-void machine_set_log(machine_t *m, machine_log_fn log) { m->log = log; }
+void machine_set_log(machine_t *m, machine_log_fn log) {
+    m->log = log;
+}
 
 static uint64_t next_event(const machine_t *m) {
     uint64_t next = m->periodic_next;
@@ -1619,7 +1623,9 @@ void machine_run(machine_t *m, uint64_t cycles) {
     }
 }
 
-mips_cpu_t *machine_cpu(machine_t *m) { return &m->cpu; }
+mips_cpu_t *machine_cpu(machine_t *m) {
+    return &m->cpu;
+}
 
 static bool debugger_memory(const machine_t *m, uint32_t pa, bool write) {
     if (pa < DRAM_DECODE_END) return true;
@@ -1645,8 +1651,12 @@ bool machine_write_physical(machine_t *m, uint32_t pa, const uint8_t *data, uint
     return true;
 }
 
-uint64_t machine_cycles(machine_t *m) { return m->cpu.cycles; }
-uint32_t machine_pc(machine_t *m) { return m->cpu.pc; }
+uint64_t machine_cycles(machine_t *m) {
+    return m->cpu.cycles;
+}
+uint32_t machine_pc(machine_t *m) {
+    return m->cpu.pc;
+}
 
 static uint32_t mfio_driven(const machine_t *m) {
     return m->mfio_dout & m->mfio_direc & m->mfio_sel;
@@ -1714,8 +1724,12 @@ bool machine_screen(machine_t *m, uint8_t *levels) {
     return true;
 }
 
-screen_size_t machine_screen_size(machine_t *m) { return m->screen; }
-screen_size_t machine_screen_next(machine_t *m) { return m->screen_next; }
+screen_size_t machine_screen_size(machine_t *m) {
+    return m->screen;
+}
+screen_size_t machine_screen_next(machine_t *m) {
+    return m->screen_next;
+}
 
 bool machine_screen_supported(machine_t *m, screen_size_t size) {
     int index = screen_preset_index(size);
@@ -1742,7 +1756,9 @@ void machine_power_button(machine_t *m, bool down) {
     if (down && m->suspended) wake_from_suspend(m);
 }
 
-bool machine_suspended(machine_t *m) { return m->suspended; }
+bool machine_suspended(machine_t *m) {
+    return m->suspended;
+}
 
 void machine_touch(machine_t *m, bool down, int x, int y) {
     m->pen_x = x;
@@ -2237,12 +2253,12 @@ static void reset_machine(machine_t *m, bool keep_ram) {
 void machine_set_memory(machine_t *m, uint32_t megabytes) {
     uint32_t bank0, card;
     switch (megabytes) {
-        case 4: bank0 = 4; card = 0; break;
-        case 8: bank0 = 8; card = 0; break;
-        case 16: bank0 = 16; card = 0; break;
-        case 20: bank0 = 4; card = 16; break;
-        case 32: bank0 = 16; card = 16; break;
-        default: return;
+    case 4: bank0 = 4; card = 0; break;
+    case 8: bank0 = 8; card = 0; break;
+    case 16: bank0 = 16; card = 0; break;
+    case 20: bank0 = 4; card = 16; break;
+    case 32: bank0 = 16; card = 16; break;
+    default: return;
     }
     if (m->in_place && bank0 << 20 != m->dram_size) return;
     m->dram_size_next = bank0 << 20;
@@ -2250,17 +2266,27 @@ void machine_set_memory(machine_t *m, uint32_t megabytes) {
     if (m->cpu.cycles == 0 && (m->dram_size_next != m->dram_size || m->card_dram_size_next != m->card_dram_size)) machine_reset(m);
 }
 
-uint32_t machine_memory(machine_t *m) { return (m->dram_size + m->card_dram_size) >> 20; }
-uint32_t machine_memory_next(machine_t *m) { return (m->dram_size_next + m->card_dram_size_next) >> 20; }
+uint32_t machine_memory(machine_t *m) {
+    return (m->dram_size + m->card_dram_size) >> 20;
+}
+uint32_t machine_memory_next(machine_t *m) {
+    return (m->dram_size_next + m->card_dram_size_next) >> 20;
+}
 
 void machine_set_speed(machine_t *m, uint32_t multiplier) {
     m->cpu.speed = multiplier < 1 ? 1 : multiplier > 16 ? 16 : multiplier;
 }
 
-uint32_t machine_speed(machine_t *m) { return m->cpu.speed ? m->cpu.speed : 1; }
+uint32_t machine_speed(machine_t *m) {
+    return m->cpu.speed ? m->cpu.speed : 1;
+}
 
-void machine_set_optimisations(machine_t *m, bool optimisations) { m->optimisations = optimisations; }
-bool machine_optimisations(machine_t *m) { return m->optimisations; }
+void machine_set_optimisations(machine_t *m, bool optimisations) {
+    m->optimisations = optimisations;
+}
+bool machine_optimisations(machine_t *m) {
+    return m->optimisations;
+}
 
 size_t machine_audio(machine_t *m, int16_t *samples, size_t max, uint32_t *rate) {
     size_t count = m->audio_count < max ? m->audio_count : max;
@@ -2334,10 +2360,16 @@ void machine_serial_connect(machine_t *m, bool connected) {
     intc_set_pending(m, connected ? 3 : 2, MFIO_SERIAL_CTS);
 }
 
-bool machine_serial_connected(machine_t *m) { return m->serial_connected; }
+bool machine_serial_connected(machine_t *m) {
+    return m->serial_connected;
+}
 
-void machine_set_serial_tag(machine_t *m, uint32_t tag) { m->serial_tag = tag; }
-uint32_t machine_serial_tag(machine_t *m) { return m->serial_tag; }
+void machine_set_serial_tag(machine_t *m, uint32_t tag) {
+    m->serial_tag = tag;
+}
+uint32_t machine_serial_tag(machine_t *m) {
+    return m->serial_tag;
+}
 
 void machine_serial_send(machine_t *m, const uint8_t *data, size_t length) {
     uart_receive(&m->uart_port, data, (uint32_t)length, m->cpu.cycles);
@@ -2347,7 +2379,9 @@ size_t machine_serial_take(machine_t *m, uint8_t *out, size_t max) {
     return uart_take_tx(&m->uart_port, out, (uint32_t)max);
 }
 
-uint32_t machine_serial_baud(machine_t *m) { return uart_baud(&m->uart_port); }
+uint32_t machine_serial_baud(machine_t *m) {
+    return uart_baud(&m->uart_port);
+}
 
 bool machine_serial_dtr(machine_t *m) {
     uint32_t direction = (m->io_ctl >> 16) & 0x7F;
@@ -2355,7 +2389,9 @@ bool machine_serial_dtr(machine_t *m) {
     return (direction & IODOUT_SERIAL_DTR) && !(dout & IODOUT_SERIAL_DTR);
 }
 
-size_t machine_serial_space(machine_t *m) { return uart_space(&m->uart_port); }
+size_t machine_serial_space(machine_t *m) {
+    return uart_space(&m->uart_port);
+}
 
 static bool guest_halfword(machine_t *m, uint32_t va, bool write, uint16_t *value) {
     uint32_t pa, word = *value;

@@ -21,8 +21,8 @@ void android_update(bool backlit, bool awake) {
 
 typedef struct {
     JNIEnv   *env;
-    jobject   activity;
-    jclass    class;
+    jobject activity;
+    jclass class;
     jmethodID method;
 } java_call_t;
 

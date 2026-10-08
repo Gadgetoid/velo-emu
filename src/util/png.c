@@ -6,8 +6,8 @@
 
 typedef struct {
     uint8_t *data;
-    size_t   length, capacity;
-    bool     failed;
+    size_t length, capacity;
+    bool failed;
 } buffer_t;
 
 static void append(buffer_t *buffer, const void *bytes, size_t length) {

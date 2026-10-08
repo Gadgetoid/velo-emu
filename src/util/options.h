@@ -6,7 +6,7 @@ typedef struct {
     const char *name;
     const char *value;
     const char *help;
-    int         repeat;
+    int repeat;
 } option_t;
 
 typedef bool (*option_fn)(void *context, int option, const char *value, char *error, size_t error_size);
@@ -16,7 +16,7 @@ typedef struct {
     const char     *synopsis;
     const char     *summary;
     const option_t *options;
-    int             count;
+    int count;
     const char     *footer;
 } option_spec_t;
 

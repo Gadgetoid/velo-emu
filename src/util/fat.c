@@ -9,8 +9,12 @@
 #define ENTRY_BYTES      32
 #define ATTRIBUTE_FOLDER 0x10
 
-static uint16_t le16(const uint8_t *at) { return (uint16_t)(at[0] | at[1] << 8); }
-static uint32_t le32(const uint8_t *at) { return (uint32_t)at[0] | (uint32_t)at[1] << 8 | (uint32_t)at[2] << 16 | (uint32_t)at[3] << 24; }
+static uint16_t le16(const uint8_t *at) {
+    return (uint16_t)(at[0] | at[1] << 8);
+}
+static uint32_t le32(const uint8_t *at) {
+    return (uint32_t)at[0] | (uint32_t)at[1] << 8 | (uint32_t)at[2] << 16 | (uint32_t)at[3] << 24;
+}
 
 static bool read_sector(FILE *file, uint32_t lba, uint8_t *sector) {
     return fseek(file, (long)lba * SECTOR_BYTES, SEEK_SET) == 0 && fread(sector, 1, SECTOR_BYTES, file) == SECTOR_BYTES;

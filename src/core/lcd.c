@@ -11,8 +11,12 @@ uint8_t lcd_framebuffer[SCREEN_MAX_WIDTH * SCREEN_MAX_HEIGHT];
 static int screen_w = SCREEN_STOCK_WIDTH, screen_h = SCREEN_STOCK_HEIGHT;
 static int grid_w = SCREEN_STOCK_WIDTH + 2 * LCD_MARGIN_X, grid_h = SCREEN_STOCK_HEIGHT + 2 * LCD_MARGIN_Y;
 
-static inline int min_int(int a, int b) { return a < b ? a : b; }
-static inline int max_int(int a, int b) { return a > b ? a : b; }
+static inline int min_int(int a, int b) {
+    return a < b ? a : b;
+}
+static inline int max_int(int a, int b) {
+    return a > b ? a : b;
+}
 
 typedef struct { float r, g, b; } colour_t;
 
@@ -56,9 +60,9 @@ static int cell = 0, output_w = 0, output_h = 0;
 #define DIRTY_MARGIN 6
 
 typedef struct {
-    int   grid, shadow_grid;
-    bool  electrode, shadow_electrode, in_panel;
-    int   soft_x0, soft_x1, glow_x0, glow_x1;
+    int grid, shadow_grid;
+    bool electrode, shadow_electrode, in_panel;
+    int soft_x0, soft_x1, glow_x0, glow_x1;
     float soft_fx, glow_fx;
 } column_t;
 
@@ -84,8 +88,12 @@ void lcd_set_size(int width, int height) {
     force_compose = true;
 }
 
-int lcd_width(void) { return screen_w; }
-int lcd_height(void) { return screen_h; }
+int lcd_width(void) {
+    return screen_w;
+}
+int lcd_height(void) {
+    return screen_h;
+}
 
 void lcd_set_power(bool on) {
     if (on == powered) return;
@@ -99,23 +107,33 @@ void lcd_set_contrast(int level) {
     force_compose = true;
 }
 
-int lcd_get_contrast(void) { return contrast_level; }
+int lcd_get_contrast(void) {
+    return contrast_level;
+}
 
 void lcd_set_backlight(bool on) {
     if (on == backlight) return;
     backlight = on;
     force_compose = true;
 }
-bool lcd_get_backlight(void) { return backlight; }
+bool lcd_get_backlight(void) {
+    return backlight;
+}
 
 void lcd_set_unlit_level(float level) {
     if (level == unlit_level) return;
     unlit_level = level;
     lcd_invalidate();
 }
-uint32_t *lcd_compose_pixels(void) { return output; }
-int lcd_compose_width(void) { return output_w; }
-int lcd_compose_height(void) { return output_h; }
+uint32_t *lcd_compose_pixels(void) {
+    return output;
+}
+int lcd_compose_width(void) {
+    return output_w;
+}
+int lcd_compose_height(void) {
+    return output_h;
+}
 
 #define BEZEL_TOP    0.42f
 #define BEZEL_LEFT   0.30f
@@ -185,22 +203,22 @@ void lcd_compose_setup(int new_cell) {
         float u = (x + 0.5f) / output_w * 2.0f - 1.0f;
         float from_left = (float)x / cell, from_right = (float)(output_w - 1 - x) / cell;
         vignette_x[x] = (1.0f - 0.07f * u * u * u * u)
-                      * (1.0f - BEZEL_LEFT * expf(-from_left / 1.1f))
-                      * (1.0f - BEZEL_RIGHT * expf(-from_right / 0.7f));
+                        * (1.0f - BEZEL_LEFT * expf(-from_left / 1.1f))
+                        * (1.0f - BEZEL_RIGHT * expf(-from_right / 0.7f));
     }
     for (int y = 0; y < output_h; y++) {
         float v = (y + 0.5f) / output_h * 2.0f - 1.0f;
         float from_top = (float)y / cell, from_bottom = (float)(output_h - 1 - y) / cell;
         vignette_y[y] = (1.0f - 0.10f * v * v)
-                      * (1.0f - BEZEL_TOP * expf(-from_top / 1.5f))
-                      * (1.0f - BEZEL_BOTTOM * expf(-from_bottom / 0.7f));
+                        * (1.0f - BEZEL_TOP * expf(-from_top / 1.5f))
+                        * (1.0f - BEZEL_BOTTOM * expf(-from_bottom / 0.7f));
     }
     grain = malloc((size_t)output_w * output_h * sizeof(float));
     for (int y = 0; y < output_h; y++) {
         for (int x = 0; x < output_w; x++) {
             float fine = hash_noise(x, y) - 0.5f;
             float mottle = value_noise(x / (output_w * 0.32f), y / (output_w * 0.32f), 11) * 0.65f
-                         + value_noise(x / (output_w * 0.13f), y / (output_w * 0.13f), 23) * 0.35f;
+                           + value_noise(x / (output_w * 0.13f), y / (output_w * 0.13f), 23) * 0.35f;
             grain[(size_t)y * output_w + x] = 1.0f + fine * GRAIN_FINE + (mottle - 0.5f) * GRAIN_COARSE;
         }
     }

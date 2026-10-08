@@ -53,37 +53,37 @@ static bool receiving(const uart_port_t *port) {
 uint32_t uart_read(uart_port_t *port, uint32_t offset) {
     uart_t *uart = port->state;
     switch (offset) {
-        case OFFSET_CTL1: return (uart->ctl1 & CTL1_WRITABLE) | CTL1_EMPTY | ((uart->ctl1 & CTL1_ENUART) ? CTL1_UARTON : 0);
-        case OFFSET_DMA_COUNT: return uart->dma_count;
-        default: return 0;
+    case OFFSET_CTL1: return (uart->ctl1 & CTL1_WRITABLE) | CTL1_EMPTY | ((uart->ctl1 & CTL1_ENUART) ? CTL1_UARTON : 0);
+    case OFFSET_DMA_COUNT: return uart->dma_count;
+    default: return 0;
     }
 }
 
 void uart_write(uart_port_t *port, uint32_t offset, uint32_t value, uint64_t now) {
     uart_t *uart = port->state;
     switch (offset) {
-        case OFFSET_CTL1: {
-            bool was_armed = uart->dma_armed;
-            uart->ctl1 = value & CTL1_WRITABLE;
-            uart->dma_armed = (value & CTL1_ENDMARX) != 0;
-            if (uart->dma_armed && !was_armed) uart->dma_count = 0;
-            if (receiving(port) && uart->wire_count && uart->rx_next == NO_EVENT) uart->rx_next = now + cycles_per_byte(port);
-            if (!receiving(port)) uart->rx_next = NO_EVENT;
-            return;
+    case OFFSET_CTL1: {
+        bool was_armed = uart->dma_armed;
+        uart->ctl1 = value & CTL1_WRITABLE;
+        uart->dma_armed = (value & CTL1_ENDMARX) != 0;
+        if (uart->dma_armed && !was_armed) uart->dma_count = 0;
+        if (receiving(port) && uart->wire_count && uart->rx_next == NO_EVENT) uart->rx_next = now + cycles_per_byte(port);
+        if (!receiving(port)) uart->rx_next = NO_EVENT;
+        return;
+    }
+    case OFFSET_CTL2: uart->baud_divisor = value & CTL2_BAUDRATE; return;
+    case OFFSET_DMA_CTL1: uart->dma_buffer = value & ~3u; return;
+    case OFFSET_DMA_CTL2: uart->dma_length = (value & 0xFFFF) + 1; return;
+    case OFFSET_DATA:
+        if (!(uart->ctl1 & CTL1_ENUART) || (uart->ctl1 & CTL1_DISTXD)) return;
+        if (uart->tx_count < UART_TX_SIZE) {
+            uart->tx[(uart->tx_head + uart->tx_count) % UART_TX_SIZE] = (uint8_t)value;
+            uart->tx_count++;
         }
-        case OFFSET_CTL2: uart->baud_divisor = value & CTL2_BAUDRATE; return;
-        case OFFSET_DMA_CTL1: uart->dma_buffer = value & ~3u; return;
-        case OFFSET_DMA_CTL2: uart->dma_length = (value & 0xFFFF) + 1; return;
-        case OFFSET_DATA:
-            if (!(uart->ctl1 & CTL1_ENUART) || (uart->ctl1 & CTL1_DISTXD)) return;
-            if (uart->tx_count < UART_TX_SIZE) {
-                uart->tx[(uart->tx_head + uart->tx_count) % UART_TX_SIZE] = (uint8_t)value;
-                uart->tx_count++;
-            }
-            port->raise(port->context, STATUS2_TXEMPTY | STATUS2_TXAVAIL);
-            return;
-        default:
-            return;
+        port->raise(port->context, STATUS2_TXEMPTY | STATUS2_TXAVAIL);
+        return;
+    default:
+        return;
     }
 }
 

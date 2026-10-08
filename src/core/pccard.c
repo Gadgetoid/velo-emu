@@ -90,10 +90,10 @@ static uint16_t gpio_datain(const pccard_t *card) {
     uint16_t driven = card->gpio_dataout & card->gpio_dir;
     uint16_t in = driven | (GPIO_MASK & ~card->gpio_dir);
     if (!card->inserted) return in;
-    in &= (uint16_t)~PIN_CRDDET;
+    in &= (uint16_t) ~PIN_CRDDET;
     if (!card->powered) return in;
-    in &= (uint16_t)~PIN_BCRDWP;
-    if (card->card_irq) in &= (uint16_t)~PIN_BCRDRDY;
+    in &= (uint16_t) ~PIN_BCRDWP;
+    if (card->card_irq) in &= (uint16_t) ~PIN_BCRDRDY;
     else in |= PIN_BCRDRDY;
     return in;
 }
@@ -112,7 +112,7 @@ static void latch_edges(pccard_socket_t *socket) {
     uint16_t now = gpio_datain(card);
     uint16_t diff = now ^ card->prev_datain;
     card->gpio_posintstat |= diff & now;
-    card->gpio_negintstat |= diff & (uint16_t)~now;
+    card->gpio_negintstat |= diff & (uint16_t) ~now;
     card->prev_datain = now;
     update_int(socket);
 }
@@ -229,7 +229,7 @@ void pccard_sanitize(pccard_t *card) {
     bool position_valid = transferring ? card->buffer_position < sizeof card->buffer : card->buffer_position <= sizeof card->buffer;
     bool count_valid = card->sectors_left <= ATA_MAX_SECTORS && (!transferring || card->sectors_left > 0);
     if (position_valid && count_valid) return;
-    card->status &= (uint8_t)~ATA_DRQ;
+    card->status &= (uint8_t) ~ATA_DRQ;
     card->buffer_position = 0;
     card->sectors_left = 0;
     card->writing = false;
@@ -238,55 +238,55 @@ void pccard_sanitize(pccard_t *card) {
 uint16_t pccard_it8368_read(pccard_socket_t *socket, uint32_t offset) {
     pccard_t *card = socket->state;
     switch (offset) {
-        case REG_GPIO_DATAOUT: return card->gpio_dataout;
-        case REG_GPIO_DIR: return card->gpio_dir;
-        case REG_MFIO_DATAOUT: return card->mfio_dataout;
-        case REG_MFIO_DIR: return card->mfio_dir;
-        case REG_MFIO_SEL: return card->mfio_sel;
-        case REG_GPIO_DATAIN: latch_edges(socket); return gpio_datain(card);
-        case REG_MFIO_DATAIN: return card->mfio_dataout & card->mfio_dir;
-        case REG_GPIO_POSINTEN: return card->gpio_posinten;
-        case REG_GPIO_NEGINTEN: return card->gpio_neginten;
-        case REG_GPIO_POSINTSTAT: latch_edges(socket); return card->gpio_posintstat;
-        case REG_GPIO_NEGINTSTAT: latch_edges(socket); return card->gpio_negintstat;
-        case REG_MFIO_POSINTSTAT: return card->mfio_posintstat;
-        case REG_MFIO_NEGINTSTAT: return card->mfio_negintstat;
-        case REG_CTRL: return card->ctrl;
-        case REG_MMODULE_ID: return MMODULE_ID;
-        default: return 0;
+    case REG_GPIO_DATAOUT: return card->gpio_dataout;
+    case REG_GPIO_DIR: return card->gpio_dir;
+    case REG_MFIO_DATAOUT: return card->mfio_dataout;
+    case REG_MFIO_DIR: return card->mfio_dir;
+    case REG_MFIO_SEL: return card->mfio_sel;
+    case REG_GPIO_DATAIN: latch_edges(socket); return gpio_datain(card);
+    case REG_MFIO_DATAIN: return card->mfio_dataout & card->mfio_dir;
+    case REG_GPIO_POSINTEN: return card->gpio_posinten;
+    case REG_GPIO_NEGINTEN: return card->gpio_neginten;
+    case REG_GPIO_POSINTSTAT: latch_edges(socket); return card->gpio_posintstat;
+    case REG_GPIO_NEGINTSTAT: latch_edges(socket); return card->gpio_negintstat;
+    case REG_MFIO_POSINTSTAT: return card->mfio_posintstat;
+    case REG_MFIO_NEGINTSTAT: return card->mfio_negintstat;
+    case REG_CTRL: return card->ctrl;
+    case REG_MMODULE_ID: return MMODULE_ID;
+    default: return 0;
     }
 }
 
 void pccard_it8368_write(pccard_socket_t *socket, uint32_t offset, uint16_t value) {
     pccard_t *card = socket->state;
     switch (offset) {
-        case REG_GPIO_DATAOUT: card->gpio_dataout = value; apply_outputs(socket); return;
-        case REG_GPIO_DIR: card->gpio_dir = value; apply_outputs(socket); return;
-        case REG_MFIO_DATAOUT: card->mfio_dataout = value; return;
-        case REG_MFIO_DIR: card->mfio_dir = value; return;
-        case REG_MFIO_SEL: card->mfio_sel = value; return;
-        case REG_GPIO_POSINTEN: card->gpio_posinten = value & GPIO_MASK; update_int(socket); return;
-        case REG_GPIO_NEGINTEN: card->gpio_neginten = value & GPIO_MASK; update_int(socket); return;
-        case REG_GPIO_POSINTSTAT: card->gpio_posintstat &= (uint16_t)~value; update_int(socket); return;
-        case REG_GPIO_NEGINTSTAT: card->gpio_negintstat &= (uint16_t)~value; update_int(socket); return;
-        case REG_MFIO_POSINTSTAT: card->mfio_posintstat &= (uint16_t)~value; return;
-        case REG_MFIO_NEGINTSTAT: card->mfio_negintstat &= (uint16_t)~value; return;
-        case REG_CTRL:
-            if (value & CTRL_SOFTRESET) {
-                card->gpio_dataout = card->gpio_dir = 0;
-                card->gpio_posinten = card->gpio_neginten = 0;
-                card->gpio_posintstat = card->gpio_negintstat = 0;
-                card->mfio_posintstat = card->mfio_negintstat = 0;
-                card->mfio_dataout = card->mfio_dir = card->mfio_sel = 0;
-                card->ctrl = 0;
-                apply_outputs(socket);
-                return;
-            }
-            card->ctrl = value;
-            update_int(socket);
+    case REG_GPIO_DATAOUT: card->gpio_dataout = value; apply_outputs(socket); return;
+    case REG_GPIO_DIR: card->gpio_dir = value; apply_outputs(socket); return;
+    case REG_MFIO_DATAOUT: card->mfio_dataout = value; return;
+    case REG_MFIO_DIR: card->mfio_dir = value; return;
+    case REG_MFIO_SEL: card->mfio_sel = value; return;
+    case REG_GPIO_POSINTEN: card->gpio_posinten = value & GPIO_MASK; update_int(socket); return;
+    case REG_GPIO_NEGINTEN: card->gpio_neginten = value & GPIO_MASK; update_int(socket); return;
+    case REG_GPIO_POSINTSTAT: card->gpio_posintstat &= (uint16_t) ~value; update_int(socket); return;
+    case REG_GPIO_NEGINTSTAT: card->gpio_negintstat &= (uint16_t) ~value; update_int(socket); return;
+    case REG_MFIO_POSINTSTAT: card->mfio_posintstat &= (uint16_t) ~value; return;
+    case REG_MFIO_NEGINTSTAT: card->mfio_negintstat &= (uint16_t) ~value; return;
+    case REG_CTRL:
+        if (value & CTRL_SOFTRESET) {
+            card->gpio_dataout = card->gpio_dir = 0;
+            card->gpio_posinten = card->gpio_neginten = 0;
+            card->gpio_posintstat = card->gpio_negintstat = 0;
+            card->mfio_posintstat = card->mfio_negintstat = 0;
+            card->mfio_dataout = card->mfio_dir = card->mfio_sel = 0;
+            card->ctrl = 0;
+            apply_outputs(socket);
             return;
-        default:
-            return;
+        }
+        card->ctrl = value;
+        update_int(socket);
+        return;
+    default:
+        return;
     }
 }
 
@@ -446,16 +446,16 @@ static void write_data16(pccard_socket_t *socket, uint16_t value) {
 static uint8_t read_register(pccard_socket_t *socket, int reg) {
     pccard_t *card = socket->state;
     switch (reg) {
-        case REG_DATA: return read_data8(socket);
-        case REG_FEATURE: return card->error;
-        case REG_SECTORS: return card->sector_count;
-        case REG_SECTOR: return card->sector_number;
-        case REG_CYL_LOW: return card->cylinder_low;
-        case REG_CYL_HIGH: return card->cylinder_high;
-        case REG_DRV_HEAD: return card->drive_head;
-        case REG_COMMAND: irq_clear(socket); return card->status;
-        case REG_DEVCTL: return card->status;
-        default: return 0xFF;
+    case REG_DATA: return read_data8(socket);
+    case REG_FEATURE: return card->error;
+    case REG_SECTORS: return card->sector_count;
+    case REG_SECTOR: return card->sector_number;
+    case REG_CYL_LOW: return card->cylinder_low;
+    case REG_CYL_HIGH: return card->cylinder_high;
+    case REG_DRV_HEAD: return card->drive_head;
+    case REG_COMMAND: irq_clear(socket); return card->status;
+    case REG_DEVCTL: return card->status;
+    default: return 0xFF;
     }
 }
 
@@ -500,16 +500,16 @@ static void command(pccard_socket_t *socket, uint8_t value) {
 static void write_register(pccard_socket_t *socket, int reg, uint8_t value) {
     pccard_t *card = socket->state;
     switch (reg) {
-        case REG_DATA: write_data8(socket, value); return;
-        case REG_FEATURE: card->feature = value; return;
-        case REG_SECTORS: card->sector_count = value; return;
-        case REG_SECTOR: card->sector_number = value; return;
-        case REG_CYL_LOW: card->cylinder_low = value; return;
-        case REG_CYL_HIGH: card->cylinder_high = value; return;
-        case REG_DRV_HEAD: card->drive_head = value; return;
-        case REG_COMMAND: command(socket, value); return;
-        case REG_DEVCTL: card->device_control = value; return;
-        default: return;
+    case REG_DATA: write_data8(socket, value); return;
+    case REG_FEATURE: card->feature = value; return;
+    case REG_SECTORS: card->sector_count = value; return;
+    case REG_SECTOR: card->sector_number = value; return;
+    case REG_CYL_LOW: card->cylinder_low = value; return;
+    case REG_CYL_HIGH: card->cylinder_high = value; return;
+    case REG_DRV_HEAD: card->drive_head = value; return;
+    case REG_COMMAND: command(socket, value); return;
+    case REG_DEVCTL: card->device_control = value; return;
+    default: return;
     }
 }
 

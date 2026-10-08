@@ -46,14 +46,14 @@ uint32_t vdisk_read(vdisk_port_t *port, uint32_t offset, int size) {
         return at + (uint32_t)size <= sizeof disk->buffer ? read_buffer(disk->buffer + at, size) : 0;
     }
     switch (offset & ~3u) {
-        case VDISK_REG_MAGIC: return VDISK_MAGIC;
-        case VDISK_REG_VERSION: return 1;
-        case VDISK_REG_SECTORS: return port->sectors;
-        case VDISK_REG_FLAGS: return port->read_only ? VDISK_FLAG_READ_ONLY : 0;
-        case VDISK_REG_LBA: return disk->lba;
-        case VDISK_REG_COUNT: return disk->count;
-        case VDISK_REG_STATUS: return disk->status;
-        case VDISK_REG_CHANGES: return disk->changes;
+    case VDISK_REG_MAGIC: return VDISK_MAGIC;
+    case VDISK_REG_VERSION: return 1;
+    case VDISK_REG_SECTORS: return port->sectors;
+    case VDISK_REG_FLAGS: return port->read_only ? VDISK_FLAG_READ_ONLY : 0;
+    case VDISK_REG_LBA: return disk->lba;
+    case VDISK_REG_COUNT: return disk->count;
+    case VDISK_REG_STATUS: return disk->status;
+    case VDISK_REG_CHANGES: return disk->changes;
     }
     return 0;
 }
@@ -67,10 +67,10 @@ void vdisk_write(vdisk_port_t *port, uint32_t offset, int size, uint32_t value) 
         return;
     }
     switch (offset & ~3u) {
-        case VDISK_REG_LBA: disk->lba = value; break;
-        case VDISK_REG_COUNT: disk->count = value; break;
-        case VDISK_REG_COMMAND:
-            if (value == VDISK_COMMAND_READ || value == VDISK_COMMAND_WRITE) disk->status = transfer(port, value);
-            break;
+    case VDISK_REG_LBA: disk->lba = value; break;
+    case VDISK_REG_COUNT: disk->count = value; break;
+    case VDISK_REG_COMMAND:
+        if (value == VDISK_COMMAND_READ || value == VDISK_COMMAND_WRITE) disk->status = transfer(port, value);
+        break;
     }
 }

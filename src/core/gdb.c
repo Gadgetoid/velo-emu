@@ -115,87 +115,87 @@ typedef struct {
     uint32_t gpr[32];
     uint32_t lo, hi, status, badvaddr, cause, pc;
     uint32_t code;
-    int      process;
+    int process;
 } fault_t;
 
 typedef struct {
     uint32_t address;
     uint32_t length;
-    int      type;
+    int type;
 } watchpoint_t;
 
 struct gdb {
     machine_t   *machine;
-    ce_t         ce;
-    gdb_log_fn   log;
+    ce_t ce;
+    gdb_log_fn log;
     mips_debug_t debug;
-    int          listener;
-    int          client;
-    bool         no_ack;
-    bool         halted;
-    bool         killed;
-    bool         catch_faults;
-    bool         forward_output;
-    bool         elf_libraries;
-    uint32_t     library_hash;
-    int          library_check;
-    uint32_t     module_list_pa;
-    bool         module_list_known;
-    bool         module_added;
-    uint32_t     new_module;
-    uint32_t     new_module_entry_pa;
-    bool         entry_written;
-    uint32_t     entry_breaks[BREAKPOINT_MAX];
-    int          entry_break_count;
+    int listener;
+    int client;
+    bool no_ack;
+    bool halted;
+    bool killed;
+    bool catch_faults;
+    bool forward_output;
+    bool elf_libraries;
+    uint32_t library_hash;
+    int library_check;
+    uint32_t module_list_pa;
+    bool module_list_known;
+    bool module_added;
+    uint32_t new_module;
+    uint32_t new_module_entry_pa;
+    bool entry_written;
+    uint32_t entry_breaks[BREAKPOINT_MAX];
+    int entry_break_count;
 
-    uint8_t  input[PACKET_MAX * 2];
-    size_t   input_length;
-    size_t   packet_length;
+    uint8_t input[PACKET_MAX * 2];
+    size_t input_length;
+    size_t packet_length;
 
-    bool     extended;
-    bool     non_stop;
-    bool     sync_reply;
-    bool     inferior;
-    int      agent_state;
+    bool extended;
+    bool non_stop;
+    bool sync_reply;
+    bool inferior;
+    int agent_state;
     uint16_t agent_sequence;
-    char     files[FILE_MAX][FILE_PATH_MAX];
-    bool     file_open[FILE_MAX];
+    char files[FILE_MAX][FILE_PATH_MAX];
+    bool file_open[FILE_MAX];
     uint16_t run_sequence;
     uint32_t run_status;
     uint32_t run_pid;
-    bool     run_replied;
-    bool     run_active;
-    int      exit_check;
+    bool run_replied;
+    bool run_active;
+    int exit_check;
 
-    uint32_t     breakpoints[BREAKPOINT_MAX];
-    int          breakpoint_count;
+    uint32_t breakpoints[BREAKPOINT_MAX];
+    int breakpoint_count;
     watchpoint_t watchpoints[WATCHPOINT_MAX];
-    int          watchpoint_count;
+    int watchpoint_count;
 
     char process_name[CE_NAME_MAX];
-    int  process;
+    int process;
     bool waiting_for_process;
-    int  last_user_process;
+    int last_user_process;
 
-    bool     stepping;
-    bool     step_executed;
+    bool stepping;
+    bool step_executed;
     uint32_t step_pc;
-    int      step_process;
-    bool     step_user;
+    int step_process;
+    bool step_user;
 
-    bool     resume_skip;
-    bool     watch_skip;
+    bool resume_skip;
+    bool watch_skip;
     uint32_t resume_pc;
-    int      resume_process;
+    int resume_process;
 
     stop_kind_t stop_kind;
-    int         stop_signal;
-    uint32_t    stop_address;
-    int         stop_watch_type;
+    int stop_signal;
+    uint32_t stop_address;
+    int stop_watch_type;
 
     fault_t faults[FAULT_HISTORY];
-    int     fault_next;
-    bool    post_mortem;
+    int fault_next;
+    bool post_mortem;
     fault_t post_mortem_fault;
 };
 
@@ -390,7 +390,7 @@ static bool on_before(void *context, uint32_t pc) {
             else gdb->entry_break_count++;
             gdb->entry_breaks[gdb->entry_break_count - 1] = entry;
             gdb->new_module = 0;
-    gdb->entry_written = false;
+            gdb->entry_written = false;
         }
         update_debug(gdb);
     }
@@ -863,12 +863,12 @@ static void handle_monitor(gdb_t *gdb, const char *packet) {
         monitor_reply(gdb, "CE debug output: %s\n", gdb->forward_output ? "on" : "off");
     } else {
         monitor_reply(gdb, "velo-emu monitor commands:\n"
-                           "  processes          list CE's processes (* current, > debugged)\n"
-                           "  process [NAME|any] debug one process; stops when it starts if it isn't running\n"
-                           "  modules            list loaded modules (* used by the debugged process)\n"
-                           "  libraries elf|dll  name DLLs to GDB by their .elf (default) or .dll file\n"
-                           "  catch on|off       stop when CE reports a crash (default on)\n"
-                           "  output on|off      show CE's debug output while running (default on)\n");
+                      "  processes          list CE's processes (* current, > debugged)\n"
+                      "  process [NAME|any] debug one process; stops when it starts if it isn't running\n"
+                      "  modules            list loaded modules (* used by the debugged process)\n"
+                      "  libraries elf|dll  name DLLs to GDB by their .elf (default) or .dll file\n"
+                      "  catch on|off       stop when CE reports a crash (default on)\n"
+                      "  output on|off      show CE's debug output while running (default on)\n");
     }
     send_packet(gdb, "OK");
 }

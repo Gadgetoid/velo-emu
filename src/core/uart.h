@@ -15,11 +15,11 @@ typedef struct {
     uint32_t dma_buffer;
     uint32_t dma_length;
     uint32_t dma_count;
-    bool     dma_armed;
+    bool dma_armed;
     uint64_t rx_next;
-    uint8_t  wire[UART_WIRE_SIZE];
+    uint8_t wire[UART_WIRE_SIZE];
     uint32_t wire_head, wire_count;
-    uint8_t  tx[UART_TX_SIZE];
+    uint8_t tx[UART_TX_SIZE];
     uint32_t tx_head, tx_count;
 } uart_t;
 
@@ -28,7 +28,7 @@ typedef struct {
     uint8_t *dram;
     uint32_t dram_mask;
     void    *context;
-    void   (*raise)(void *context, uint32_t status2_bits);
+    void (*raise)(void *context, uint32_t status2_bits);
 } uart_port_t;
 
 uint32_t uart_read(uart_port_t *port, uint32_t offset);

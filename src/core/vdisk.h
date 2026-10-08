@@ -28,14 +28,14 @@ enum { VDISK_FLAG_READ_ONLY = 1 };
 
 typedef struct {
     uint32_t lba, count, status, changes;
-    uint8_t  buffer[VDISK_MAX_SECTORS * VDISK_SECTOR];
+    uint8_t buffer[VDISK_MAX_SECTORS * VDISK_SECTOR];
 } vdisk_t;
 
 typedef struct {
     vdisk_t *state;
     FILE    *image;
     uint32_t sectors;
-    bool     read_only;
+    bool read_only;
 } vdisk_port_t;
 
 bool     vdisk_insert(vdisk_port_t *port, FILE *image, bool read_only);

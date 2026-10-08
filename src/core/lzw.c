@@ -65,8 +65,8 @@ size_t lzw_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t out_si
 
 typedef struct {
     uint8_t *out;
-    size_t   size, bit;
-    bool     overflow;
+    size_t size, bit;
+    bool overflow;
 } bit_writer_t;
 
 static void emit_code(bit_writer_t *writer, int code, int width) {

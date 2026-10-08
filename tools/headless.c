@@ -15,7 +15,9 @@
 #include "util/options.h"
 #include "util/png.h"
 
-static void log_stderr(const char *message) { fputs(message, stderr); }
+static void log_stderr(const char *message) {
+    fputs(message, stderr);
+}
 
 static volatile sig_atomic_t stop_requested = 0;
 
@@ -106,44 +108,44 @@ static void write_pgm(const char *path, const uint8_t *levels, screen_size_t siz
 
 typedef struct {
     const char *rom_path;
-    double   seconds;
+    double seconds;
     const char *png, *pgm, *load, *save, *wav, *card, *disk;
-    int      png_cell, png_backlight;
-    bool     trace_pc, host_time, optimisations;
-    double   key_times[32];
+    int png_cell, png_backlight;
+    bool trace_pc, host_time, optimisations;
+    double key_times[32];
     unsigned key_codes[32][4];
-    int      key_lengths[32];
-    int      key_count;
-    double   tap_times[32];
-    int      tap_x[32], tap_y[32];
-    double   tap_hold[32];
-    int      tap_count;
-    double   power_times[8];
-    int      power_count;
-    double   soft_reset_at;
-    double   disk_insert_times[4];
+    int key_lengths[32];
+    int key_count;
+    double tap_times[32];
+    int tap_x[32], tap_y[32];
+    double tap_hold[32];
+    int tap_count;
+    double power_times[8];
+    int power_count;
+    double soft_reset_at;
+    double disk_insert_times[4];
     const char *disk_insert_images[4];
-    int      disk_insert_count;
-    double   disk_eject_times[4];
-    int      disk_eject_count;
-    double   backlight_times[8];
-    int      backlight_count;
-    double   cable_at, net_at, replug_at, realtime;
-    int      tcp_port;
+    int disk_insert_count;
+    double disk_eject_times[4];
+    int disk_eject_count;
+    double backlight_times[8];
+    int backlight_count;
+    double cable_at, net_at, replug_at, realtime;
+    int tcp_port;
     uint32_t watches[MACHINE_WATCH_MAX];
-    int      watch_count;
+    int watch_count;
     net_gateway_options_t net_options;
-    double   send_times[8];
+    double send_times[8];
     const char *send_text[8];
-    int      send_count;
-    double   type_times[16];
+    int send_count;
+    double type_times[16];
     const char *type_strings[16];
-    int      type_count;
+    int type_count;
     uint32_t memory, speed;
     screen_size_t screen;
-    bool     debug_output;
-    bool     seconds_given;
-    int      gdb_port;
+    bool debug_output;
+    bool seconds_given;
+    int gdb_port;
     const char *gdb_process;
     const char *agent_socket;
 } run_t;

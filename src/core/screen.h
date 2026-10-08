@@ -12,7 +12,7 @@ typedef struct {
 } screen_size_t;
 
 extern const screen_size_t SCREEN_PRESETS[];
-extern const int           SCREEN_PRESET_COUNT;
+extern const int SCREEN_PRESET_COUNT;
 
 typedef struct {
     uint8_t *data;
@@ -26,7 +26,7 @@ typedef struct {
 
 typedef struct {
     screen_edit_t *edits;
-    int            count;
+    int count;
 } screen_patch_t;
 
 int  screen_preset_index(screen_size_t size);

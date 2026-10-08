@@ -10,12 +10,12 @@ struct view {
     SDL_Renderer  *renderer;
     SDL_Texture   *texture;
     view_display_t display;
-    int            texture_w, texture_h;
-    int            output_w, output_h;
-    float          left, top, right, bottom;
-    bool           laid_out;
-    SDL_FRect      dest;
-    uint32_t       sharp[SCREEN_MAX_WIDTH * SCREEN_MAX_HEIGHT];
+    int texture_w, texture_h;
+    int output_w, output_h;
+    float left, top, right, bottom;
+    bool laid_out;
+    SDL_FRect dest;
+    uint32_t sharp[SCREEN_MAX_WIDTH * SCREEN_MAX_HEIGHT];
 };
 
 void view_source_size(view_display_t display, int *width, int *height) {

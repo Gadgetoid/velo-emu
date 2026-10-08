@@ -81,21 +81,21 @@ static const uint8_t guest_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 static const uint8_t gateway_mac[6] = { 0x52, 0x55, 0x0A, 0x00, 0x02, 0x02 };
 
 typedef struct {
-    int      fd;
-    uint8_t  buffer[DCCM_PACKET_MAX + 4];
-    size_t   length;
-    int64_t  next_ping_ms;
+    int fd;
+    uint8_t buffer[DCCM_PACKET_MAX + 4];
+    size_t length;
+    int64_t next_ping_ms;
 } desktop_client_t;
 
 typedef struct {
-    int      client, upstream;
-    uint8_t  to_upstream[RELAY_BUFFER], to_client[RELAY_BUFFER];
-    size_t   upstream_length, client_length;
+    int client, upstream;
+    uint8_t to_upstream[RELAY_BUFFER], to_client[RELAY_BUFFER];
+    size_t upstream_length, client_length;
 } rapi_relay_t;
 
 typedef struct {
-    bool     used;
-    int64_t  expire_ms;
+    bool used;
+    int64_t expire_ms;
     SlirpTimerId id;
     void    *cb_opaque;
 } net_gateway_timer_t;
@@ -104,39 +104,39 @@ struct net_gateway {
     net_gateway_log_fn log;
     Slirp   *slirp;
     web_proxy_t *proxy;
-    int      desktop_listener;
-    bool     desktop_aliased;
+    int desktop_listener;
+    bool desktop_aliased;
     desktop_client_t desktop_clients[DESKTOP_CLIENTS];
     struct sockaddr_un desktop_address;
-    bool     desktop_connected;
-    char     rapi_socket[sizeof ((struct sockaddr_un *)0)->sun_path];
-    int      rapi_listener;
+    bool desktop_connected;
+    char rapi_socket[sizeof ((struct sockaddr_un *)0)->sun_path];
+    int rapi_listener;
     rapi_relay_t rapi_relays[RAPI_RELAYS];
-    bool     ppp;
-    char     handshake[64];
-    size_t   handshake_length;
+    bool ppp;
+    char handshake[64];
+    size_t handshake_length;
 
-    uint8_t  frame[FRAME_MAX];
-    size_t   frame_length;
-    bool     in_frame, escaped;
+    uint8_t frame[FRAME_MAX];
+    size_t frame_length;
+    bool in_frame, escaped;
     uint32_t tx_accm;
 
-    bool     lcp_open, lcp_peer_acked, lcp_we_acked;
-    uint8_t  lcp_request_id;
+    bool lcp_open, lcp_peer_acked, lcp_we_acked;
+    uint8_t lcp_request_id;
     uint32_t negotiated_accm;
-    bool     ipcp_open, ipcp_peer_acked, ipcp_we_acked;
-    uint8_t  ipcp_request_id;
-    uint8_t  next_id;
+    bool ipcp_open, ipcp_peer_acked, ipcp_we_acked;
+    uint8_t ipcp_request_id;
+    uint8_t next_id;
 
-    uint8_t  out[OUT_SIZE];
-    size_t   out_head, out_count;
+    uint8_t out[OUT_SIZE];
+    size_t out_head, out_count;
 
     struct pollfd fds[MAX_POLL];
-    int      fd_count;
+    int fd_count;
     net_gateway_timer_t timers[MAX_TIMERS];
-    bool     arp_pending;
-    uint8_t  arp_mac[6];
-    uint8_t  arp_ip[4];
+    bool arp_pending;
+    uint8_t arp_mac[6];
+    uint8_t arp_ip[4];
 };
 
 static void gateway_log(net_gateway_t *gateway, const char *format, ...) {
@@ -222,7 +222,9 @@ static void send_ipcp_request(net_gateway_t *gateway) {
     send_control(gateway, PROTO_IPCP, CONF_REQ, gateway->ipcp_request_id, option, sizeof option);
 }
 
-static void put16(uint8_t *p, uint16_t value) { p[0] = (uint8_t)(value >> 8); p[1] = (uint8_t)value; }
+static void put16(uint8_t *p, uint16_t value) {
+    p[0] = (uint8_t)(value >> 8); p[1] = (uint8_t)value;
+}
 
 static void send_arp(net_gateway_t *gateway, const uint8_t *destination_mac, uint16_t operation,
                      const uint8_t *target_mac, const uint8_t *target_ip) {
@@ -279,14 +281,14 @@ static void lcp_request(net_gateway_t *gateway, uint8_t id, const uint8_t *optio
         const uint8_t *value = options + i + 2;
         bool refuse = false;
         switch (type) {
-            case LCP_MRU: case LCP_PFC: case LCP_ACFC: break;
-            case LCP_ACCM:
-                if (option_length == 6) gateway->negotiated_accm = (uint32_t)value[0] << 24 | value[1] << 16 | value[2] << 8 | value[3];
-                break;
-            case LCP_MAGIC:
-                refuse = option_length == 6 && !value[0] && !value[1] && !value[2] && !value[3];
-                break;
-            default: refuse = true; break;
+        case LCP_MRU: case LCP_PFC: case LCP_ACFC: break;
+        case LCP_ACCM:
+            if (option_length == 6) gateway->negotiated_accm = (uint32_t)value[0] << 24 | value[1] << 16 | value[2] << 8 | value[3];
+            break;
+        case LCP_MAGIC:
+            refuse = option_length == 6 && !value[0] && !value[1] && !value[2] && !value[3];
+            break;
+        default: refuse = true; break;
         }
         if (refuse) {
             memcpy(reject + rejected, options + i, option_length);
@@ -342,50 +344,50 @@ static void control_packet(net_gateway_t *gateway, uint16_t protocol, const uint
     size_t data_length = packet_length - 4;
     bool lcp = protocol == PROTO_LCP;
     switch (code) {
-        case CONF_REQ:
-            if (lcp && gateway->lcp_open) {
-                restart_lcp(gateway);
-                gateway_log(gateway, "ppp: LCP restarted by guest\n");
-            } else if (!lcp && gateway->ipcp_open) {
-                restart_ipcp(gateway);
-                gateway_log(gateway, "ppp: IPCP restarted by guest\n");
+    case CONF_REQ:
+        if (lcp && gateway->lcp_open) {
+            restart_lcp(gateway);
+            gateway_log(gateway, "ppp: LCP restarted by guest\n");
+        } else if (!lcp && gateway->ipcp_open) {
+            restart_ipcp(gateway);
+            gateway_log(gateway, "ppp: IPCP restarted by guest\n");
+        }
+        if (lcp) {
+            lcp_request(gateway, id, data, data_length);
+            if (!gateway->lcp_request_id) send_lcp_request(gateway);
+        } else {
+            ipcp_request(gateway, id, data, data_length);
+            if (!gateway->ipcp_request_id) send_ipcp_request(gateway);
+        }
+        break;
+    case CONF_ACK:
+        if (lcp && id == gateway->lcp_request_id) { gateway->lcp_peer_acked = true; maybe_open_lcp(gateway); }
+        if (!lcp && id == gateway->ipcp_request_id) { gateway->ipcp_peer_acked = true; maybe_open_ipcp(gateway); }
+        break;
+    case CONF_NAK:
+    case CONF_REJ:
+        if (lcp) send_lcp_request(gateway);
+        else send_ipcp_request(gateway);
+        break;
+    case TERM_REQ:
+        send_control(gateway, protocol, TERM_ACK, id, data, data_length);
+        if (lcp) reset_negotiation(gateway);
+        else gateway->ipcp_open = false;
+        gateway_log(gateway, "ppp: %s terminated by guest\n", lcp ? "LCP" : "IPCP");
+        break;
+    case ECHO_REQ:
+        if (lcp && gateway->lcp_open) {
+            uint8_t reply[FRAME_MAX] = { 0 };
+            size_t reply_length = 4;
+            if (data_length > 4 && data_length - 4 + 4 <= sizeof reply) {
+                memcpy(reply + 4, data + 4, data_length - 4);
+                reply_length = data_length;
             }
-            if (lcp) {
-                lcp_request(gateway, id, data, data_length);
-                if (!gateway->lcp_request_id) send_lcp_request(gateway);
-            } else {
-                ipcp_request(gateway, id, data, data_length);
-                if (!gateway->ipcp_request_id) send_ipcp_request(gateway);
-            }
-            break;
-        case CONF_ACK:
-            if (lcp && id == gateway->lcp_request_id) { gateway->lcp_peer_acked = true; maybe_open_lcp(gateway); }
-            if (!lcp && id == gateway->ipcp_request_id) { gateway->ipcp_peer_acked = true; maybe_open_ipcp(gateway); }
-            break;
-        case CONF_NAK:
-        case CONF_REJ:
-            if (lcp) send_lcp_request(gateway);
-            else send_ipcp_request(gateway);
-            break;
-        case TERM_REQ:
-            send_control(gateway, protocol, TERM_ACK, id, data, data_length);
-            if (lcp) reset_negotiation(gateway);
-            else gateway->ipcp_open = false;
-            gateway_log(gateway, "ppp: %s terminated by guest\n", lcp ? "LCP" : "IPCP");
-            break;
-        case ECHO_REQ:
-            if (lcp && gateway->lcp_open) {
-                uint8_t reply[FRAME_MAX] = { 0 };
-                size_t reply_length = 4;
-                if (data_length > 4 && data_length - 4 + 4 <= sizeof reply) {
-                    memcpy(reply + 4, data + 4, data_length - 4);
-                    reply_length = data_length;
-                }
-                send_control(gateway, PROTO_LCP, ECHO_REP, id, reply, reply_length);
-            }
-            break;
-        default:
-            break;
+            send_control(gateway, PROTO_LCP, ECHO_REP, id, reply, reply_length);
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -424,9 +426,9 @@ static void ppp_frame(net_gateway_t *gateway, const uint8_t *frame, size_t lengt
 }
 
 static void adjust_checksum(uint8_t *checksum, const uint8_t *old_address, const uint8_t *new_address) {
-    uint32_t sum = (uint16_t)~(checksum[0] << 8 | checksum[1]);
+    uint32_t sum = (uint16_t) ~(checksum[0] << 8 | checksum[1]);
     for (int i = 0; i < 4; i += 2) {
-        sum += (uint16_t)~(old_address[i] << 8 | old_address[i + 1]);
+        sum += (uint16_t) ~(old_address[i] << 8 | old_address[i + 1]);
         sum += (uint16_t)(new_address[i] << 8 | new_address[i + 1]);
     }
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
@@ -503,9 +505,15 @@ static void slirp_timer_mod(void *timer, int64_t expire_ms, void *opaque) {
     if (timer) ((net_gateway_timer_t *)timer)->expire_ms = expire_ms;
 }
 
-static void slirp_register_socket(slirp_os_socket socket, void *opaque) { (void)socket; (void)opaque; }
-static void slirp_unregister_socket(slirp_os_socket socket, void *opaque) { (void)socket; (void)opaque; }
-static void slirp_notify(void *opaque) { (void)opaque; }
+static void slirp_register_socket(slirp_os_socket socket, void *opaque) {
+    (void)socket; (void)opaque;
+}
+static void slirp_unregister_socket(slirp_os_socket socket, void *opaque) {
+    (void)socket; (void)opaque;
+}
+static void slirp_notify(void *opaque) {
+    (void)opaque;
+}
 
 static const SlirpCb callbacks = {
     .send_packet = slirp_send_packet,
@@ -543,7 +551,9 @@ static void start_proxy(net_gateway_t *gateway, const char *user_agent) {
 #endif
 }
 
-bool net_gateway_available(void) { return true; }
+bool net_gateway_available(void) {
+    return true;
+}
 
 bool net_gateway_socket_path(char *path, size_t size, const char *name) {
     const char *directory = getenv("TMPDIR");

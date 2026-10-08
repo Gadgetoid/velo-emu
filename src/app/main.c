@@ -75,7 +75,7 @@
 
 typedef struct {
     SDL_Keycode key;
-    uint8_t     scancode;
+    uint8_t scancode;
 } key_binding_t;
 
 static const key_binding_t key_bindings[] = {
@@ -102,10 +102,10 @@ static bool verbose = false;
 #define SCROLL_PENDING 8
 
 typedef struct {
-    float    vertical, horizontal;
-    int      pending;
-    uint8_t  scancode;
-    bool     pressed;
+    float vertical, horizontal;
+    int pending;
+    uint8_t scancode;
+    bool pressed;
     uint64_t next_at;
 } scroller_t;
 
@@ -144,7 +144,7 @@ typedef enum { INPUT_PEN, INPUT_KEY } input_kind_t;
 
 typedef struct {
     struct { uint64_t at; input_kind_t kind; bool down; int x, y; uint8_t scancode; } events[INPUT_QUEUE];
-    int      count;
+    int count;
     uint64_t last_at, seen;
 } input_queue_t;
 
@@ -210,7 +210,7 @@ typedef struct {
     SDL_Thread *thread;
     machine_t  *machine;
     input_queue_t *input;
-    bool        paused, stop, restart;
+    bool paused, stop, restart;
     SDL_AtomicInt waiting;
 } runner_t;
 
@@ -356,9 +356,9 @@ typedef enum { PICK_SEND = 1, PICK_FETCH, PICK_SHARED, PICK_SAVE_SNAPSHOT, PICK_
 
 typedef struct {
     pick_kind_t kind;
-    int         count;
-    char        paths[PICK_MAX][1024];
-    char        export_uri[1024];
+    int count;
+    char paths[PICK_MAX][1024];
+    char export_uri[1024];
 } picked_t;
 
 static Uint32 pick_event_type = 0;
@@ -384,7 +384,7 @@ static void pick_done(void *userdata, const char *const *files, int filter) {
 
 typedef struct {
     char paths[PICK_MAX][1024];
-    int  count;
+    int count;
 } dropped_t;
 
 #define BLANK_DISK_BYTES (32 * 1024 * 1024)
@@ -442,7 +442,7 @@ static void log_message(const char *message) {
 #define DEBUG_LOG_MAX (1024 * 1024)
 
 static FILE *debug_log;
-static bool  debug_to_stderr;
+static bool debug_to_stderr;
 
 static void data_folder(char *path, size_t size);
 
@@ -678,11 +678,11 @@ typedef struct {
     uint32_t scale;
     uint32_t connect_at_launch;
     uint32_t system;
-    char     machine[64];
-    char     serial_device[1024];
+    char machine[64];
+    char serial_device[1024];
     uint32_t display;
-    char     user_agent[256];
-    char     shared_folder[1024];
+    char user_agent[256];
+    char shared_folder[1024];
     uint32_t full_brightness;
     uint32_t gdb_server, gdb_port;
     uint32_t network_rapi, rapi_port;
@@ -863,9 +863,9 @@ static void set_title(SDL_Window *window, const char *name, const char *notice, 
 }
 
 typedef struct {
-    char   path[3][1024];
+    char path[3][1024];
     size_t size[3];
-    int    rank[3];
+    int rank[3];
 } rom_set_t;
 
 enum { ROM_UNMARKED, ROM_PATCHED, ROM_PATCHED_115K };
@@ -883,12 +883,12 @@ static void rom_folder(char *path, size_t size) {
 #define ROM_PROBE_CACHE 32
 
 typedef struct {
-    char     path[1024];
-    off_t    size;
-    time_t   modified;
-    int      system;
+    char path[1024];
+    off_t size;
+    time_t modified;
+    int system;
     uint32_t screens;
-    int      rank;
+    int rank;
 } rom_probe_t;
 
 static rom_probe_t rom_probes[ROM_PROBE_CACHE];
@@ -1027,8 +1027,8 @@ static bool no_roms_dialog(void) {
 #ifdef __ANDROID__
 typedef struct {
     SDL_AtomicInt done;
-    int           count;
-    char          uris[PICK_MAX][1024];
+    int count;
+    char uris[PICK_MAX][1024];
 } import_pick_t;
 
 static void import_picked(void *userdata, const char *const *files, int filter) {
@@ -1081,8 +1081,8 @@ static bool first_run_import(void) {
         { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Choose Files" },
     };
     const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, NULL, "Import ROMs and Cards",
-        "Choose your Velo 1 ROMs: the CE 1.0 nk.bin, a merged CE 2.0 image, or both. Card images, such as the Velo Software Library, can be chosen at the same time.",
-        2, buttons, NULL };
+                                        "Choose your Velo 1 ROMs: the CE 1.0 nk.bin, a merged CE 2.0 image, or both. Card images, such as the Velo Software Library, can be chosen at the same time.",
+                                        2, buttons, NULL };
     int chosen = 0;
     if (!SDL_ShowMessageBox(&dialog, &chosen) || chosen != 1) return false;
     int cards;
@@ -1305,8 +1305,8 @@ typedef struct {
     settings_t   *settings;
     serial_mode_t serial_mode;
     const char   *card, *disk, *state_file, *machine;
-    bool          fresh;
-    int           gdb_port;
+    bool fresh;
+    int gdb_port;
     const char   *gdb_process;
     const char   *agent_socket;
 } launch_t;

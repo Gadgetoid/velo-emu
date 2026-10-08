@@ -65,10 +65,10 @@ typedef struct {
 } SG_BUF;
 
 typedef struct {
-    DWORD  sr_start;
-    DWORD  sr_num_sec;
-    DWORD  sr_num_sg;
-    DWORD  sr_status;
+    DWORD sr_start;
+    DWORD sr_num_sec;
+    DWORD sr_num_sg;
+    DWORD sr_status;
     void  *sr_callback;
     SG_BUF sr_sglist[1];
 } SG_REQ;
@@ -90,7 +90,7 @@ typedef BOOL (*virtual_copy_t)(void *destination, void *source, DWORD size, DWOR
 
 typedef struct {
     SG_REQ *request;
-    DWORD   index, offset;
+    DWORD index, offset;
 } cursor_t;
 
 static volatile DWORD *registers;
@@ -181,14 +181,28 @@ DWORD DSK_Init(DWORD context) {
     return 1;
 }
 
-BOOL DSK_Deinit(DWORD handle) { return TRUE; }
-DWORD DSK_Open(DWORD handle, DWORD access, DWORD share) { return handle; }
-BOOL DSK_Close(DWORD handle) { return TRUE; }
-DWORD DSK_Read(DWORD handle, void *data, DWORD size) { return 0; }
-DWORD DSK_Write(DWORD handle, const void *data, DWORD size) { return 0; }
-DWORD DSK_Seek(DWORD handle, long distance, DWORD method) { return 0; }
-void DSK_PowerUp(DWORD handle) {}
-void DSK_PowerDown(DWORD handle) {}
+BOOL DSK_Deinit(DWORD handle) {
+    return TRUE;
+}
+DWORD DSK_Open(DWORD handle, DWORD access, DWORD share) {
+    return handle;
+}
+BOOL DSK_Close(DWORD handle) {
+    return TRUE;
+}
+DWORD DSK_Read(DWORD handle, void *data, DWORD size) {
+    return 0;
+}
+DWORD DSK_Write(DWORD handle, const void *data, DWORD size) {
+    return 0;
+}
+DWORD DSK_Seek(DWORD handle, long distance, DWORD method) {
+    return 0;
+}
+void DSK_PowerUp(DWORD handle) {
+}
+void DSK_PowerDown(DWORD handle) {
+}
 
 static BYTE *cursor_span(cursor_t *cursor, DWORD *available) {
     while (cursor->index < cursor->request->sr_num_sg) {
@@ -222,9 +236,9 @@ static BOOL move_bytes(cursor_t *cursor, DWORD bytes, BOOL to_device) {
 
 static DWORD device_error(DWORD status) {
     switch (status) {
-        case STATUS_RANGE: return ERROR_SECTOR_NOT_FOUND;
-        case STATUS_NO_MEDIA: return ERROR_NOT_READY;
-        case STATUS_READ_ONLY: return ERROR_WRITE_PROTECT;
+    case STATUS_RANGE: return ERROR_SECTOR_NOT_FOUND;
+    case STATUS_NO_MEDIA: return ERROR_NOT_READY;
+    case STATUS_READ_ONLY: return ERROR_WRITE_PROTECT;
     }
     return ERROR_GEN_FAILURE;
 }
@@ -254,28 +268,28 @@ BOOL DSK_IOControl(DWORD handle, DWORD code, BYTE *in, DWORD in_size, BYTE *out,
         return FALSE;
     }
     switch (code) {
-        case DISK_IOCTL_GETINFO:
-            describe();
-            *(DISK_INFO *)in = info;
-            return TRUE;
-        case DISK_IOCTL_SETINFO:
-            return TRUE;
-        case DISK_IOCTL_READ:
-        case DISK_IOCTL_WRITE: {
-            SG_REQ *request = (SG_REQ *)in;
-            EnterCriticalSection(&lock);
-            DWORD error = transfer(request, code == DISK_IOCTL_WRITE);
-            LeaveCriticalSection(&lock);
-            request->sr_status = error;
-            if (error != ERROR_SUCCESS) {
-                SetLastError(error);
-                return FALSE;
-            }
-            if (returned) *returned = request->sr_num_sec * VDISK_SECTOR;
-            return TRUE;
+    case DISK_IOCTL_GETINFO:
+        describe();
+        *(DISK_INFO *)in = info;
+        return TRUE;
+    case DISK_IOCTL_SETINFO:
+        return TRUE;
+    case DISK_IOCTL_READ:
+    case DISK_IOCTL_WRITE: {
+        SG_REQ *request = (SG_REQ *)in;
+        EnterCriticalSection(&lock);
+        DWORD error = transfer(request, code == DISK_IOCTL_WRITE);
+        LeaveCriticalSection(&lock);
+        request->sr_status = error;
+        if (error != ERROR_SUCCESS) {
+            SetLastError(error);
+            return FALSE;
         }
-        case DISK_IOCTL_FORMAT_MEDIA:
-            return TRUE;
+        if (returned) *returned = request->sr_num_sec * VDISK_SECTOR;
+        return TRUE;
+    }
+    case DISK_IOCTL_FORMAT_MEDIA:
+        return TRUE;
     }
     SetLastError(ERROR_INVALID_PARAMETER);
     return FALSE;

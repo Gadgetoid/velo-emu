@@ -19,22 +19,22 @@
 typedef enum { JOB_SEND, JOB_FETCH, JOB_SYNC, JOB_PROXY, JOB_BAUD, JOB_LOAD } job_kind_t;
 
 struct desktop {
-    char            socket_path[PATH_SIZE];
-    char            manifest_path[PATH_SIZE];
+    char socket_path[PATH_SIZE];
+    char manifest_path[PATH_SIZE];
     pthread_mutex_t lock;
-    bool            busy, status_changed, reconnect;
-    unsigned        baud;
-    char            status[256];
-    job_kind_t      kind;
+    bool busy, status_changed, reconnect;
+    unsigned baud;
+    char status[256];
+    job_kind_t kind;
     char          **files;
-    size_t          file_count;
-    char            folder[PATH_SIZE];
+    size_t file_count;
+    char folder[PATH_SIZE];
 };
 
 typedef struct {
     desktop_t  *desktop;
     const char *name;
-    size_t      index, count;
+    size_t index, count;
 } progress_t;
 
 static void set_status(desktop_t *desktop, const char *format, ...) {
