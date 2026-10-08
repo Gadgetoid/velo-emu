@@ -49,6 +49,19 @@ PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
 ./headless "$ROM" --seconds=20 --load="$OUT/desktop.state" --gdb="$PORT" > "$OUT/gdb.log" 2>&1 &
 if python3 tests/gdb_client.py "$PORT" > "$OUT/gdb_client.log" 2>&1; then echo "ok   gdb_stub"; else echo "FAIL gdb_stub"; cat "$OUT/gdb_client.log" "$OUT/gdb.log"; exit 1; fi
 wait
+APP_DATA="$OUT/app"
+rm -rf "$APP_DATA"
+mkdir -p "$APP_DATA"
+cp "$OUT/desktop.state" "$APP_DATA/app.state"
+PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+XDG_DATA_HOME="$APP_DATA" XDG_CONFIG_HOME="$APP_DATA" SDL_VIDEO_DRIVER=dummy SDL_RENDER_DRIVER=software SDL_AUDIO_DRIVER=dummy \
+    ./velo "$ROM" --state="$APP_DATA/app.state" --gdb="$PORT" --serial=pty > "$OUT/app.log" 2>&1 &
+APP=$!
+if python3 tests/gdb_client.py "$PORT" > "$OUT/app_gdb_client.log" 2>&1; then echo "ok   app_gdb_stub"; else echo "FAIL app_gdb_stub"; cat "$OUT/app_gdb_client.log" "$OUT/app.log"; kill $APP; exit 1; fi
+kill -TERM $APP 2>/dev/null || true
+if wait $APP; then echo "ok   app_quit"; else echo "FAIL app_quit"; cat "$OUT/app.log"; exit 1; fi
+if grep -q "^serial: COM1 on /dev/" "$OUT/app.log"; then echo "ok   app_serial_pty"; else echo "FAIL app_serial_pty"; cat "$OUT/app.log"; exit 1; fi
+if ! cmp -s "$OUT/desktop.state" "$APP_DATA/app.state" && ./velo-state "$APP_DATA/app.state" ls >/dev/null; then echo "ok   app_state_saved"; else echo "FAIL app_state_saved"; exit 1; fi
 if pkg-config --exists slirp; then
     ./headless "$ROM" --seconds=10 --load="$OUT/desktop.state" --net=1 > "$OUT/ppp.log" 2>&1
     if grep -q "IPCP up" "$OUT/ppp.log"; then echo "ok   ppp_online"; else echo "FAIL ppp_online"; exit 1; fi

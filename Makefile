@@ -158,5 +158,5 @@ format:
 format-check:
 	$(UNCRUSTIFY) -c .uncrustify.cfg --check $(C_STYLE_SOURCES)
 
-test: $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE)
+test: $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE)
 	sh tests/boot.sh $(ROM) $(CE2_ROM)
