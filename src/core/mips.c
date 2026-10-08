@@ -1016,10 +1016,19 @@ static void run_fast(mips_cpu_t *cpu, uint64_t until_cycle) {
     sync_out(cpu, &flow, current, (flow.flags & FLAG_WAS_DELAY) != 0, budget);
 }
 
-void mips_run(mips_cpu_t *cpu, uint64_t until_cycle) {
-    cpu->yield = false;
+static void build_watch_filter(mips_cpu_t *cpu) {
     memset(cpu->watch_filter, 0, sizeof cpu->watch_filter);
     for (int w = 0; w < cpu->watch_count; w++) cpu->watch_filter[watch_bit(cpu->watch[w]) >> 5] |= 1u << (watch_bit(cpu->watch[w]) & 31);
+}
+
+void mips_watches_changed(mips_cpu_t *cpu) {
+    build_watch_filter(cpu);
+    mips_flush_translations(cpu);
+}
+
+void mips_run(mips_cpu_t *cpu, uint64_t until_cycle) {
+    cpu->yield = false;
+    build_watch_filter(cpu);
     if (cpu->debug) run_checked(cpu, until_cycle);
     else run_fast(cpu, until_cycle);
 }

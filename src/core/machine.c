@@ -1332,6 +1332,7 @@ static bool screen_for_hash(const machine_t *m, uint64_t hash, screen_size_t *si
 }
 
 static void on_watch(void *context, uint32_t pc);
+static void set_return_watch(machine_t *m, uint32_t previous, uint32_t next);
 
 #define MAILBOX_FAULT_TRIES 4
 
@@ -1492,6 +1493,7 @@ machine_t *machine_create(const uint8_t *rom, size_t rom_size, char *error, size
 void machine_destroy(machine_t *m) {
     if (!m) return;
     mailbox_clear(&m->mailbox);
+    optimiser_set_verify(&m->optimiser, false, NULL, NULL);
     free(m->card_dram);
     if (m->card_socket.image) fclose(m->card_socket.image);
     if (m->pending_card) fclose(m->pending_card);
@@ -2239,6 +2241,10 @@ static void reset_machine(machine_t *m, bool keep_ram) {
     memcpy(m->cpu.watch, watch, sizeof watch);
     m->cpu.watch_count = watch_count;
     m->cpu.on_watch = on_watch;
+    if (optimiser_return_watch(&m->optimiser)) {
+        set_return_watch(m, optimiser_return_watch(&m->optimiser), 0);
+        m->optimiser.verify->pending = false;
+    }
     m->cpu.debug = cpu_debug;
     m->cpu.on_break = on_break;
     m->mailbox = mailbox;
@@ -2292,6 +2298,17 @@ void machine_set_optimisations(machine_t *m, bool optimisations) {
 }
 bool machine_optimisations(machine_t *m) {
     return m->optimisations;
+}
+static void optimiser_log(void *context, const char *message) {
+    machine_logf(context, "%s", message);
+}
+bool machine_set_verify_optimisations(machine_t *m, bool verify) {
+    set_return_watch(m, optimiser_return_watch(&m->optimiser), 0);
+    return optimiser_set_verify(&m->optimiser, verify, optimiser_log, m);
+}
+void machine_optimiser_verified(machine_t *m, uint32_t *checked, uint32_t *differed) {
+    *checked = m->optimiser.verify ? m->optimiser.verify->checked : 0;
+    *differed = m->optimiser.verify ? m->optimiser.verify->differed : 0;
 }
 
 size_t machine_audio(machine_t *m, int16_t *samples, size_t max, uint32_t *rate) {
@@ -2508,11 +2525,26 @@ static uint8_t *optimiser_map(void *context, uint32_t va, bool write) {
     return NULL;
 }
 
+static void set_return_watch(machine_t *m, uint32_t previous, uint32_t next) {
+    for (int w = m->cpu.watch_count - 1; previous && w >= 0; w--) {
+        if (m->cpu.watch[w] != previous) continue;
+        memmove(&m->cpu.watch[w], &m->cpu.watch[w + 1], (size_t)(m->cpu.watch_count - w - 1) * sizeof m->cpu.watch[0]);
+        m->cpu.watch_count--;
+        break;
+    }
+    if (next && m->cpu.watch_count < MIPS_WATCH_MAX) m->cpu.watch[m->cpu.watch_count++] = next;
+    mips_watches_changed(&m->cpu);
+}
+
 static void on_watch(void *context, uint32_t pc) {
     machine_t *m = context;
     uint32_t slot_pc = pc < MIPS_SLOT_SIZE * 64 ? pc & (MIPS_SLOT_SIZE - 1) : pc;
     if (optimiser_hooked(&m->optimiser, slot_pc)) {
-        if (m->optimisations) optimiser_call(&m->optimiser, &m->cpu, slot_pc);
+        if (!m->optimisations) return;
+        uint32_t watching = optimiser_return_watch(&m->optimiser);
+        optimiser_call(&m->optimiser, &m->cpu, slot_pc);
+        uint32_t return_watch = optimiser_return_watch(&m->optimiser);
+        if (return_watch != watching) set_return_watch(m, watching, return_watch);
         return;
     }
     if (pc == m->set_time_va) apply_host_time(m);

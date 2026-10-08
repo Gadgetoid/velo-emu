@@ -5,7 +5,7 @@
 #include "native/lz.h"
 #include "native/lzw.h"
 
-#define PAGE         0x400u
+#define PAGE         NATIVE_PAGE
 #define CODEC_MAX    0x2000u
 #define CE2_DATA_MAX 0x4000u
 #define FILL_MAX     0x4000000u
@@ -21,6 +21,28 @@
 #define EXPORT_FUNCTION_TABLE 28u
 #define EXPORT_NAME_TABLE 32u
 #define EXPORT_ORDINAL_TABLE 36u
+#define BLT_DESTINATION  4u
+#define BLT_SOURCE       8u
+#define BLT_MASK         12u
+#define BLT_BRUSH        16u
+#define BLT_DESTINATION_RECT 20u
+#define BLT_SOURCE_RECT  24u
+#define BLT_CLIP_RECT    28u
+#define BLT_FLAGS        36u
+#define BLT_ROP4         40u
+#define BLT_X_POSITIVE   52u
+#define BLT_Y_POSITIVE   56u
+#define BLT_LOOKUP       60u
+#define BLT_CONVERT      64u
+#define BLT_PARMS_SIZE   68u
+#define SURFACE_BUFFER   4u
+#define SURFACE_STRIDE   8u
+#define SURFACE_FORMAT   12u
+#define SURFACE_WIDTH    24u
+#define SURFACE_HEIGHT   28u
+#define SURFACE_SIZE     32u
+#define BLT_ROW_MAX      0x2000u
+#define BLT_LOOKUP_MAX   256u
 
 bool native_read(const native_memory_t *memory, uint32_t va, uint8_t *data, uint32_t length) {
     while (length) {
@@ -363,4 +385,166 @@ bool native_range_lookup16(const native_memory_t *memory, const uint32_t *argume
     memcpy(masked, arguments, sizeof masked);
     masked[2] &= 0xFFFFu;
     return native_range_lookup(memory, masked, result);
+}
+
+static uint32_t word_at(const uint8_t *bytes, uint32_t offset) {
+    return (uint32_t)bytes[offset] | (uint32_t)bytes[offset + 1] << 8 | (uint32_t)bytes[offset + 2] << 16 | (uint32_t)bytes[offset + 3] << 24;
+}
+
+typedef struct {
+    uint32_t buffer;
+    int32_t stride;
+    uint32_t bits;
+    int32_t width, height;
+} surface_t;
+
+typedef struct {
+    int32_t left, top, right, bottom;
+} rect_t;
+
+static bool read_surface(const native_memory_t *memory, uint32_t va, surface_t *surface) {
+    static const uint32_t format_bits[] = { 1, 2, 4, 8, 16 };
+    uint8_t bytes[SURFACE_SIZE];
+    if (!va || !native_read(memory, va, bytes, sizeof bytes)) return false;
+    uint32_t format = word_at(bytes, SURFACE_FORMAT);
+    if (format >= sizeof format_bits / sizeof format_bits[0]) return false;
+    *surface = (surface_t){ word_at(bytes, SURFACE_BUFFER), (int32_t)word_at(bytes, SURFACE_STRIDE), format_bits[format], (int32_t)word_at(bytes, SURFACE_WIDTH), (int32_t)word_at(bytes, SURFACE_HEIGHT) };
+    return true;
+}
+
+static bool read_rect(const native_memory_t *memory, uint32_t va, rect_t *rect) {
+    uint8_t bytes[16];
+    if (!va || !native_read(memory, va, bytes, sizeof bytes)) return false;
+    *rect = (rect_t){ (int32_t)word_at(bytes, 0), (int32_t)word_at(bytes, 4), (int32_t)word_at(bytes, 8), (int32_t)word_at(bytes, 12) };
+    return true;
+}
+
+static bool rect_inside(const rect_t *rect, int32_t width, int32_t height) {
+    return rect->left >= 0 && rect->top >= 0 && rect->left < rect->right && rect->top < rect->bottom && rect->right <= width && rect->bottom <= height;
+}
+
+static uint32_t row_address(const surface_t *surface, int32_t y, int32_t left) {
+    return surface->buffer + (uint32_t)(y * surface->stride) + (uint32_t)left * surface->bits / 8;
+}
+
+static uint32_t row_bytes(const surface_t *surface, int32_t left, int32_t right) {
+    return ((uint32_t)right * surface->bits + 7) / 8 - (uint32_t)left * surface->bits / 8;
+}
+
+static uint32_t get_pixel(const uint8_t *row, uint32_t x, uint32_t bits) {
+    if (bits == 16) return (uint32_t)row[x * 2] | (uint32_t)row[x * 2 + 1] << 8;
+    if (bits == 8) return row[x];
+    uint32_t bit = x * bits;
+    return (uint32_t)(row[bit / 8] >> (8 - bits - bit % 8)) & ((1u << bits) - 1);
+}
+
+static void set_pixel(uint8_t *row, uint32_t x, uint32_t bits, uint32_t value) {
+    if (bits == 16) {
+        row[x * 2] = (uint8_t)value;
+        row[x * 2 + 1] = (uint8_t)(value >> 8);
+        return;
+    }
+    if (bits == 8) {
+        row[x] = (uint8_t)value;
+        return;
+    }
+    uint32_t bit = x * bits, shift = 8 - bits - bit % 8, mask = ((1u << bits) - 1) << shift;
+    row[bit / 8] = (uint8_t)((row[bit / 8] & ~mask) | ((value << shift) & mask));
+}
+
+static uint32_t apply_rop3(uint32_t rop3, uint32_t source, uint32_t destination) {
+    uint32_t value = 0;
+    if (rop3 & 1) value |= ~source & ~destination;
+    if (rop3 & 2) value |= ~source & destination;
+    if (rop3 & 4) value |= source & ~destination;
+    if (rop3 & 8) value |= source & destination;
+    return value;
+}
+
+bool native_gpe_blt(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    static uint8_t source_row[BLT_ROW_MAX], destination_row[BLT_ROW_MAX];
+    uint8_t parms[BLT_PARMS_SIZE];
+    if (!native_read(memory, arguments[1], parms, sizeof parms)) return false;
+    uint32_t rop4 = word_at(parms, BLT_ROP4), rop3 = rop4 & 0xFF, lookup_va = word_at(parms, BLT_LOOKUP);
+    if ((rop4 >> 8 & 0xFF) != rop3 || rop4 >> 16 || (rop3 >> 4) != (rop3 & 0xF) || (rop3 >> 2 & 3) == (rop3 & 3)) return false;
+    if (word_at(parms, BLT_MASK) || word_at(parms, BLT_BRUSH) || word_at(parms, BLT_FLAGS) || word_at(parms, BLT_CONVERT)) return false;
+    surface_t destination, source;
+    rect_t destination_rect, source_rect, clip_rect;
+    if (!read_surface(memory, word_at(parms, BLT_DESTINATION), &destination) || !read_surface(memory, word_at(parms, BLT_SOURCE), &source)) return false;
+    if (!read_rect(memory, word_at(parms, BLT_DESTINATION_RECT), &destination_rect) || !read_rect(memory, word_at(parms, BLT_SOURCE_RECT), &source_rect)) return false;
+    if (word_at(parms, BLT_CLIP_RECT)) {
+        if (!read_rect(memory, word_at(parms, BLT_CLIP_RECT), &clip_rect)) return false;
+        if (destination_rect.left < clip_rect.left || destination_rect.top < clip_rect.top || destination_rect.right > clip_rect.right || destination_rect.bottom > clip_rect.bottom) return false;
+    }
+    int32_t width = destination_rect.right - destination_rect.left, height = destination_rect.bottom - destination_rect.top;
+    if (!rect_inside(&destination_rect, destination.width, destination.height) || !rect_inside(&source_rect, source.width, source.height)) return false;
+    if (source_rect.right - source_rect.left != width || source_rect.bottom - source_rect.top != height) return false;
+    uint32_t destination_span = row_bytes(&destination, destination_rect.left, destination_rect.right), source_span = row_bytes(&source, source_rect.left, source_rect.right);
+    if (destination_span > BLT_ROW_MAX || source_span > BLT_ROW_MAX) return false;
+    uint32_t lookup[BLT_LOOKUP_MAX], destination_mask = (1u << destination.bits) - 1;
+    if (lookup_va) {
+        uint8_t bytes[BLT_LOOKUP_MAX * 4];
+        uint32_t entries = 1u << source.bits;
+        if (source.bits > 8 || !native_read(memory, lookup_va, bytes, entries * 4)) return false;
+        for (uint32_t i = 0; i < entries; i++) {
+            lookup[i] = word_at(bytes, i * 4);
+            if (lookup[i] > destination_mask) return false;
+        }
+    } else if (source.bits != destination.bits) {
+        return false;
+    }
+    for (int32_t y = 0; y < height; y++) {
+        if (!guest_writable(memory, row_address(&destination, destination_rect.top + y, destination_rect.left), destination_span)) return false;
+    }
+    bool downwards = word_at(parms, BLT_Y_POSITIVE) != 0;
+    uint32_t destination_first = (uint32_t)destination_rect.left * destination.bits % 8 / destination.bits, source_first = (uint32_t)source_rect.left * source.bits % 8 / source.bits;
+    for (int32_t step = 0; step < height; step++) {
+        int32_t y = downwards ? step : height - 1 - step;
+        uint32_t source_va = row_address(&source, source_rect.top + y, source_rect.left), destination_va = row_address(&destination, destination_rect.top + y, destination_rect.left);
+        if (!native_read(memory, source_va, source_row, source_span) || !native_read(memory, destination_va, destination_row, destination_span)) return false;
+        for (int32_t x = 0; x < width; x++) {
+            uint32_t pixel = get_pixel(source_row, source_first + (uint32_t)x, source.bits);
+            if (lookup_va) pixel = lookup[pixel];
+            uint32_t current = get_pixel(destination_row, destination_first + (uint32_t)x, destination.bits);
+            set_pixel(destination_row, destination_first + (uint32_t)x, destination.bits, apply_rop3(rop3, pixel, current) & destination_mask);
+        }
+        guest_write(memory, destination_va, destination_row, destination_span);
+    }
+    result->value = 0;
+    return true;
+}
+
+uint8_t *native_shadow_map(void *context, uint32_t va, bool write) {
+    native_shadow_t *shadow = context;
+    uint32_t page = va & ~(PAGE - 1);
+    for (int i = 0; i < shadow->count; i++) {
+        if (shadow->pages[i].va == page) return shadow->pages[i].data + (va - page);
+    }
+    if (!write) return shadow->real.map(shadow->real.context, va, false);
+    uint8_t *real = shadow->real.map(shadow->real.context, page, true);
+    if (!real || shadow->count == shadow->capacity) return NULL;
+    native_shadow_page_t *copy = &shadow->pages[shadow->count++];
+    copy->va = page;
+    memcpy(copy->data, real, PAGE);
+    memcpy(copy->original, real, PAGE);
+    return copy->data + (va - page);
+}
+
+bool native_shadow_differs(const native_shadow_t *shadow, uint32_t *va) {
+    for (int i = 0; i < shadow->count; i++) {
+        const native_shadow_page_t *page = &shadow->pages[i];
+        const uint8_t *real = shadow->real.map(shadow->real.context, page->va, false);
+        uint32_t first = PAGE, last = 0;
+        for (uint32_t offset = 0; offset < PAGE; offset++) {
+            if (page->data[offset] == page->original[offset]) continue;
+            if (first == PAGE) first = offset;
+            last = offset;
+        }
+        for (uint32_t offset = first; offset <= last && first < PAGE; offset++) {
+            if (real && real[offset] == page->data[offset]) continue;
+            *va = page->va + offset;
+            return true;
+        }
+    }
+    return false;
 }

@@ -224,6 +224,8 @@ if [ -f "$CE2_ROM" ]; then
     if ./headless "$ROM" --debug-output --seconds=3 2>&1 | grep -q "^debug: Configuring 480x240, 4bpp display"; then echo "ok   ce2_debug_output"; else echo "FAIL ce2_debug_output"; exit 1; fi
     check ce2_desktop aa64f3fba1031ff617de1871716776d2323a5a189c896269be719d5317119e5e --seconds=20
     check ce2_desktop_optimised aa64f3fba1031ff617de1871716776d2323a5a189c896269be719d5317119e5e --optimisations --seconds=20
+    ./headless "$ROM" --verify-optimisations --seconds=30 --tap=21:15:227:0.1 --tap=24:15:227:0.1 > "$OUT/ce2_verify.log" 2>&1
+    if grep -q "^optimiser: [1-9][0-9]* calls checked, 0 differed$" "$OUT/ce2_verify.log"; then echo "ok   ce2_verify"; else echo "FAIL ce2_verify"; grep "^optimiser" "$OUT/ce2_verify.log" | tail -5; exit 1; fi
     ./headless "$ROM" --seconds=20 --save="$OUT/ce2_desktop.state" 2>/dev/null
     if [ "$(./velo-state "$OUT/ce2_desktop.state" reg get HKLM/init Launch50)" = 'string "explorer.exe"' ] &&
        ./velo-state "$OUT/ce2_desktop.state" ls | grep -q "36  Shortcut to Templates.lnk"; then echo "ok   ce2_state_reader"; else echo "FAIL ce2_state_reader"; exit 1; fi

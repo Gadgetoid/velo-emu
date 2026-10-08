@@ -1,5 +1,8 @@
 #include "core/optimiser.h"
 
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define AREA_MASK       0x1FFFFFFFu
@@ -63,6 +66,11 @@ static const uint32_t RANGE_CE2_CODE[] = {
     0x04600019u, 0x00001025u, 0x00C03825u, 0x24090003u, 0x00432821u, 0x00052843u,
 };
 
+static const uint32_t GPE_BLT_CODE[] = {
+    0x27BDFD70u, 0xAFB20030u, 0x00A09025u, 0xAFBF004Cu, 0xAFBE0048u, 0xAFB70044u,
+    0xAFB60040u, 0xAFB5003Cu, 0xAFB40038u, 0xAFB30034u, 0xAFB1002Cu, 0xAFB00028u,
+};
+
 typedef struct {
     uint32_t va;
     const uint32_t *code;
@@ -95,6 +103,8 @@ static const hook_spec_t CE2_HOOKS[] = {
     { 0x90057298u, CODE(WIDEN_CE2_CODE), native_widen, true, 0, false },
     { 0x9003C360u, CODE(MOVE_CE2_CODE), native_memmove, true, 0, false },
     { 0x01ED4D9Cu, CODE(RANGE_CE2_CODE), native_range_lookup16, false, 0, false },
+    { 0x01FD3D7Cu, CODE(GPE_BLT_CODE), native_gpe_blt, false, 0, false },
+    { 0x0197607Cu, CODE(GPE_BLT_CODE), native_gpe_blt, false, 0, false },
 };
 
 static const profile_t PROFILES[] = {
@@ -123,6 +133,7 @@ void optimiser_init(optimiser_t *optimiser, optimiser_rom_fn rom, void *rom_cont
 }
 
 bool optimiser_hooked(const optimiser_t *optimiser, uint32_t pc) {
+    if (optimiser->verify && optimiser->verify->pending && optimiser->verify->return_pc == pc) return true;
     for (int i = 0; i < optimiser->hook_count; i++) {
         if (optimiser->hooks[i].va == pc) return true;
     }
@@ -146,7 +157,54 @@ static bool mips_arguments(const optimiser_t *optimiser, const mips_cpu_t *cpu, 
     return true;
 }
 
+static uint32_t slot_relative(uint32_t va) {
+    return va < MIPS_SLOT_SIZE * 64 ? va & (MIPS_SLOT_SIZE - 1) : va;
+}
+
+static void verify_log(optimiser_verify_t *verify, const char *format, ...) {
+    char message[256];
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(message, sizeof message, format, arguments);
+    va_end(arguments);
+    if (verify->log) verify->log(verify->log_context, message);
+}
+
+static void verify_start(optimiser_t *optimiser, const optimiser_hook_t *hook, const mips_cpu_t *cpu, const uint32_t *arguments) {
+    optimiser_verify_t *verify = optimiser->verify;
+    verify->shadow = (native_shadow_t){ optimiser->memory, verify->pages, 0, OPTIMISER_SHADOW_PAGES };
+    native_memory_t shadow_memory = { &verify->shadow, native_shadow_map };
+    native_result_t result = { 0, false };
+    if (!hook->run(&shadow_memory, arguments, &result) || result.call_next) return;
+    verify->pending = true;
+    verify->hook_va = hook->va;
+    verify->return_pc = slot_relative(cpu->gpr[31]);
+    verify->stack = cpu->gpr[29];
+    verify->value = result.value;
+    verify->check_value = !hook->no_result;
+    memcpy(verify->arguments, arguments, sizeof verify->arguments);
+}
+
+static void verify_finish(optimiser_verify_t *verify, const mips_cpu_t *cpu) {
+    uint32_t va;
+    verify->pending = false;
+    verify->checked++;
+    const uint32_t *arguments = verify->arguments;
+    if (verify->check_value && cpu->gpr[2] != verify->value) {
+        verify->differed++;
+        verify_log(verify, "optimiser: %08X(%08X %08X %08X %08X %08X %08X) returned %08X, native %08X\n", verify->hook_va, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], cpu->gpr[2], verify->value);
+    } else if (native_shadow_differs(&verify->shadow, &va)) {
+        verify->differed++;
+        verify_log(verify, "optimiser: %08X(%08X %08X %08X %08X %08X %08X) memory differs at %08X\n", verify->hook_va, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], va);
+    }
+}
+
 bool optimiser_call(optimiser_t *optimiser, mips_cpu_t *cpu, uint32_t pc) {
+    optimiser_verify_t *verify = optimiser->verify;
+    if (verify && verify->pending && verify->return_pc == pc) {
+        if (verify->stack == cpu->gpr[29]) verify_finish(verify, cpu);
+        if (!optimiser_hooked(optimiser, pc)) return false;
+    }
     for (int i = 0; i < optimiser->hook_count; i++) {
         optimiser_hook_t *hook = &optimiser->hooks[i];
         if (hook->va != pc) continue;
@@ -158,7 +216,12 @@ bool optimiser_call(optimiser_t *optimiser, mips_cpu_t *cpu, uint32_t pc) {
         }
         uint32_t arguments[NATIVE_ARGUMENTS];
         native_result_t result = { 0, false };
-        if (hook->state != OPTIMISER_MATCHED || !mips_arguments(optimiser, cpu, arguments) || !hook->run(&optimiser->memory, arguments, &result)) return false;
+        if (hook->state != OPTIMISER_MATCHED || !mips_arguments(optimiser, cpu, arguments)) return false;
+        if (verify) {
+            if (!verify->pending) verify_start(optimiser, hook, cpu, arguments);
+            return false;
+        }
+        if (!hook->run(&optimiser->memory, arguments, &result)) return false;
         if (result.call_next && !hook->next) return false;
         if (result.call_next) {
             cpu->gpr[4] = arguments[0];
@@ -172,4 +235,19 @@ bool optimiser_call(optimiser_t *optimiser, mips_cpu_t *cpu, uint32_t pc) {
         return true;
     }
     return false;
+}
+
+bool optimiser_set_verify(optimiser_t *optimiser, bool verify, optimiser_log_fn log, void *log_context) {
+    free(optimiser->verify);
+    optimiser->verify = NULL;
+    if (!verify) return true;
+    optimiser->verify = calloc(1, sizeof *optimiser->verify);
+    if (!optimiser->verify) return false;
+    optimiser->verify->log = log;
+    optimiser->verify->log_context = log_context;
+    return true;
+}
+
+uint32_t optimiser_return_watch(const optimiser_t *optimiser) {
+    return optimiser->verify && optimiser->verify->pending ? optimiser->verify->return_pc : 0;
 }
