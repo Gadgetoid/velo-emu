@@ -9,6 +9,10 @@
 #define DIALOG_MEMORY_COUNT 5
 
 extern const uint32_t DIALOG_MEMORY_SIZES[DIALOG_MEMORY_COUNT];
+extern const char *const DIALOG_MEMORY_LABELS[DIALOG_MEMORY_COUNT];
+extern const char *const DIALOG_NEW_MACHINE_MESSAGE;
+extern const char *const DIALOG_MANAGE_MESSAGE;
+extern const char *const DIALOG_CLOCK_LABEL;
 
 typedef struct {
     char path[1024];
@@ -25,6 +29,9 @@ typedef struct {
     uint32_t memory;
     bool host_time;
 } dialog_machine_t;
+
+const char *dialog_screen_label(int preset);
+bool        dialog_rom_allows_screen(const dialog_rom_t *rom, int preset);
 
 typedef enum { DIALOG_MANAGE_CLOSE, DIALOG_MANAGE_RESET, DIALOG_MANAGE_DELETE } dialog_manage_t;
 

@@ -1190,11 +1190,6 @@ static int run_form(form_t *form) {
 
 #define NEW_CREATE 1
 
-static const char *SCREEN_LABELS[] = { "480 x 240 (original)", "640 x 240", "640 x 480", "800 x 600" };
-static const char *MEMORY_LABELS[DIALOG_MEMORY_COUNT] = {
-    "4 MB (original)", "8 MB", "16 MB", "20 MB (4 MB + 16 MB DRAM card)", "32 MB (16 MB + 16 MB DRAM card)",
-};
-
 typedef struct {
     dialog_rom_t roms[FORM_OPTIONS - 1];
     int count;
@@ -1263,7 +1258,7 @@ bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_co
     state.probe = probe;
     state.count = rom_count < FORM_OPTIONS - 1 ? rom_count : FORM_OPTIONS - 1;
     memcpy(state.roms, roms, (size_t)state.count * sizeof roms[0]);
-    form_t form = { "New Machine", "The screen, memory and clock settings are fixed for the life of the machine. The ROM decides which screen sizes are available.", { { 0 } }, 0, 0, -1, 0, 0, NEW_CREATE, 0, 0, 0, 0, rom_changed, &state };
+    form_t form = { "New Machine", DIALOG_NEW_MACHINE_MESSAGE, { { 0 } }, 0, 0, -1, 0, 0, NEW_CREATE, 0, 0, 0, 0, rom_changed, &state };
     int name = add_widget(&form, WIDGET_TEXT, "Name:");
     form.widgets[name].value = result->name;
     form.widgets[name].value_size = sizeof result->name;
@@ -1278,17 +1273,17 @@ bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_co
     rom->count = state.count + 1;
     state.screen = add_widget(&form, WIDGET_CHOICE, "Screen:");
     widget_t *screen = &form.widgets[state.screen];
-    for (int i = 0; i < SCREEN_PRESET_COUNT && i < (int)(sizeof SCREEN_LABELS / sizeof SCREEN_LABELS[0]); i++) {
-        screen->options[screen->count++] = SCREEN_LABELS[i];
+    for (int i = 0; i < SCREEN_PRESET_COUNT && dialog_screen_label(i); i++) {
+        screen->options[screen->count++] = dialog_screen_label(i);
         if (SCREEN_PRESETS[i].width == result->screen.width && SCREEN_PRESETS[i].height == result->screen.height) screen->selected = i;
     }
     int memory = add_widget(&form, WIDGET_CHOICE, "Memory:");
     for (int i = 0; i < DIALOG_MEMORY_COUNT; i++) {
-        form.widgets[memory].options[form.widgets[memory].count++] = MEMORY_LABELS[i];
+        form.widgets[memory].options[form.widgets[memory].count++] = DIALOG_MEMORY_LABELS[i];
         if (DIALOG_MEMORY_SIZES[i] == result->memory) form.widgets[memory].selected = i;
     }
     int clock = add_widget(&form, WIDGET_CHECK, NULL);
-    form.widgets[clock].text = "Set the clock from this computer at the first boot";
+    form.widgets[clock].text = DIALOG_CLOCK_LABEL;
     form.widgets[clock].checked = result->host_time;
     int cancel = add_widget(&form, WIDGET_BUTTON, NULL);
     form.widgets[cancel].text = "Cancel";
@@ -1309,7 +1304,7 @@ bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_co
 dialog_manage_t dialog_manage_machines(SDL_Window *window, const char *const *names, int count, int current, int *chosen) {
     (void)window;
     static char titles[FORM_OPTIONS][120];
-    form_t form = { "Manage Machines", "Reset sets a machine back to its factory state. Delete removes it and its saved state. Both put a backup in Snapshots/Backups first. The running machine can be reset but not deleted.", { { 0 } }, 0, 0, -1, 0, 0, DIALOG_MANAGE_CLOSE, 0, 0, 0, 0, NULL, NULL };
+    form_t form = { "Manage Machines", DIALOG_MANAGE_MESSAGE, { { 0 } }, 0, 0, -1, 0, 0, DIALOG_MANAGE_CLOSE, 0, 0, 0, 0, NULL, NULL };
     int list = add_widget(&form, WIDGET_CHOICE, "Machine:");
     for (int i = 0; i < count && i < FORM_OPTIONS; i++) {
         snprintf(titles[i], sizeof titles[i], "%s%s", names[i], i == current ? " (running)" : "");

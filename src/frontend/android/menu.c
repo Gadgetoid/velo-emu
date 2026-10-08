@@ -817,10 +817,6 @@ static tap_t modal_step(const list_t *list, int cancel_tab) {
 
 enum { CHOICE_ROM = 0x1000, CHOICE_MEMORY = 0x2000, CHOICE_SCREEN = 0x3000, CHOICE_CLOCK = 0x4000, CHOICE_MACHINE = 0x5000 };
 
-static bool rom_screen(const dialog_rom_t *rom, int preset) {
-    return rom->screens & (1u << preset);
-}
-
 bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_count, dialog_probe_fn probe, dialog_machine_t *result) {
     (void)window;
     (void)probe;
@@ -830,29 +826,22 @@ bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_co
         if (!strcmp(roms[i].path, result->rom)) rom = i;
     }
     int screen = screen_preset_index(result->screen);
-    if (screen < 0 || !rom_screen(&roms[rom], screen)) screen = 0;
+    if (screen < 0 || !dialog_rom_allows_screen(&roms[rom], screen)) screen = 0;
     uint32_t memory = result->memory;
     bool host_time = result->host_time;
-    static char labels[ROW_MAX][TITLE_MAX];
     list_reset();
     for (;;) {
         list_t list = { { "Cancel", "Create" }, 2, -1, { { 0 } }, 0 };
-        int label = 0;
         add_row(&list, ROW_HEADING, 0, "ROM", false, false);
         for (int i = 0; i < rom_count; i++) add_row(&list, ROW_ITEM, CHOICE_ROM + i, roms[i].label, i == rom, false);
         add_row(&list, ROW_HEADING, 0, "Memory", false, false);
-        for (int i = 0; i < DIALOG_MEMORY_COUNT && label < ROW_MAX; i++) {
-            snprintf(labels[label], TITLE_MAX, "%u MB", (unsigned)DIALOG_MEMORY_SIZES[i]);
-            add_row(&list, ROW_ITEM, CHOICE_MEMORY + i, labels[label++], DIALOG_MEMORY_SIZES[i] == memory, false);
-        }
+        for (int i = 0; i < DIALOG_MEMORY_COUNT; i++) add_row(&list, ROW_ITEM, CHOICE_MEMORY + i, DIALOG_MEMORY_LABELS[i], DIALOG_MEMORY_SIZES[i] == memory, false);
         add_row(&list, ROW_HEADING, 0, "Screen", false, false);
-        for (int i = 0; i < SCREEN_PRESET_COUNT && label < ROW_MAX; i++) {
-            if (!rom_screen(&roms[rom], i)) continue;
-            snprintf(labels[label], TITLE_MAX, "%dx%d", SCREEN_PRESETS[i].width, SCREEN_PRESETS[i].height);
-            add_row(&list, ROW_ITEM, CHOICE_SCREEN + i, labels[label++], i == screen, false);
+        for (int i = 0; i < SCREEN_PRESET_COUNT && dialog_screen_label(i); i++) {
+            if (dialog_rom_allows_screen(&roms[rom], i)) add_row(&list, ROW_ITEM, CHOICE_SCREEN + i, dialog_screen_label(i), i == screen, false);
         }
         add_row(&list, ROW_HEADING, 0, "Clock", false, false);
-        add_row(&list, ROW_ITEM, CHOICE_CLOCK, "Set the clock from this phone", host_time, false);
+        add_row(&list, ROW_ITEM, CHOICE_CLOCK, DIALOG_CLOCK_LABEL, host_time, false);
         tap_t tap = modal_step(&list, 0);
         if (!tap.tapped) continue;
         if (tap.tab == 0) return false;
@@ -866,7 +855,7 @@ bool dialog_new_machine(SDL_Window *window, const dialog_rom_t *roms, int rom_co
         }
         if (tap.tag >= CHOICE_ROM && tap.tag < CHOICE_ROM + rom_count) {
             rom = tap.tag - CHOICE_ROM;
-            if (!rom_screen(&roms[rom], screen)) screen = 0;
+            if (!dialog_rom_allows_screen(&roms[rom], screen)) screen = 0;
         } else if (tap.tag >= CHOICE_MEMORY && tap.tag < CHOICE_MEMORY + DIALOG_MEMORY_COUNT) {
             memory = DIALOG_MEMORY_SIZES[tap.tag - CHOICE_MEMORY];
         } else if (tap.tag >= CHOICE_SCREEN && tap.tag < CHOICE_SCREEN + SCREEN_PRESET_COUNT) {

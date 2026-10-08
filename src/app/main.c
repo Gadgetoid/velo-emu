@@ -137,8 +137,6 @@ static void set_title(SDL_Window *window, const char *name, const char *notice, 
     if (strcmp(SDL_GetWindowTitle(window), title)) SDL_SetWindowTitle(window, title);
 }
 
-const uint32_t DIALOG_MEMORY_SIZES[DIALOG_MEMORY_COUNT] = { 4, 8, 16, 20, 32 };
-
 static int profile_system(const profile_t *profile) {
     return rom_catalog_probe(profile->rom, NULL);
 }

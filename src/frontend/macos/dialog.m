@@ -4,11 +4,6 @@
 
 #include <string.h>
 
-static NSString *const SCREEN_TITLES[] = { @"480 x 240 (original)", @"640 x 240", @"640 x 480", @"800 x 600" };
-static NSString *const MEMORY_TITLES[DIALOG_MEMORY_COUNT] = {
-    @"4 MB (original)", @"8 MB", @"16 MB", @"20 MB (4 MB + 16 MB DRAM card)", @"32 MB (16 MB + 16 MB DRAM card)",
-};
-
 @interface VeloMachineForm : NSObject
 @property(strong) NSAlert *alert;
 @property(strong) NSTextField *name;
@@ -109,19 +104,19 @@ static VeloMachineForm *new_machine_form(const dialog_rom_t *roms, int rom_count
     }
 
     form.screen = popup();
-    for (int i = 0; i < SCREEN_PRESET_COUNT && i < (int)(sizeof SCREEN_TITLES / sizeof SCREEN_TITLES[0]); i++) {
-        [form.screen addItemWithTitle:SCREEN_TITLES[i]];
+    for (int i = 0; i < SCREEN_PRESET_COUNT && dialog_screen_label(i); i++) {
+        [form.screen addItemWithTitle:[NSString stringWithUTF8String:dialog_screen_label(i)]];
         if (SCREEN_PRESETS[i].width == result->screen.width && SCREEN_PRESETS[i].height == result->screen.height) [form.screen selectItemAtIndex:i];
     }
     [form updateScreens];
 
     NSPopUpButton *memory = popup();
     for (int i = 0; i < DIALOG_MEMORY_COUNT; i++) {
-        [memory addItemWithTitle:MEMORY_TITLES[i]];
+        [memory addItemWithTitle:[NSString stringWithUTF8String:DIALOG_MEMORY_LABELS[i]]];
         if (DIALOG_MEMORY_SIZES[i] == result->memory) [memory selectItemAtIndex:i];
     }
 
-    NSButton *clock = [NSButton checkboxWithTitle:@"Set the clock from this Mac at the first boot" target:nil action:nil];
+    NSButton *clock = [NSButton checkboxWithTitle:[NSString stringWithUTF8String:DIALOG_CLOCK_LABEL] target:nil action:nil];
     clock.state = result->host_time ? NSControlStateValueOn : NSControlStateValueOff;
 
     NSGridView *grid = [NSGridView gridViewWithViews:@[
@@ -139,7 +134,7 @@ static VeloMachineForm *new_machine_form(const dialog_rom_t *roms, int rom_count
 
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"New Machine";
-    alert.informativeText = @"The screen, memory and clock settings are fixed for the life of the machine. The ROM decides which screen sizes are available.";
+    alert.informativeText = [NSString stringWithUTF8String:DIALOG_NEW_MACHINE_MESSAGE];
     alert.accessoryView = grid;
     [alert addButtonWithTitle:@"Create"];
     [alert addButtonWithTitle:@"Cancel"];
@@ -190,7 +185,7 @@ static NSAlert *manage_alert(const char *const *names, int count, int current, i
 
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Manage Machines";
-    alert.informativeText = @"Reset sets a machine back to its factory state. Delete removes it and its saved state. Both put a backup in Snapshots/Backups first. The running machine can be reset but not deleted.";
+    alert.informativeText = [NSString stringWithUTF8String:DIALOG_MANAGE_MESSAGE];
     alert.accessoryView = list;
     [alert addButtonWithTitle:@"Done"];
     [alert addButtonWithTitle:@"Reset\u2026"];
