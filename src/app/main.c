@@ -909,6 +909,88 @@ static const option_spec_t LAUNCH_SPEC = {
     "headless runs the machine without a window, for tests and scripts, and velo-rapi talks to a running Velo.",
 };
 
+typedef struct {
+    SDL_Window      *window;
+    machine_t      **machine;
+    settings_t      *settings;
+    profiles_t      *profiles;
+    profile_t       *current;
+    int             *current_index;
+    const char      *profiles_folder;
+    snapshot_store_t *snapshots;
+    char            *state;
+    double          *since_backup;
+    const char     **notice;
+    double          *notice_left;
+} machine_menu_context_t;
+
+static bool handle_machine_menu(machine_menu_context_t *context, int item, int *switch_to, bool *events_seen) {
+    if (item == MENU_NEW_MACHINE) {
+        static dialog_rom_t rom_list[32];
+        int rom_count = list_roms(rom_list, 32);
+        dialog_machine_t chosen = { .memory = profile_system(context->current) == 2 ? CE2_DEFAULT_MEMORY : 4,
+                                    .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = context->settings->host_time != 0 };
+        if (rom_count) snprintf(chosen.rom, sizeof chosen.rom, "%s", context->current->rom);
+        *events_seen = true;
+        if (!dialog_new_machine(context->window, rom_list, rom_count, probe_rom, &chosen)) return true;
+        profile_t made = { .screen = chosen.screen, .memory = chosen.memory, .host_time = chosen.host_time };
+        snprintf(made.rom, sizeof made.rom, "%s", chosen.rom);
+        if (chosen.name[0]) snprintf(made.name, sizeof made.name, "%s", chosen.name);
+        else profile_default_name(&made, profile_system(&made), made.name, sizeof made.name);
+        profile_make_unique(context->profiles, &made, context->profiles_folder);
+        if (!profile_save(&made, context->profiles_folder)) {
+            *context->notice = "could not save the new machine";
+            *context->notice_left = NOTICE_SECONDS * 2;
+            return true;
+        }
+        profiles_load(context->profiles, context->profiles_folder);
+        if (context->current->id[0]) *context->current_index = profile_find(context->profiles, context->current->id);
+        *switch_to = profile_find(context->profiles, made.id);
+        return true;
+    }
+    if (item != MENU_MANAGE_MACHINES) return false;
+
+    const char *names[PROFILES_MAX];
+    for (int i = 0; i < context->profiles->count; i++) names[i] = context->profiles->entries[i].name;
+    int chosen = *context->current_index >= 0 ? *context->current_index : 0;
+    *events_seen = true;
+    dialog_manage_t action = context->profiles->count ? dialog_manage_machines(context->window, names, context->profiles->count, *context->current_index, &chosen) : DIALOG_MANAGE_CLOSE;
+    if (action == DIALOG_MANAGE_CLOSE || chosen < 0 || chosen >= context->profiles->count) return true;
+    profile_t picked_profile = context->profiles->entries[chosen];
+    static char manage_notice[300];
+    if (action == DIALOG_MANAGE_RESET) {
+        if (!confirm_reset(context->window, picked_profile.name)) return true;
+        if (chosen == *context->current_index) {
+            snapshot_store_backup_machine(context->snapshots, *context->machine, context->state);
+            *context->since_backup = 0;
+            machine_reset(*context->machine);
+        } else {
+            snapshot_store_backup_file(context->snapshots, picked_profile.state);
+            remove(picked_profile.state);
+        }
+        snprintf(manage_notice, sizeof manage_notice, "reset %s; the machine before it is in Snapshots/Backups", picked_profile.name);
+    } else {
+        if (chosen == *context->current_index) {
+            *context->notice = "switch to another machine before deleting this one";
+            *context->notice_left = NOTICE_SECONDS * 3;
+            return true;
+        }
+        char title[160];
+        snprintf(title, sizeof title, "Delete %s?", picked_profile.name);
+        if (!confirm_action(context->window, title, "This removes the machine and its saved state. A backup of the state goes in Snapshots/Backups first.", "Delete")) return true;
+        snapshot_store_backup_file(context->snapshots, picked_profile.state);
+        profile_delete(&picked_profile, context->profiles_folder);
+        char current_id[sizeof context->current->id];
+        snprintf(current_id, sizeof current_id, "%s", context->current->id);
+        profiles_load(context->profiles, context->profiles_folder);
+        *context->current_index = current_id[0] ? profile_find(context->profiles, current_id) : -1;
+        snprintf(manage_notice, sizeof manage_notice, "deleted %s", picked_profile.name);
+    }
+    *context->notice = manage_notice;
+    *context->notice_left = NOTICE_SECONDS * 3;
+    return true;
+}
+
 int main(int argc, char **argv) {
     const char *rom_path = NULL;
 #ifdef __ANDROID__
@@ -1096,6 +1178,9 @@ int main(int argc, char **argv) {
         &machine, &key_layout, &input, &scroller, window, view, &running, &pen_down, held, &dropped, &picked, &roms,
         state, &serial, desktop, &notice, &notice_left,
     };
+    machine_menu_context_t machine_menu = {
+        window, &machine, &settings, &profiles, &current, &current_index, profiles_folder, &snapshots, state, &since_backup, &notice, &notice_left,
+    };
     while (running) {
         uint64_t frame_start = SDL_GetTicksNS();
         app_runner_lock(runner);
@@ -1105,6 +1190,7 @@ int main(int argc, char **argv) {
         int switch_to = -1;
         for (int item = menu_poll(); item >= 0; item = menu_poll()) {
             release_keys(&input, machine, held, -1);
+            if (handle_machine_menu(&machine_menu, item, &switch_to, &events_seen)) continue;
             switch (item) {
             case MENU_POWER:
                 machine_power_button(machine, true);
@@ -1115,69 +1201,6 @@ int main(int argc, char **argv) {
                 machine_soft_reset(machine);
                 if (serial.mode == SERIAL_NETWORK) serial_unplug_at = machine_cycles(machine) + SOFT_RESET_REPLUG_SECONDS * MACHINE_CLOCK_HZ;
                 break;
-            case MENU_NEW_MACHINE: {
-                static dialog_rom_t rom_list[32];
-                int rom_count = list_roms(rom_list, 32);
-                dialog_machine_t chosen = { .memory = profile_system(&current) == 2 ? CE2_DEFAULT_MEMORY : 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = settings.host_time != 0 };
-                if (rom_count) snprintf(chosen.rom, sizeof chosen.rom, "%s", current.rom);
-                events_seen = true;
-                if (!dialog_new_machine(window, rom_list, rom_count, probe_rom, &chosen)) break;
-                profile_t made = { .screen = chosen.screen, .memory = chosen.memory, .host_time = chosen.host_time };
-                snprintf(made.rom, sizeof made.rom, "%s", chosen.rom);
-                if (chosen.name[0]) snprintf(made.name, sizeof made.name, "%s", chosen.name);
-                else profile_default_name(&made, profile_system(&made), made.name, sizeof made.name);
-                profile_make_unique(&profiles, &made, profiles_folder);
-                if (!profile_save(&made, profiles_folder)) {
-                    notice = "could not save the new machine";
-                    notice_left = NOTICE_SECONDS * 2;
-                    break;
-                }
-                profiles_load(&profiles, profiles_folder);
-                if (current.id[0]) current_index = profile_find(&profiles, current.id);
-                switch_to = profile_find(&profiles, made.id);
-                break;
-            }
-            case MENU_MANAGE_MACHINES: {
-                const char *names[PROFILES_MAX];
-                for (int i = 0; i < profiles.count; i++) names[i] = profiles.entries[i].name;
-                int chosen = current_index >= 0 ? current_index : 0;
-                events_seen = true;
-                dialog_manage_t action = profiles.count ? dialog_manage_machines(window, names, profiles.count, current_index, &chosen) : DIALOG_MANAGE_CLOSE;
-                if (action == DIALOG_MANAGE_CLOSE || chosen < 0 || chosen >= profiles.count) break;
-                profile_t picked_profile = profiles.entries[chosen];
-                static char manage_notice[300];
-                if (action == DIALOG_MANAGE_RESET) {
-                    if (!confirm_reset(window, picked_profile.name)) break;
-                    if (chosen == current_index) {
-                        snapshot_store_backup_machine(&snapshots, machine, state);
-                        since_backup = 0;
-                        machine_reset(machine);
-                    } else {
-                        snapshot_store_backup_file(&snapshots, picked_profile.state);
-                        remove(picked_profile.state);
-                    }
-                    snprintf(manage_notice, sizeof manage_notice, "reset %s; the machine before it is in Snapshots/Backups", picked_profile.name);
-                } else {
-                    if (chosen == current_index) {
-                        notice = "switch to another machine before deleting this one";
-                        notice_left = NOTICE_SECONDS * 3;
-                        break;
-                    }
-                    char title[160];
-                    snprintf(title, sizeof title, "Delete %s?", picked_profile.name);
-                    if (!confirm_action(window, title, "This removes the machine and its saved state. A backup of the state goes in Snapshots/Backups first.", "Delete")) break;
-                    snapshot_store_backup_file(&snapshots, picked_profile.state);
-                    profile_delete(&picked_profile, profiles_folder);
-                    char current_id[sizeof current.id];
-                    snprintf(current_id, sizeof current_id, "%s", current.id);
-                    profiles_load(&profiles, profiles_folder);
-                    current_index = current_id[0] ? profile_find(&profiles, current_id) : -1;
-                    snprintf(manage_notice, sizeof manage_notice, "deleted %s", picked_profile.name);
-                }
-                notice = manage_notice;
-                notice_left = NOTICE_SECONDS * 3;
-                break;
-            }
             case MENU_SCALE_50:
             case MENU_SCALE_75:
             case MENU_SCALE_100:
