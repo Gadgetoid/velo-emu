@@ -11,6 +11,7 @@
 #include "app/android.h"
 #include "app/desktop.h"
 #include "app/dialog.h"
+#include "app/host.h"
 #include "app/input.h"
 #include "app/log.h"
 #include "app/machine_session.h"
@@ -168,8 +169,6 @@ static void rapi_socket_path(char *path, size_t size) {
 #endif
 }
 
-static void local_address(char *address, size_t size);
-
 static void serial_close(serial_link_t *serial, machine_t *machine) {
     serial_link_close(serial);
     machine_serial_connect(machine, false);
@@ -200,7 +199,7 @@ static const char *serial_open(serial_link_t *serial, machine_t *machine, serial
     if (mode == SERIAL_NETWORK) return "network cable connected";
     if (mode == SERIAL_TCP) {
         char address[64];
-        local_address(address, sizeof address);
+        host_local_address(address, sizeof address);
         snprintf(notice, sizeof notice, "COM1 at %s:%d", address, serial->tcp_port);
         return notice;
     }
@@ -343,84 +342,18 @@ static picked_t *new_disk_pick(void) {
 }
 #endif
 
-static bool confirm_action(SDL_Window *window, const char *title, const char *message, const char *action) {
-    const SDL_MessageBoxButtonData buttons[] = {
-        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel" },
-        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, action },
-    };
-    const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_WARNING, window, title, message, (int)(sizeof buttons / sizeof buttons[0]), buttons, NULL };
-    int chosen = 0;
-    return SDL_ShowMessageBox(&dialog, &chosen) && chosen == 1;
-}
-
 static bool confirm_reset(SDL_Window *window, const char *name) {
     char title[160];
     snprintf(title, sizeof title, "Reset %s?", name);
-    return confirm_action(window, title,
-                          "A reset is a cold boot back to the factory state: it clears RAM, including files, settings and installed programs. A backup of the machine goes in Snapshots/Backups first. Soft Reset keeps them.",
-                          "Reset");
-}
-
-static void open_path(const char *path) {
-    char url[4096] = "file://";
-    size_t length = strlen(url);
-    for (const unsigned char *at = (const unsigned char *)path; *at && length + 4 < sizeof url; at++) {
-        if (isalnum(*at) || strchr("/-_.~", *at)) url[length++] = (char)*at;
-        else length += (size_t)snprintf(url + length, sizeof url - length, "%%%02X", *at);
-    }
-    url[length] = 0;
-    SDL_OpenURL(url);
-}
-
-#define REVEAL_CHILDREN_MAX 16
-
-static pid_t reveal_children[REVEAL_CHILDREN_MAX];
-static int reveal_child_count = 0;
-
-static void reap_reveal_children(void) {
-    int kept = 0;
-    for (int i = 0; i < reveal_child_count; i++) {
-        if (waitpid(reveal_children[i], NULL, WNOHANG) == 0) reveal_children[kept++] = reveal_children[i];
-    }
-    reveal_child_count = kept;
-}
-
-static void reveal_file(const char *path) {
-#ifdef __APPLE__
-    extern char **environ;
-    char *arguments[] = { "open", "-R", (char *)path, NULL };
-    pid_t pid;
-    if (posix_spawnp(&pid, "open", NULL, NULL, arguments, environ) != 0) return;
-    if (reveal_child_count < REVEAL_CHILDREN_MAX) reveal_children[reveal_child_count++] = pid;
-    else waitpid(pid, NULL, 0);
-#else
-    char folder[1100];
-    snprintf(folder, sizeof folder, "%s", path);
-    char *slash = strrchr(folder, '/');
-    if (slash && slash != folder) *slash = 0;
-    open_path(folder);
-#endif
-}
-
-static void local_address(char *address, size_t size) {
-    snprintf(address, size, "this computer");
-    struct ifaddrs *interfaces;
-    if (getifaddrs(&interfaces) != 0) return;
-    int best = 0;
-    for (struct ifaddrs *at = interfaces; at; at = at->ifa_next) {
-        if (!at->ifa_addr || at->ifa_addr->sa_family != AF_INET || (at->ifa_flags & IFF_LOOPBACK) || !(at->ifa_flags & IFF_UP)) continue;
-        int score = !strncmp(at->ifa_name, "wlan", 4) || !strcmp(at->ifa_name, "en0") ? 2 : 1;
-        if (score <= best) continue;
-        best = score;
-        inet_ntop(AF_INET, &((struct sockaddr_in *)at->ifa_addr)->sin_addr, address, (socklen_t)size);
-    }
-    freeifaddrs(interfaces);
+    return host_confirm(window, title,
+                        "A reset is a cold boot back to the factory state: it clears RAM, including files, settings and installed programs. A backup of the machine goes in Snapshots/Backups first. Soft Reset keeps them.",
+                        "Reset");
 }
 
 static gdb_t *start_network_gdb(machine_t *machine, uint32_t port, char *notice, size_t size) {
     gdb_t *gdb = gdb_create(machine, (int)port, true, app_log_always);
     char address[64];
-    local_address(address, sizeof address);
+    host_local_address(address, sizeof address);
     if (gdb) snprintf(notice, size, "GDB server at %s:%u", address, port);
     else snprintf(notice, size, "cannot listen for GDB on port %u", port);
     return gdb;
@@ -498,7 +431,7 @@ static bool no_roms_dialog(void) {
     };
     const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, NULL, "No Velo ROM found", message, 2, buttons, NULL };
     int chosen = 0;
-    if (SDL_ShowMessageBox(&dialog, &chosen) && chosen == 1) open_path(folder);
+    if (SDL_ShowMessageBox(&dialog, &chosen) && chosen == 1) host_open_path(folder);
     return false;
 }
 
@@ -914,7 +847,7 @@ static bool handle_machine_menu(app_t *app, int item, int *switch_to, bool *even
         }
         char title[160];
         snprintf(title, sizeof title, "Delete %s?", picked_profile.name);
-        if (!confirm_action(app->window, title, "This removes the machine and its saved state. A backup of the state goes in Snapshots/Backups first.", "Delete")) return true;
+        if (!host_confirm(app->window, title, "This removes the machine and its saved state. A backup of the state goes in Snapshots/Backups first.", "Delete")) return true;
         snapshot_store_backup_file(&app->snapshots, picked_profile.state);
         profile_delete(&picked_profile, app->profiles_folder);
         char current_id[sizeof app->current.id];
@@ -1016,7 +949,7 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         app->backlight_release_at = machine_cycles(machine) + (uint64_t)(BACKLIGHT_PRESS_SECONDS * MACHINE_CLOCK_HZ);
         break;
     case MENU_SOUND: app->sound = !app->sound; break;
-    case MENU_SHOW_STATE: reveal_file(app->session.state_path); break;
+    case MENU_SHOW_STATE: host_reveal_file(app->session.state_path); break;
     case MENU_SAVE_SNAPSHOT: {
         static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state" } };
         static char default_snapshot[1200];
@@ -1035,7 +968,7 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         char path[1100];
         debug_log_path(path, sizeof path);
         debug_log_flush();
-        open_path(path);
+        host_open_path(path);
         break;
     }
     case MENU_QUIT:
@@ -1156,7 +1089,7 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         settings_save(settings);
         app->serial.options.rapi_port = settings->network_rapi ? (int)settings->rapi_port : 0;
         char address[64];
-        local_address(address, sizeof address);
+        host_local_address(address, sizeof address);
         char message[160];
         if (settings->network_rapi) snprintf(message, sizeof message, "RAPI at %s:%u", address, settings->rapi_port);
         else snprintf(message, sizeof message, "RAPI over the network off");
@@ -1343,7 +1276,7 @@ static void update_menus(app_t *app, bool velo_online) {
     menu_set_checked(MENU_SERIAL_NETWORK, app->serial.mode == SERIAL_NETWORK);
     menu_set_checked(MENU_SERIAL_PTY, app->serial.mode == SERIAL_PTY);
     menu_set_checked(MENU_SERIAL_TCP, app->serial.mode == SERIAL_TCP);
-    reap_reveal_children();
+    host_reap_children();
     if (app->since_port_scan <= 0) {
         app->since_port_scan = PORT_SCAN_SECONDS;
         app->port_count = serial_link_ports(app->ports, SERIAL_PORT_MAX);
