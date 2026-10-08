@@ -36,7 +36,7 @@ ifeq ($(MENU),macos)
 SRC_MENU  = src/frontend/macos/menu.m src/frontend/macos/dialog.m
 LDFLAGS  += -framework Cocoa
 else ifeq ($(MENU),android)
-SRC_MENU  = src/frontend/android/menu.c src/frontend/common/menu_state.c src/frontend/android/android.c src/vendor/truetype.c
+SRC_MENU  = src/frontend/android/menu.c src/frontend/android/dialog.c src/frontend/android/keystrip.c src/frontend/android/list.c src/frontend/android/text.c src/frontend/android/toast.c src/frontend/common/menu_state.c src/frontend/android/android.c src/vendor/truetype.c
 else
 SRC_MENU  = src/frontend/linux/menu.c src/frontend/linux/dialog.c src/frontend/linux/ui.c src/frontend/common/menu_state.c src/vendor/truetype.c
 endif
