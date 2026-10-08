@@ -14,6 +14,7 @@
 #include "app/dialog.h"
 #include "app/host.h"
 #include "app/input.h"
+#include "app/library.h"
 #include "app/log.h"
 #include "app/machine_session.h"
 #include "app/menu.h"
@@ -365,167 +366,7 @@ static void set_title(SDL_Window *window, const char *name, const char *notice, 
     if (strcmp(SDL_GetWindowTitle(window), title)) SDL_SetWindowTitle(window, title);
 }
 
-static void rom_folder(char *path, size_t size) {
-    char base[1024];
-    app_data_folder(base, sizeof base);
-    snprintf(path, size, "%s/roms", base);
-    SDL_CreateDirectory(path);
-}
-
-#define CARD_MIN_BYTES  (1024 * 1024)
-
-static void find_roms(rom_set_t *roms) {
-    char folder[1100];
-    rom_folder(folder, sizeof folder);
-    rom_catalog_find(roms, folder);
-}
-
-static void cards_folder(char *path, size_t size) {
-    char base[1024];
-    app_data_folder(base, sizeof base);
-    snprintf(path, size, "%s/cards", base);
-    SDL_CreateDirectory(path);
-}
-
-static int library_score(const char *path, int system) {
-    bool ce1 = fat_root_has_folder(path, "VELOLIB"), ce2 = fat_root_has_folder(path, "VELOLIB2");
-    bool wanted = system == 2 ? ce2 : ce1, other = system == 2 ? ce1 : ce2;
-    return wanted ? (other ? 1 : 2) : 0;
-}
-
-static void insert_library_card(machine_t *machine) {
-    int system = machine_rom_system(machine);
-    char folder[1100], best[1200] = "";
-    cards_folder(folder, sizeof folder);
-    DIR *dir = opendir(folder);
-    if (!dir) return;
-    int best_score = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir))) {
-        if (entry->d_name[0] == '.') continue;
-        char path[1200];
-        if (snprintf(path, sizeof path, "%s/%s", folder, entry->d_name) >= (int)sizeof path) continue;
-        struct stat info;
-        if (stat(path, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < CARD_MIN_BYTES) continue;
-        int score = library_score(path, system);
-        if (score > best_score) {
-            best_score = score;
-            memcpy(best, path, sizeof best);
-        }
-    }
-    closedir(dir);
-    if (best[0] && machine_insert_card(machine, best)) fprintf(stderr, "inserted the software library %s\n", file_leaf_name(best));
-}
-
-static bool no_roms_dialog(void) {
-    char folder[1100], message[1400];
-    rom_folder(folder, sizeof folder);
-    snprintf(message, sizeof message, "Put a Velo 1 ROM in %s: the CE 1.0 nk.bin, the merged CE 2.0 image, or both.", folder);
-    const SDL_MessageBoxButtonData buttons[] = {
-        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit" },
-        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Show ROM Folder" },
-    };
-    const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, NULL, "No Velo ROM found", message, 2, buttons, NULL };
-    int chosen = 0;
-    if (SDL_ShowMessageBox(&dialog, &chosen) && chosen == 1) host_open_path(folder);
-    return false;
-}
-
-#ifdef __ANDROID__
-typedef struct {
-    SDL_AtomicInt done;
-    int count;
-    char uris[PICK_MAX][1024];
-} import_pick_t;
-
-static void import_picked(void *userdata, const char *const *files, int filter) {
-    (void)filter;
-    import_pick_t *pick = userdata;
-    pick->count = 0;
-    while (files && files[pick->count] && pick->count < PICK_MAX) {
-        snprintf(pick->uris[pick->count], sizeof pick->uris[0], "%s", files[pick->count]);
-        pick->count++;
-    }
-    SDL_SetAtomicInt(&pick->done, 1);
-}
-
-static int import_files(int *cards) {
-    import_pick_t pick = { 0 };
-    pick.count = 0;
-    SDL_SetAtomicInt(&pick.done, 0);
-    SDL_ShowOpenFileDialog(import_picked, &pick, NULL, NULL, 0, NULL, true);
-    while (!SDL_GetAtomicInt(&pick.done)) {
-        SDL_Event event;
-        if (SDL_WaitEventTimeout(&event, 100) && event.type == SDL_EVENT_QUIT) SDL_PushEvent(&event);
-    }
-    char roms[1100], card_folder[1100];
-    rom_folder(roms, sizeof roms);
-    cards_folder(card_folder, sizeof card_folder);
-    int rom_count = 0;
-    *cards = 0;
-    for (int i = 0; i < pick.count; i++) {
-        char path[1200];
-        if (!android_import(pick.uris[i], roms, path, sizeof path)) continue;
-        struct stat info;
-        if (rom_catalog_probe(path, NULL)) {
-            rom_count++;
-            continue;
-        }
-        char card[1200];
-        snprintf(card, sizeof card, "%s/%s", card_folder, file_leaf_name(path));
-        if (stat(path, &info) == 0 && info.st_size >= CARD_MIN_BYTES && info.st_size % 512 == 0 && rename(path, card) == 0) (*cards)++;
-        else remove(path);
-    }
-    return rom_count;
-}
-
-static bool first_run_import(void) {
-    SDL_Init(SDL_INIT_VIDEO);
-    const SDL_MessageBoxButtonData buttons[] = {
-        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit" },
-        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Choose Files" },
-    };
-    const SDL_MessageBoxData dialog = { SDL_MESSAGEBOX_INFORMATION, NULL, "Import ROMs and Cards",
-                                        "Choose your Velo 1 ROMs: the CE 1.0 nk.bin, a merged CE 2.0 image, or both. Card images, such as the Velo Software Library, can be chosen at the same time.",
-                                        2, buttons, NULL };
-    int chosen = 0;
-    if (!SDL_ShowMessageBox(&dialog, &chosen) || chosen != 1) return false;
-    int cards;
-    import_files(&cards);
-    return true;
-}
-#endif
-
 const uint32_t DIALOG_MEMORY_SIZES[DIALOG_MEMORY_COUNT] = { 4, 8, 16, 20, 32 };
-
-static void machines_folder(char *path, size_t size) {
-    char base[1024];
-    app_data_folder(base, sizeof base);
-    snprintf(path, size, "%s/machines", base);
-    SDL_CreateDirectory(path);
-}
-
-static uint32_t probe_rom(const char *path, char *label, size_t label_size) {
-    return rom_catalog_label(path, label, label_size);
-}
-
-static int list_roms(dialog_rom_t *roms, int max) {
-    char folder[1100];
-    rom_folder(folder, sizeof folder);
-    DIR *dir = opendir(folder);
-    if (!dir) return 0;
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) && count < max) {
-        if (entry->d_name[0] == '.') continue;
-        dialog_rom_t *rom = &roms[count];
-        if (snprintf(rom->path, sizeof rom->path, "%s/%s", folder, entry->d_name) >= (int)sizeof rom->path) continue;
-        rom->screens = probe_rom(rom->path, rom->label, sizeof rom->label);
-        if (rom->screens) count++;
-    }
-    closedir(dir);
-    return count;
-}
 
 static int profile_system(const profile_t *profile) {
     return rom_catalog_probe(profile->rom, NULL);
@@ -689,7 +530,7 @@ static bool poll_host_events(app_t *app) {
             }
             break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
-            find_roms(&app->roms);
+            library_find_roms(&app->roms);
 #ifdef __ANDROID__
             SDL_SetWindowFullscreen(app->window, false);
             SDL_SetWindowFullscreen(app->window, true);
@@ -739,12 +580,12 @@ static bool poll_host_events(app_t *app) {
 static bool handle_machine_menu(app_t *app, int item, int *switch_to, bool *events_seen) {
     if (item == MENU_NEW_MACHINE) {
         dialog_rom_t rom_list[32] = { 0 };
-        int rom_count = list_roms(rom_list, 32);
+        int rom_count = library_list_roms(rom_list, 32);
         dialog_machine_t chosen = { .memory = profile_system(&app->current) == 2 ? CE2_DEFAULT_MEMORY : 4,
                                     .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = app->settings.host_time != 0 };
         if (rom_count) snprintf(chosen.rom, sizeof chosen.rom, "%s", app->current.rom);
         *events_seen = true;
-        if (!dialog_new_machine(app->window, rom_list, rom_count, probe_rom, &chosen)) return true;
+        if (!dialog_new_machine(app->window, rom_list, rom_count, rom_catalog_label, &chosen)) return true;
         profile_t made = { .screen = chosen.screen, .memory = chosen.memory, .host_time = chosen.host_time };
         snprintf(made.rom, sizeof made.rom, "%s", chosen.rom);
         if (chosen.name[0]) snprintf(made.name, sizeof made.name, "%s", chosen.name);
@@ -916,8 +757,8 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
         break;
 #ifdef __ANDROID__
     case MENU_IMPORT: {
-        int cards, imported = import_files(&cards);
-        find_roms(&app->roms);
+        int cards, imported = library_import_files(&cards);
+        library_find_roms(&app->roms);
         char message[160];
         snprintf(message, sizeof message, "imported %d ROMs and %d cards", imported, cards);
         notice_show(&app->notice, message, NOTICE_MEDIUM);
@@ -1417,9 +1258,9 @@ static bool start_session(app_t *app, const char *state_file, bool fresh, const 
 static int start_machine(app_t *app) {
     settings_t *settings = &app->settings;
     const launch_t *launch = &app->launch;
-    app->session_hooks = (machine_session_hooks_t){ app_log, print_debug_line, debug_log_start, insert_library_card, app };
-    find_roms(&app->roms);
-    machines_folder(app->profiles_folder, sizeof app->profiles_folder);
+    app->session_hooks = (machine_session_hooks_t){ app_log, print_debug_line, debug_log_start, library_insert_card, app };
+    library_find_roms(&app->roms);
+    library_machines_folder(app->profiles_folder, sizeof app->profiles_folder);
     profiles_load(&app->profiles, app->profiles_folder);
     if (!app->profiles.count) machine_session_migrate_profiles(&app->profiles, &app->roms, settings, app->profiles_folder);
     app->current_index = -1;
@@ -1439,13 +1280,16 @@ static int start_machine(app_t *app) {
             if (app->current_index < 0) app->current_index = app->profiles.count ? 0 : -1;
         }
 #ifdef __ANDROID__
-        while (app->current_index < 0 && first_run_import()) {
-            find_roms(&app->roms);
+        while (app->current_index < 0 && library_first_run_import()) {
+            library_find_roms(&app->roms);
             machine_session_migrate_profiles(&app->profiles, &app->roms, settings, app->profiles_folder);
             app->current_index = app->profiles.count ? 0 : -1;
         }
 #endif
-        if (app->current_index < 0) return no_roms_dialog() ? 0 : 1;
+        if (app->current_index < 0) {
+            library_show_no_roms();
+            return 1;
+        }
         app->current = app->profiles.entries[app->current_index];
     }
     const char *notice;
