@@ -40,6 +40,29 @@ static const uint32_t EXPORT_CE2_CODE[] = {
     0x8E830050u, 0x00008825u, 0x00669021u, 0x8E4F001Cu,
 };
 
+static const uint32_t ZERO_CE2_CODE[] = {
+    0xAC800000u, 0xAC800004u, 0xAC800008u, 0xAC80000Cu, 0xAC800010u, 0xAC800014u,
+    0xAC800018u, 0xAC80001Cu, 0x20A5FFE0u, 0x1405FFF6u, 0x20840020u, 0x03E00008u,
+    0x00000000u,
+};
+
+static const uint32_t WIDEN_CE2_CODE[] = {
+    0x28C10002u, 0x1420000Du, 0x24020001u, 0x90A30000u, 0x1060000Au, 0x00000000u,
+    0x24420001u, 0x0046082Au, 0xA4830000u, 0x24840002u, 0x10200004u, 0x24A50001u,
+    0x90A30000u, 0x5460FFF9u, 0x24420001u, 0x03E00008u, 0xA4800000u,
+};
+
+static const uint32_t MOVE_CE2_CODE[] = {
+    0x00801025u, 0x00A4082Bu, 0x10200005u, 0x00000000u, 0x00A64021u, 0x0088082Bu,
+    0x142000EBu, 0x00000000u, 0x2CC80004u, 0x1408008Cu, 0x00000000u, 0x00854026u,
+    0x31080003u, 0x14080092u, 0x00000000u,
+};
+
+static const uint32_t RANGE_CE2_CODE[] = {
+    0x27BDFFF8u, 0xAFB00004u, 0x00808025u, 0x30C6FFFFu, 0x10A0001Bu, 0x24A3FFFFu,
+    0x04600019u, 0x00001025u, 0x00C03825u, 0x24090003u, 0x00432821u, 0x00052843u,
+};
+
 typedef struct {
     uint32_t va;
     const uint32_t *code;
@@ -47,6 +70,7 @@ typedef struct {
     native_fn run;
     bool in_rom;
     uint32_t next;
+    bool no_result;
 } hook_spec_t;
 
 typedef struct {
@@ -59,14 +83,18 @@ typedef struct {
 #define COUNT(table) (int)(sizeof(table) / sizeof((table)[0]))
 
 static const hook_spec_t CE1_HOOKS[] = {
-    { 0x9F41F80Cu, CODE(CE1_DECODE_CODE), native_ce1_decode, true, 0 },
-    { 0x9F41FA94u, CODE(CE1_ENCODE_CODE), native_ce1_encode, true, 0 },
+    { 0x9F41F80Cu, CODE(CE1_DECODE_CODE), native_ce1_decode, true, 0, false },
+    { 0x9F41FA94u, CODE(CE1_ENCODE_CODE), native_ce1_encode, true, 0, false },
 };
 
 static const hook_spec_t CE2_HOOKS[] = {
-    { 0x9005B000u, CODE(CE2_DECODE_CODE), native_ce2_decode, true, 0 },
-    { 0x9005ADECu, CODE(CE2_ENCODE_CODE), native_ce2_encode, true, 0 },
-    { 0x900412A0u, CODE(EXPORT_CE2_CODE), native_export_lookup, true, 0x90043D2Cu },
+    { 0x9005B000u, CODE(CE2_DECODE_CODE), native_ce2_decode, true, 0, false },
+    { 0x9005ADECu, CODE(CE2_ENCODE_CODE), native_ce2_encode, true, 0, false },
+    { 0x900412A0u, CODE(EXPORT_CE2_CODE), native_export_lookup, true, 0x90043D2Cu, false },
+    { 0x900526A0u, CODE(ZERO_CE2_CODE), native_zero, true, 0, true },
+    { 0x90057298u, CODE(WIDEN_CE2_CODE), native_widen, true, 0, false },
+    { 0x9003C360u, CODE(MOVE_CE2_CODE), native_memmove, true, 0, false },
+    { 0x01ED4D9Cu, CODE(RANGE_CE2_CODE), native_range_lookup16, false, 0, false },
 };
 
 static const profile_t PROFILES[] = {
@@ -88,7 +116,7 @@ void optimiser_init(optimiser_t *optimiser, optimiser_rom_fn rom, void *rom_cont
         for (int i = 0; i < profile->hook_count && optimiser->hook_count < OPTIMISER_HOOKS_MAX; i++) {
             const hook_spec_t *spec = &profile->hooks[i];
             if (spec->in_rom && !in_rom(rom, rom_context, spec)) continue;
-            optimiser->hooks[optimiser->hook_count++] = (optimiser_hook_t){ spec->va, spec->code, spec->words, spec->run, spec->next, spec->in_rom ? OPTIMISER_MATCHED : OPTIMISER_UNCHECKED };
+            optimiser->hooks[optimiser->hook_count++] = (optimiser_hook_t){ spec->va, spec->code, spec->words, spec->run, spec->next, spec->no_result, spec->in_rom ? OPTIMISER_MATCHED : OPTIMISER_UNCHECKED };
         }
         return;
     }
@@ -136,6 +164,8 @@ bool optimiser_call(optimiser_t *optimiser, mips_cpu_t *cpu, uint32_t pc) {
             cpu->gpr[4] = arguments[0];
             cpu->gpr[5] = result.value;
             mips_jump(cpu, hook->next);
+        } else if (hook->no_result) {
+            mips_jump(cpu, cpu->gpr[31]);
         } else {
             mips_return(cpu, result.value);
         }

@@ -11,6 +11,8 @@
 #define FILL_MAX     0x4000000u
 #define STRING_MAX   0x10000u
 #define RANGE_STEPS  32
+#define ZERO_BLOCK   32u
+#define MOVE_MAX     0x40000u
 #define EXPORTS_MAX  0x10000u
 #define MODULE_EXPORTS 124u
 #define MODULE_BASE  80u
@@ -179,16 +181,30 @@ bool native_fill32(const native_memory_t *memory, const uint32_t *arguments, nat
     result->value = 0;
     return true;
 }
-static bool guest_byte(const native_memory_t *memory, uint32_t va, uint8_t *value) {
-    return native_read(memory, va, value, 1);
+typedef struct {
+    const native_memory_t *memory;
+    uint32_t page;
+    const uint8_t *host;
+} reader_t;
+
+static bool reader_byte(reader_t *reader, uint32_t va, uint8_t *value) {
+    uint32_t page = va & ~(PAGE - 1);
+    if (!reader->host || page != reader->page) {
+        reader->host = reader->memory->map(reader->memory->context, page, false);
+        reader->page = page;
+        if (!reader->host) return false;
+    }
+    *value = reader->host[va - page];
+    return true;
 }
 
 bool native_strcmp(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    reader_t left_reader = { memory, 0, NULL }, right_reader = { memory, 0, NULL };
     uint32_t left = arguments[0], right = arguments[1];
     uint8_t a = 0, b = 0;
     uint32_t i = 0;
     for (; i < STRING_MAX; i++) {
-        if (!guest_byte(memory, left + i, &a) || !guest_byte(memory, right + i, &b)) return false;
+        if (!reader_byte(&left_reader, left + i, &a) || !reader_byte(&right_reader, right + i, &b)) return false;
         if (!a || a != b) break;
     }
     if (i == STRING_MAX) return false;
@@ -196,12 +212,13 @@ bool native_strcmp(const native_memory_t *memory, const uint32_t *arguments, nat
     return true;
 }
 bool native_widen(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    reader_t reader = { memory, 0, NULL };
     static uint8_t text[STRING_MAX];
     uint32_t destination = arguments[0], source = arguments[1];
     int32_t limit = (int32_t)arguments[2];
     uint32_t count = 0;
     while ((int32_t)(count + 1) < limit) {
-        if (count == STRING_MAX || !guest_byte(memory, source + count, &text[count])) return false;
+        if (count == STRING_MAX || !reader_byte(&reader, source + count, &text[count])) return false;
         if (!text[count]) break;
         count++;
     }
@@ -210,7 +227,7 @@ bool native_widen(const native_memory_t *memory, const uint32_t *arguments, nati
         uint8_t wide[2] = { i < count ? text[i] : 0, 0 };
         guest_write(memory, destination + i * 2, wide, 2);
     }
-    result->value = 0;
+    result->value = count + 1;
     return true;
 }
 bool native_range_lookup(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
@@ -237,10 +254,11 @@ bool native_range_lookup(const native_memory_t *memory, const uint32_t *argument
     return true;
 }
 bool native_wcslen(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    reader_t reader = { memory, 0, NULL };
     uint32_t start = arguments[0], count = 0;
-    for (uint8_t wide[2];; count++) {
-        if (count == STRING_MAX || !native_read(memory, start + count * 2, wide, 2)) return false;
-        if (!wide[0] && !wide[1]) break;
+    for (uint8_t low, high;; count++) {
+        if (count == STRING_MAX || !reader_byte(&reader, start + count * 2, &low) || !reader_byte(&reader, start + count * 2 + 1, &high)) return false;
+        if (!low && !high) break;
     }
     result->value = count;
     return true;
@@ -253,9 +271,10 @@ bool native_return_zero(const native_memory_t *memory, const uint32_t *arguments
 }
 
 static bool names_equal(const native_memory_t *memory, uint32_t left, uint32_t right, bool *equal) {
+    reader_t left_reader = { memory, 0, NULL }, right_reader = { memory, 0, NULL };
     for (uint32_t i = 0; i < STRING_MAX; i++) {
         uint8_t a, b;
-        if (!guest_byte(memory, left + i, &a) || !guest_byte(memory, right + i, &b)) return false;
+        if (!reader_byte(&left_reader, left + i, &a) || !reader_byte(&right_reader, right + i, &b)) return false;
         if (a != b) {
             *equal = false;
             return true;
@@ -300,4 +319,48 @@ bool native_export_lookup(const native_memory_t *memory, const uint32_t *argumen
     result->value = address;
     result->call_next = true;
     return true;
+}
+
+bool native_strcmp_signed(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    reader_t left_reader = { memory, 0, NULL }, right_reader = { memory, 0, NULL };
+    uint32_t left = arguments[0], right = arguments[1];
+    uint8_t a = 0, b = 0;
+    uint32_t i = 0;
+    for (; i < STRING_MAX; i++) {
+        if (!reader_byte(&left_reader, left + i, &a) || !reader_byte(&right_reader, right + i, &b)) return false;
+        if (!a || a != b) break;
+    }
+    if (i == STRING_MAX) return false;
+    result->value = (uint32_t)((int8_t)a - (int8_t)b);
+    return true;
+}
+
+bool native_zero(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    static const uint8_t zeros[PAGE];
+    uint32_t destination = arguments[0], length = arguments[1];
+    if ((destination & 3) || !length || length % ZERO_BLOCK || length > FILL_MAX || !guest_writable(memory, destination, length)) return false;
+    for (uint32_t done = 0; done < length;) {
+        uint32_t chunk = PAGE - ((destination + done) & (PAGE - 1));
+        if (chunk > length - done) chunk = length - done;
+        guest_write(memory, destination + done, zeros, chunk);
+        done += chunk;
+    }
+    result->value = 0;
+    return true;
+}
+
+bool native_memmove(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    static uint8_t buffer[MOVE_MAX];
+    uint32_t destination = arguments[0], source = arguments[1], length = arguments[2];
+    if (length > MOVE_MAX || !native_read(memory, source, buffer, length) || !guest_writable(memory, destination, length)) return false;
+    guest_write(memory, destination, buffer, length);
+    result->value = destination;
+    return true;
+}
+
+bool native_range_lookup16(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
+    uint32_t masked[NATIVE_ARGUMENTS];
+    memcpy(masked, arguments, sizeof masked);
+    masked[2] &= 0xFFFFu;
+    return native_range_lookup(memory, masked, result);
 }

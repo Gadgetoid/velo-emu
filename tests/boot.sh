@@ -31,6 +31,7 @@ check() {
 }
 CALIBRATE="--key=8:4B --key=10:4B --tap=12:240:120 --tap=14:96:48 --tap=16:96:192 --tap=18:384:192 --tap=20:384:48 --key=23:4B"
 WIZARD="--tap=26:452:227 --tap=29:452:227 --tap=32:452:227 --tap=35:452:227 --tap=38:452:227 --tap=41:452:227"
+if ./build/native-check "$ROM" > "$OUT/native.log" 2>&1; then echo "ok   native"; else echo "FAIL native"; cat "$OUT/native.log"; exit 1; fi
 check wizard   3a4cc79486ecf4d3329ab251349f2cfecaca43246e2f5c197eb7fc99e60d5d28   --seconds=8
 check desktop  2eb469a6f1f8a86900314a036e30b0e725df989e4adf0962a797091ebff39033  --seconds=44 $CALIBRATE $WIZARD
 check desktop_optimised 2eb469a6f1f8a86900314a036e30b0e725df989e4adf0962a797091ebff39033 --optimisations --seconds=44 $CALIBRATE $WIZARD
@@ -218,6 +219,7 @@ CE2_ROM=${2:-rom/nk-ce2.bin}
 if [ -f "$CE2_ROM" ]; then
     CE1_ROM=$ROM
     ROM=$CE2_ROM
+    if ./build/native-check "$ROM" > "$OUT/ce2_native.log" 2>&1; then echo "ok   ce2_native"; else echo "FAIL ce2_native"; cat "$OUT/ce2_native.log"; exit 1; fi
     if ./headless "$ROM" --host-time --seconds=1 2>&1 | grep -q "clock: set from the host"; then echo "ok   ce2_host_time"; else echo "FAIL ce2_host_time"; exit 1; fi
     if ./headless "$ROM" --debug-output --seconds=3 2>&1 | grep -q "^debug: Configuring 480x240, 4bpp display"; then echo "ok   ce2_debug_output"; else echo "FAIL ce2_debug_output"; exit 1; fi
     check ce2_desktop aa64f3fba1031ff617de1871716776d2323a5a189c896269be719d5317119e5e --seconds=20

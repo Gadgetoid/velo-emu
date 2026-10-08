@@ -2510,8 +2510,9 @@ static uint8_t *optimiser_map(void *context, uint32_t va, bool write) {
 
 static void on_watch(void *context, uint32_t pc) {
     machine_t *m = context;
-    if (optimiser_hooked(&m->optimiser, pc)) {
-        if (m->optimisations) optimiser_call(&m->optimiser, &m->cpu, pc);
+    uint32_t slot_pc = pc < MIPS_SLOT_SIZE * 64 ? pc & (MIPS_SLOT_SIZE - 1) : pc;
+    if (optimiser_hooked(&m->optimiser, slot_pc)) {
+        if (m->optimisations) optimiser_call(&m->optimiser, &m->cpu, slot_pc);
         return;
     }
     if (pc == m->set_time_va) apply_host_time(m);

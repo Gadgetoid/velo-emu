@@ -17,6 +17,7 @@ typedef struct {
     uint32_t words;
     native_fn run;
     uint32_t next;
+    bool no_result;
     optimiser_state_t state;
 } optimiser_hook_t;
 

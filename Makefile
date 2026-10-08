@@ -72,6 +72,11 @@ $(PROG): $(OBJ_APP)
 $(BUILD)/libmain.so: $(OBJ_APP)
 	$(CC) -shared -Wl,--no-undefined -o $@ $^ $(LDFLAGS)
 
+NATIVECHECK = $(BUILD)/native-check
+
+$(NATIVECHECK): $(filter-out %/headless.o,$(OBJ_HEADLESS)) $(BUILD)/tools/native_check.o
+	$(CC) -o $@ $^ -lm -lz $(NET_LIBS) $(THREAD_LIBS)
+
 $(HEADLESS): $(OBJ_HEADLESS)
 	$(CC) -o $@ $^ -lm -lz $(NET_LIBS) $(THREAD_LIBS)
 
@@ -158,5 +163,5 @@ format:
 format-check:
 	$(UNCRUSTIFY) -c .uncrustify.cfg --check $(C_STYLE_SOURCES)
 
-test: $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE)
+test: $(PROG) $(HEADLESS) $(PROXYCHECK) $(VELORAPI) $(VELOSTATE) $(NATIVECHECK)
 	sh tests/boot.sh $(ROM) $(CE2_ROM)

@@ -56,7 +56,7 @@ typedef struct {
     uint32_t dram_end;
 } mips_bus_t;
 
-#define MIPS_WATCH_MAX 8
+#define MIPS_WATCH_MAX 24
 #define MIPS_PAGE_CACHE 64
 #define MIPS_FETCH_CACHE 32
 

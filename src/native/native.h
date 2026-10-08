@@ -26,5 +26,9 @@ bool native_wcslen(const native_memory_t *memory, const uint32_t *arguments, nat
 bool native_widen(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
 bool native_range_lookup(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
 bool native_export_lookup(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
+bool native_strcmp_signed(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
+bool native_zero(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
+bool native_memmove(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
+bool native_range_lookup16(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
 bool native_return_zero(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result);
 bool native_read(const native_memory_t *memory, uint32_t va, uint8_t *data, uint32_t length);
