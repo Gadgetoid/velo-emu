@@ -1,5 +1,7 @@
 #include "app/dialog.h"
 #include "app/menu_layout.h"
+#include "app/menu_queue.h"
+#include "app/menu_state.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -26,7 +28,6 @@
 #define FONT_SIZE        13.0f
 #define FALLBACK_ADVANCE ((float)SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE)
 
-#define MENU_QUEUE  32
 #define MAX_MENUS   16
 #define MAX_ITEMS   192
 #define MENU_ITEMS  48
@@ -111,13 +112,9 @@ static int top_menus[MAX_MENUS];
 static int top_count;
 static item_t items[MAX_ITEMS];
 static int item_count;
-static int item_of_tag[MENU_COUNT];
-static bool enabled[MENU_COUNT], checked[MENU_COUNT], hidden[MENU_COUNT];
 static level_t levels[MAX_DEPTH];
 static int depth;
 static int open_top = -1;
-static int queue[MENU_QUEUE];
-static int queued;
 static bool popup_failed;
 
 static const char *FONT_PATHS[] = {
@@ -384,20 +381,23 @@ static int parse_menu(int *cursor, const char *title) {
     menus[index].first = item_count;
     menus[index].count = 0;
     for (int i = 0; i < local_count && item_count < MAX_ITEMS; i++) {
-        if (local[i].tag >= 0 && local[i].tag < MENU_COUNT) item_of_tag[local[i].tag] = item_count;
         items[item_count++] = local[i];
         menus[index].count++;
     }
     return index;
 }
 
+static const char *item_title(const item_t *item) {
+    return item->kind == ITEM_ACTION ? menu_state_title(item->tag, item->title) : item->title;
+}
+
 static bool item_visible(const item_t *item) {
-    return item->kind != ITEM_ACTION || !hidden[item->tag];
+    return item->kind != ITEM_ACTION || !menu_state_hidden(item->tag);
 }
 
 static bool item_selectable(const item_t *item) {
     if (item->kind == ITEM_SEPARATOR || item->kind == ITEM_HEADING || !item_visible(item)) return false;
-    return item->kind == ITEM_SUBMENU || enabled[item->tag];
+    return item->kind == ITEM_SUBMENU || menu_state_enabled(item->tag);
 }
 
 static float item_height(const item_t *item) {
@@ -413,7 +413,7 @@ static void measure_menu(int menu, float *width, float *height) {
         if (!item_visible(item)) continue;
         rows += item_height(item);
         if (item->kind == ITEM_SEPARATOR) continue;
-        title_width = fmaxf(title_width, text_width(item->title));
+        title_width = fmaxf(title_width, text_width(item_title(item)));
         if (item->shortcut[0]) shortcut_width = fmaxf(shortcut_width, text_width(item->shortcut));
         if (item->kind == ITEM_SUBMENU) has_submenu = true;
     }
@@ -522,7 +522,7 @@ static void activate(int index) {
         return;
     }
     close_levels(0);
-    if (queued < MENU_QUEUE) queue[queued++] = item->tag;
+    menu_queue_push(item->tag);
 }
 
 static int bar_hit(float x, float y) {
@@ -643,7 +643,7 @@ static bool key_event(const SDL_Event *event) {
         }
         for (int i = 0; i < item_count; i++) {
             if (!items[i].key || items[i].key != key || items[i].modifiers != modifiers) continue;
-            if (!event->key.repeat && enabled[items[i].tag] && queued < MENU_QUEUE) queue[queued++] = items[i].tag;
+            if (!event->key.repeat && menu_state_enabled(items[i].tag)) menu_queue_push(items[i].tag);
             return true;
         }
         return false;
@@ -686,10 +686,6 @@ static bool key_event(const SDL_Event *event) {
 
 void menu_install(SDL_Window *window) {
     main_window = window;
-    for (int i = 0; i < MENU_COUNT; i++) {
-        item_of_tag[i] = -1;
-        enabled[i] = true;
-    }
     for (int cursor = 0; cursor < MENU_ENTRY_COUNT;) {
         const menu_entry_t *entry = &MENU_ENTRIES[cursor++];
         if (entry->kind != MENU_ENTRY_MENU) continue;
@@ -782,8 +778,8 @@ static void draw_level(level_t *level) {
         bool highlighted = selectable && level->hover == i;
         if (highlighted) fill_rect(canvas, 1, top, width - 2, ROW_HEIGHT, colours->highlight);
         colour_t text = !selectable ? colours->disabled : highlighted ? colours->highlight_text : colours->text;
-        if (item->kind == ITEM_ACTION && checked[item->tag]) draw_mark(canvas, GLYPH_CHECK, CHECK_COLUMN / 2 + 1, top, text);
-        draw_text(canvas, CHECK_COLUMN, top, ROW_HEIGHT, item->title, text);
+        if (item->kind == ITEM_ACTION && menu_state_checked(item->tag)) draw_mark(canvas, GLYPH_CHECK, CHECK_COLUMN / 2 + 1, top, text);
+        draw_text(canvas, CHECK_COLUMN, top, ROW_HEIGHT, item_title(item), text);
         if (item->shortcut[0]) {
             colour_t shortcut = !selectable ? colours->disabled : highlighted ? colours->highlight_text : colours->shortcut;
             draw_text(canvas, width - TEXT_RIGHT - text_width(item->shortcut), top, ROW_HEIGHT, item->shortcut, shortcut);
@@ -833,31 +829,6 @@ void menu_draw(SDL_Renderer *renderer) {
         draw_level(&levels[i]);
         SDL_RenderPresent(popup);
     }
-}
-
-int menu_poll(void) {
-    if (queued == 0) return -1;
-    int item = queue[0];
-    for (int i = 1; i < queued; i++) queue[i - 1] = queue[i];
-    queued--;
-    return item;
-}
-
-void menu_set_enabled(int item, bool on) {
-    if (item >= 0 && item < MENU_COUNT) enabled[item] = on;
-}
-
-void menu_set_checked(int item, bool on) {
-    if (item >= 0 && item < MENU_COUNT) checked[item] = on;
-}
-
-void menu_set_title(int item, const char *title) {
-    if (item < 0 || item >= MENU_COUNT || item_of_tag[item] < 0) return;
-    snprintf(items[item_of_tag[item]].title, sizeof items[0].title, "%s", title);
-}
-
-void menu_set_hidden(int item, bool on) {
-    if (item >= 0 && item < MENU_COUNT) hidden[item] = on;
 }
 
 int menu_modifiers(void) {

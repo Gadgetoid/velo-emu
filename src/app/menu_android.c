@@ -11,6 +11,8 @@
 #include "app/dialog.h"
 #include "app/menu.h"
 #include "app/menu_layout.h"
+#include "app/menu_queue.h"
+#include "app/menu_state.h"
 #include "vendor/stb_truetype.h"
 
 #define ROW_POINTS        44.0f
@@ -41,7 +43,6 @@
 #define TOAST_PAD_POINTS  12.0f
 #define TOAST_GAP_POINTS  16.0f
 #define TOAST_WIDTH       0.8f
-#define MENU_QUEUE        16
 #define PAGE_MAX          8
 #define ROW_MAX           128
 #define TITLE_MAX         96
@@ -114,12 +115,6 @@ static SDL_Window *main_window;
 static bool collapsed;
 static int pressed = -1;
 static bool latched[BUTTON_COUNT];
-static bool checked[MENU_COUNT];
-static bool hidden[MENU_COUNT];
-static bool disabled[MENU_COUNT];
-static char titles[MENU_COUNT][TITLE_MAX];
-static int queue[MENU_QUEUE];
-static int queued;
 
 static char toast[256];
 static bool panel_open;
@@ -390,7 +385,7 @@ static int page_entries(int *starts) {
 }
 
 static bool visible_item(const menu_entry_t *entry) {
-    return entry->kind == MENU_ENTRY_ITEM && supported(entry->tag) && !hidden[entry->tag];
+    return entry->kind == MENU_ENTRY_ITEM && supported(entry->tag) && !menu_state_hidden(entry->tag);
 }
 
 static bool section_has_items(int from) {
@@ -429,7 +424,7 @@ static void panel_list(list_t *list) {
             if (list->row_count && list->rows[list->row_count - 1].kind != ROW_SEPARATOR) add_row(list, ROW_SEPARATOR, 0, NULL, false, false);
         } else if (visible_item(entry)) {
             int tag = entry->tag;
-            add_row(list, ROW_ITEM, tag, titles[tag][0] ? titles[tag] : entry->title, checked[tag], disabled[tag]);
+            add_row(list, ROW_ITEM, tag, menu_state_title(tag, entry->title), menu_state_checked(tag), !menu_state_enabled(tag));
         }
     }
     while (list->row_count && list->rows[list->row_count - 1].kind == ROW_SEPARATOR) list->row_count--;
@@ -559,10 +554,6 @@ static void push_key(SDL_Keycode key, bool down) {
     SDL_PushEvent(&event);
 }
 
-static void enqueue(int item) {
-    if (queued < MENU_QUEUE) queue[queued++] = item;
-}
-
 static void release(void) {
     if (pressed < 0) return;
     push_key(BUTTONS[pressed].key, false);
@@ -600,7 +591,7 @@ static void press(int index) {
         push_key(button->key, latched[index]);
         break;
     case BUTTON_ITEM:
-        enqueue(button->item);
+        menu_queue_push(button->item);
         break;
     }
 }
@@ -629,7 +620,7 @@ static bool panel_event(const SDL_Event *event) {
         page = tap.tab;
         list_reset();
     } else if (tap.tag >= 0) {
-        enqueue(tap.tag);
+        menu_queue_push(tap.tag);
         open_panel(false);
     }
     return true;
@@ -637,8 +628,7 @@ static bool panel_event(const SDL_Event *event) {
 
 void menu_install(SDL_Window *window) {
     main_window = window;
-    for (int i = 0; i < MENU_COUNT; i++) titles[i][0] = 0;
-    SDL_strlcpy(titles[MENU_COPY_SCREEN], "Share Screen" ELLIPSIS, sizeof titles[MENU_COPY_SCREEN]);
+    menu_set_title(MENU_COPY_SCREEN, "Share Screen" ELLIPSIS);
 }
 
 int menu_bar_height(void) {
@@ -781,7 +771,7 @@ void menu_draw(SDL_Renderer *renderer) {
     for (int i = 0; i < BUTTON_COUNT; i++) {
         SDL_FRect *rect = &current.buttons[i];
         if (rect->w <= 0) continue;
-        bool lit = i == pressed || latched[i] || (BUTTONS[i].kind == BUTTON_KEYBOARD && keyboard) || (BUTTONS[i].kind == BUTTON_ITEM && checked[BUTTONS[i].item]);
+        bool lit = i == pressed || latched[i] || (BUTTONS[i].kind == BUTTON_KEYBOARD && keyboard) || (BUTTONS[i].kind == BUTTON_ITEM && menu_state_checked(BUTTONS[i].item));
         if (lit) SDL_SetRenderDrawColor(renderer, 0x8A, 0x9A, 0x6A, 0xFF);
         else SDL_SetRenderDrawColor(renderer, 0x44, 0x44, 0x44, 0xFF);
         SDL_RenderFillRect(renderer, rect);
@@ -798,29 +788,6 @@ void menu_draw(SDL_Renderer *renderer) {
 }
 
 void menu_ensure(void) {
-}
-
-int menu_poll(void) {
-    if (!queued) return -1;
-    int item = queue[0];
-    memmove(queue, queue + 1, (size_t)--queued * sizeof queue[0]);
-    return item;
-}
-
-void menu_set_checked(int item, bool value) {
-    if (item >= 0 && item < MENU_COUNT) checked[item] = value;
-}
-
-void menu_set_enabled(int item, bool value) {
-    if (item >= 0 && item < MENU_COUNT) disabled[item] = !value;
-}
-
-void menu_set_title(int item, const char *title) {
-    if (item >= 0 && item < MENU_COUNT) SDL_strlcpy(titles[item], title, sizeof titles[item]);
-}
-
-void menu_set_hidden(int item, bool value) {
-    if (item >= 0 && item < MENU_COUNT) hidden[item] = value;
 }
 
 int menu_modifiers(void) {

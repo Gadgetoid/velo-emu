@@ -36,9 +36,9 @@ ifeq ($(MENU),macos)
 SRC_MENU  = src/app/menu_macos.m src/app/dialog_macos.m
 LDFLAGS  += -framework Cocoa
 else ifeq ($(MENU),android)
-SRC_MENU  = src/app/menu_android.c src/app/android.c src/vendor/truetype.c
+SRC_MENU  = src/app/menu_android.c src/app/menu_state.c src/app/android.c src/vendor/truetype.c
 else
-SRC_MENU  = src/app/menu_bar.c src/vendor/truetype.c
+SRC_MENU  = src/app/menu_bar.c src/app/menu_state.c src/vendor/truetype.c
 endif
 
 ifeq ($(shell $(PKG_CONFIG) --exists slirp && echo yes),yes)
@@ -59,7 +59,7 @@ endif
 
 SRC_MACHINE = src/core/mips.c src/core/machine.c src/core/ce.c src/core/gdb.c src/core/mailbox.c src/core/agent.c src/core/screen.c src/core/lzw.c src/core/lz.c src/core/accel.c src/core/vdisk.c src/core/pccard.c src/core/uart.c src/core/key_text.c src/util/options.c src/util/file.c
 SRC_RAPI    = src/rapi/rapi.c src/rapi/rapi_load.c src/rapi/rapi_setup.c src/rapi/rapi_sync.c
-SRC_APP     = $(SRC_MACHINE) $(SRC_NET) $(SRC_RAPI) src/app/capture.c src/app/desktop.c src/core/lcd.c src/util/png.c src/app/host.c src/app/input.c src/app/launch.c src/app/library.c src/app/log.c src/app/machine_session.c src/app/notices.c src/app/paths.c src/app/picks.c src/app/rom_catalog.c src/app/runner.c src/app/serial_service.c src/app/settings.c src/app/snapshot_store.c src/app/typer.c src/app/view.c src/app/profiles.c src/util/fat.c src/util/marker.c src/app/main.c $(SRC_MENU)
+SRC_APP     = $(SRC_MACHINE) $(SRC_NET) $(SRC_RAPI) src/app/capture.c src/app/desktop.c src/core/lcd.c src/util/png.c src/app/host.c src/app/input.c src/app/launch.c src/app/library.c src/app/log.c src/app/machine_session.c src/app/menu_queue.c src/app/notices.c src/app/paths.c src/app/picks.c src/app/rom_catalog.c src/app/runner.c src/app/serial_service.c src/app/settings.c src/app/snapshot_store.c src/app/typer.c src/app/view.c src/app/profiles.c src/util/fat.c src/util/marker.c src/app/main.c $(SRC_MENU)
 
 OBJ_APP      = $(patsubst %.m,$(BUILD)/%.o,$(SRC_APP:%.c=$(BUILD)/%.o))
 OBJ_HEADLESS = $(SRC_MACHINE:%.c=$(BUILD)/%.o) $(SRC_NET:%.c=$(BUILD)/%.o) $(BUILD)/src/core/lcd.o $(BUILD)/src/util/png.o $(BUILD)/tools/headless.o

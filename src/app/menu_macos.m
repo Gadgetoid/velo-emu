@@ -1,11 +1,8 @@
 #import <Cocoa/Cocoa.h>
 
 #include "app/menu_layout.h"
+#include "app/menu_queue.h"
 
-#define MENU_QUEUE 32
-
-static int queue[MENU_QUEUE];
-static int queued = 0;
 static NSMenuItem *items[MENU_COUNT];
 
 @interface VeloMenuTarget : NSObject
@@ -15,7 +12,7 @@ static VeloMenuTarget *target = nil;
 
 @implementation VeloMenuTarget
 - (void)fire:(NSMenuItem *)item {
-    if (queued < MENU_QUEUE) queue[queued++] = (int)item.tag;
+    menu_queue_push((int)item.tag);
 }
 @end
 
@@ -125,14 +122,6 @@ void menu_draw(SDL_Renderer *renderer) {
 
 void menu_ensure(void) {
     if (holder_count) attach_menus();
-}
-
-int menu_poll(void) {
-    if (queued == 0) return -1;
-    int item = queue[0];
-    for (int i = 1; i < queued; i++) queue[i - 1] = queue[i];
-    queued--;
-    return item;
 }
 
 void menu_set_enabled(int item, bool enabled) {
