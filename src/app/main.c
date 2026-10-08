@@ -25,6 +25,7 @@
 #include "app/profiles.h"
 #include "app/rom_catalog.h"
 #include "app/runner.h"
+#include "app/serial_service.h"
 #include "app/settings.h"
 #include "app/snapshot_store.h"
 #include "app/typer.h"
@@ -67,8 +68,6 @@
 #define WINDOW_TITLE     "Philips Velo 1"
 #define ANDROID_UNLIT_LEVEL 0.5f
 
-#define SERIAL_PORT_MAX   16
-#define PORT_SCAN_SECONDS 2.0
 
 typedef struct {
     settings_t settings;
@@ -94,13 +93,7 @@ typedef struct {
     typer_t typer;
     scroller_t scroller;
     notice_t notice;
-    serial_link_t serial;
-    uint64_t serial_reconnect_at, serial_unplug_at;
-    serial_mode_t serial_reconnect_mode;
-    bool serial_tcp_attached;
-    char ports[SERIAL_PORT_MAX][SERIAL_LINK_PORT_NAME];
-    int port_count;
-    double since_port_scan;
+    serial_service_t serial;
     desktop_t *desktop;
     dropped_t dropped;
     picked_t *picked;
@@ -131,71 +124,6 @@ static void release_keys(input_queue_t *input, machine_t *machine, bool *held, i
             held[scancode] = false;
             input_add(input, machine, INPUT_KEY, false, 0, 0, scancode);
         }
-    }
-}
-
-static void rapi_socket_path(char *path, size_t size) {
-#ifdef __ANDROID__
-    net_gateway_socket_path(path, size, "velo-rapi");
-#else
-    rapi_data_path("rapi.sock", path, size);
-#endif
-}
-
-static void serial_close(serial_link_t *serial, machine_t *machine) {
-    serial_link_close(serial);
-    machine_serial_connect(machine, false);
-}
-
-static bool serial_keeps_link(const serial_link_t *serial, serial_mode_t mode, const char *device) {
-    if (mode == SERIAL_OFF || mode == SERIAL_NETWORK || serial->mode != mode) return false;
-    return mode != SERIAL_DEVICE || (device && !strcmp(serial->name, device));
-}
-
-static const char *serial_open(serial_link_t *serial, machine_t *machine, serial_mode_t mode, const char *device) {
-    static char rapi_socket[1024];
-    static char notice[SERIAL_LINK_PORT_NAME + 16];
-    if (serial_keeps_link(serial, mode, device)) {
-        machine_serial_connect(machine, false);
-    } else {
-        serial_close(serial, machine);
-        if (mode == SERIAL_NETWORK) {
-            rapi_socket_path(rapi_socket, sizeof rapi_socket);
-            serial->options.rapi_socket = rapi_socket;
-        }
-        const char *failure = serial_link_open(serial, mode, device);
-        if (failure) return failure;
-        if (mode == SERIAL_PTY) fprintf(stderr, "serial: COM1 on %s\n", serial->name);
-    }
-    machine_set_serial_tag(machine, (uint32_t)mode);
-    if (mode != SERIAL_OFF && serial_link_attached(serial)) machine_serial_connect(machine, true);
-    if (mode == SERIAL_NETWORK) return "network cable connected";
-    if (mode == SERIAL_TCP) {
-        char address[64];
-        host_local_address(address, sizeof address);
-        snprintf(notice, sizeof notice, "COM1 at %s:%d", address, serial->tcp_port);
-        return notice;
-    }
-    if (mode == SERIAL_PTY) return serial->name;
-    if (mode == SERIAL_DEVICE) {
-        snprintf(notice, sizeof notice, "COM1 on %s", serial->name);
-        return notice;
-    }
-    return "serial disconnected";
-}
-
-static void serial_restored(serial_link_t *serial, machine_t *machine, const char *device, uint64_t *reconnect_at, serial_mode_t *reconnect_mode) {
-    bool was_connected = machine_serial_connected(machine);
-    serial_mode_t mode = (serial_mode_t)machine_serial_tag(machine);
-    machine_serial_connect(machine, false);
-    *reconnect_at = 0;
-    bool listening = mode == SERIAL_TCP && serial->mode == SERIAL_TCP;
-    if (listening || (was_connected && (mode == SERIAL_NETWORK || mode == SERIAL_PTY || mode == SERIAL_TCP || (mode == SERIAL_DEVICE && device && device[0])))) {
-        *reconnect_mode = mode;
-        *reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
-        if (!serial_keeps_link(serial, mode, device)) serial_link_close(serial);
-    } else {
-        serial_link_close(serial);
     }
 }
 
@@ -302,7 +230,7 @@ static bool poll_host_events(app_t *app) {
             break;
         case SDL_EVENT_DROP_COMPLETE:
             if (app->dropped.count) {
-                bool online = app->serial.gateway && net_gateway_online(app->serial.gateway);
+                bool online = serial_service_online(&app->serial);
                 notice_show(&app->notice, picks_handle_drop(&app->dropped, machine, app->desktop, online && !desktop_busy(app->desktop)), NOTICE_MEDIUM);
             }
             break;
@@ -478,7 +406,7 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
     case MENU_PAUSE: app->paused = !app->paused; break;
     case MENU_SOFT_RESET:
         machine_soft_reset(machine);
-        if (app->serial.mode == SERIAL_NETWORK) app->serial_unplug_at = machine_cycles(machine) + SOFT_RESET_REPLUG_SECONDS * MACHINE_CLOCK_HZ;
+        serial_service_replug(&app->serial, machine, SOFT_RESET_REPLUG_SECONDS);
         break;
     case MENU_PASTE: {
         char *clipboard = SDL_GetClipboardText();
@@ -495,7 +423,7 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
     case MENU_LOAD_STATE:
         snapshot_store_backup_machine(&app->snapshots, machine, app->session.state_path);
         if (machine_load(machine, app->session.state_path, NULL)) {
-            serial_restored(&app->serial, machine, settings->serial_device, &app->serial_reconnect_at, &app->serial_reconnect_mode);
+            serial_service_restored(&app->serial, machine);
             notice_show(&app->notice, "state loaded", NOTICE_SHORT);
         } else {
             notice_show(&app->notice, "no saved state", NOTICE_SHORT);
@@ -583,20 +511,18 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
             *switch_to = item - MENU_MACHINE_FIRST;
             break;
         }
-        if (item >= MENU_SERIAL_PORT_FIRST && item <= MENU_SERIAL_PORT_LAST && item - MENU_SERIAL_PORT_FIRST < app->port_count) {
-            snprintf(settings->serial_device, sizeof settings->serial_device, "%s", app->ports[item - MENU_SERIAL_PORT_FIRST]);
+        if (item >= MENU_SERIAL_PORT_FIRST && item <= MENU_SERIAL_PORT_LAST && item - MENU_SERIAL_PORT_FIRST < app->serial.port_count) {
+            snprintf(settings->serial_device, sizeof settings->serial_device, "%s", app->serial.ports[item - MENU_SERIAL_PORT_FIRST]);
             settings_save(settings);
-            app->serial_reconnect_at = 0;
-            notice_show(&app->notice, serial_open(&app->serial, machine, SERIAL_DEVICE, settings->serial_device), NOTICE_LONG);
+            notice_show(&app->notice, serial_service_select(&app->serial, machine, SERIAL_DEVICE), NOTICE_LONG);
         }
         break;
     case MENU_SERIAL_NETWORK:
     case MENU_SERIAL_PTY:
     case MENU_SERIAL_TCP:
     case MENU_SERIAL_OFF:
-        app->serial_reconnect_at = 0;
         notice_show(&app->notice,
-                    serial_open(&app->serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF, settings->serial_device), NOTICE_LONG);
+                    serial_service_select(&app->serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF), NOTICE_LONG);
         break;
 #ifdef __ANDROID__
     case MENU_FULL_BRIGHTNESS:
@@ -644,13 +570,12 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
     case MENU_NETWORK_RAPI: {
         settings->network_rapi = !settings->network_rapi;
         settings_save(settings);
-        app->serial.options.rapi_port = settings->network_rapi ? (int)settings->rapi_port : 0;
         char address[64];
         host_local_address(address, sizeof address);
         char message[160];
         if (settings->network_rapi) snprintf(message, sizeof message, "RAPI at %s:%u", address, settings->rapi_port);
         else snprintf(message, sizeof message, "RAPI over the network off");
-        if (app->serial.mode == SERIAL_NETWORK) serial_open(&app->serial, machine, SERIAL_NETWORK, settings->serial_device);
+        serial_service_update_rapi(&app->serial, machine);
         notice_show(&app->notice, message, NOTICE_LONG);
         break;
     }
@@ -707,9 +632,7 @@ static void switch_machine(app_t *app, int index) {
         return;
     }
     machine_t *machine = app->session.machine;
-    serial_mode_t mode = app->serial.mode;
-    if (serial_keeps_link(&app->serial, mode, app->settings.serial_device)) machine_serial_connect(machine, false);
-    else serial_close(&app->serial, machine);
+    serial_mode_t mode = serial_service_detach(&app->serial, machine);
     if (app->pen_down) machine_touch(machine, false, 0, 0);
     input_clear(&app->input);
     app->pen_down = false;
@@ -723,11 +646,7 @@ static void switch_machine(app_t *app, int index) {
     app->key_layout = machine_key_layout(machine);
     snprintf(app->settings.machine, sizeof app->settings.machine, "%s", app->current.id);
     settings_save(&app->settings);
-    app->serial_reconnect_at = app->serial_unplug_at = 0;
-    if (mode != SERIAL_OFF) {
-        app->serial_reconnect_mode = mode;
-        app->serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
-    }
+    serial_service_attach(&app->serial, machine, mode);
     app->power_release_at = app->backlight_release_at = 0;
     app->since_backup = 0;
     app_runner_set_machine_locked(app->runner, machine);
@@ -773,7 +692,7 @@ static void handle_picked(app_t *app, bool velo_online) {
         char message[1200];
         if (machine_state_matches(machine, picked->paths[0])) snapshot_store_backup_machine(&app->snapshots, machine, app->session.state_path);
         if (machine_load(machine, picked->paths[0], NULL)) {
-            serial_restored(&app->serial, machine, app->settings.serial_device, &app->serial_reconnect_at, &app->serial_reconnect_mode);
+            serial_service_restored(&app->serial, machine);
             snprintf(message, sizeof message, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
         } else {
             snprintf(message, sizeof message, "%s isn't a snapshot of this ROM", file_leaf_name(picked->paths[0]));
@@ -795,18 +714,10 @@ static void handle_picked(app_t *app, bool velo_online) {
 
 static void poll_desktop(app_t *app) {
     machine_t *machine = app->session.machine;
-    if (app->serial.gateway && net_gateway_take_desktop_connected(app->serial.gateway) && app->settings.shared_folder[0]) {
+    if (app->serial.link.gateway && net_gateway_take_desktop_connected(app->serial.link.gateway) && app->settings.shared_folder[0]) {
         desktop_sync(app->desktop, app->settings.shared_folder);
     }
-    if (desktop_take_reconnect(app->desktop) && app->serial.mode == SERIAL_NETWORK) app->serial_unplug_at = machine_cycles(machine) + SPEED_SETTLE_SECONDS * MACHINE_CLOCK_HZ;
-    if (app->serial_unplug_at && machine_cycles(machine) >= app->serial_unplug_at) {
-        app->serial_unplug_at = 0;
-        if (app->serial.mode == SERIAL_NETWORK) {
-            serial_open(&app->serial, machine, SERIAL_OFF, app->settings.serial_device);
-            app->serial_reconnect_mode = SERIAL_NETWORK;
-            app->serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
-        }
-    }
+    if (desktop_take_reconnect(app->desktop)) serial_service_replug(&app->serial, machine, SPEED_SETTLE_SECONDS);
     char message[256];
     if (desktop_take_status(app->desktop, message, sizeof message)) notice_show(&app->notice, message, NOTICE_MEDIUM);
 }
@@ -830,24 +741,20 @@ static void update_menus(app_t *app, bool velo_online) {
     }
     menu_set_enabled(MENU_EJECT_CARD, machine_card_inserted(machine));
     menu_set_enabled(MENU_EJECT_DISK, machine_disk_inserted(machine));
-    menu_set_checked(MENU_SERIAL_NETWORK, app->serial.mode == SERIAL_NETWORK);
-    menu_set_checked(MENU_SERIAL_PTY, app->serial.mode == SERIAL_PTY);
-    menu_set_checked(MENU_SERIAL_TCP, app->serial.mode == SERIAL_TCP);
+    menu_set_checked(MENU_SERIAL_NETWORK, app->serial.link.mode == SERIAL_NETWORK);
+    menu_set_checked(MENU_SERIAL_PTY, app->serial.link.mode == SERIAL_PTY);
+    menu_set_checked(MENU_SERIAL_TCP, app->serial.link.mode == SERIAL_TCP);
     host_reap_children();
-    if (app->since_port_scan <= 0) {
-        app->since_port_scan = PORT_SCAN_SECONDS;
-        app->port_count = serial_link_ports(app->ports, SERIAL_PORT_MAX);
-    }
     for (int i = 0; i < SERIAL_PORT_MAX; i++) {
         int port_item = MENU_SERIAL_PORT_FIRST + i;
-        bool shown = i < app->port_count || (i == 0 && app->port_count == 0);
+        bool shown = i < app->serial.port_count || (i == 0 && app->serial.port_count == 0);
         menu_set_hidden(port_item, !shown);
         if (!shown) continue;
-        menu_set_title(port_item, app->port_count ? app->ports[i] + 5 : "No serial ports found");
-        menu_set_enabled(port_item, app->port_count > 0);
-        menu_set_checked(port_item, app->port_count && app->serial.mode == SERIAL_DEVICE && !strcmp(settings->serial_device, app->ports[i]));
+        menu_set_title(port_item, app->serial.port_count ? app->serial.ports[i] + 5 : "No serial ports found");
+        menu_set_enabled(port_item, app->serial.port_count > 0);
+        menu_set_checked(port_item, app->serial.port_count && app->serial.link.mode == SERIAL_DEVICE && !strcmp(settings->serial_device, app->serial.ports[i]));
     }
-    menu_set_checked(MENU_SERIAL_OFF, app->serial.mode == SERIAL_OFF);
+    menu_set_checked(MENU_SERIAL_OFF, app->serial.link.mode == SERIAL_OFF);
     menu_set_checked(MENU_PAUSE, app->paused);
     menu_set_checked(MENU_BACKLIGHT, machine_backlight(machine));
     menu_set_checked(MENU_SOUND, app->sound);
@@ -880,7 +787,6 @@ static void step_timers(app_t *app, double elapsed) {
     machine_t *machine = app->session.machine;
     app->since_autosave += elapsed;
     if (!app->paused) app->since_backup += elapsed;
-    app->since_port_scan -= elapsed;
     if (app->since_backup >= BACKUP_SECONDS) {
         app->since_backup = 0;
         snapshot_store_backup_machine(&app->snapshots, machine, app->session.state_path);
@@ -888,22 +794,6 @@ static void step_timers(app_t *app, double elapsed) {
     if (app->since_autosave >= AUTOSAVE_SECONDS) {
         app->since_autosave = 0;
         machine_save(machine, app->session.state_path, (int64_t)time(NULL));
-    }
-}
-
-static void step_serial(app_t *app) {
-    machine_t *machine = app->session.machine;
-    serial_link_pump(&app->serial, machine);
-    if (app->serial.mode != SERIAL_TCP) {
-        app->serial_tcp_attached = false;
-    } else if (serial_link_attached(&app->serial) != app->serial_tcp_attached) {
-        app->serial_tcp_attached = !app->serial_tcp_attached;
-        machine_serial_connect(machine, app->serial_tcp_attached);
-        notice_show(&app->notice, app->serial_tcp_attached ? "TCP client connected" : "TCP client disconnected", NOTICE_SHORT);
-    }
-    if (app->serial_reconnect_at && machine_cycles(machine) >= app->serial_reconnect_at) {
-        app->serial_reconnect_at = 0;
-        notice_show(&app->notice, serial_open(&app->serial, machine, app->serial_reconnect_mode, app->settings.serial_device), NOTICE_MEDIUM);
     }
 }
 
@@ -959,7 +849,7 @@ static void run_frame(app_t *app) {
         handle_menu(app, item, &switch_to, &events_seen);
     }
     if (switch_to >= 0 && switch_to < app->profiles.count && switch_to != app->current_index) switch_machine(app, switch_to);
-    bool velo_online = app->serial.gateway && net_gateway_online(app->serial.gateway);
+    bool velo_online = serial_service_online(&app->serial);
     if (app->picked) handle_picked(app, velo_online);
     poll_desktop(app);
     update_menus(app, velo_online);
@@ -977,7 +867,7 @@ static void run_frame(app_t *app) {
     app_runner_set_paused_locked(app->runner, app->paused);
     typer_step(&app->typer, app->session.machine);
     scroller_step(&app->scroller, app->session.machine);
-    step_serial(app);
+    serial_service_step(&app->serial, app->session.machine, elapsed, &app->notice);
     step_buttons(app);
     step_audio(app);
     bool lcd_on = sync_screen(app);
@@ -1132,24 +1022,13 @@ static void open_audio(app_t *app) {
 }
 
 static void open_serial(app_t *app) {
-    machine_t *machine = app->session.machine;
-    serial_link_init(&app->serial, app_log);
-    app->serial.options.user_agent = app->settings.user_agent;
-    app->serial.options.rapi_port = app->settings.network_rapi ? (int)app->settings.rapi_port : 0;
-    app->serial.tcp_port = (int)app->settings.serial_tcp_port;
     char rapi_socket[1024], sync_manifest[1024];
-    rapi_socket_path(rapi_socket, sizeof rapi_socket);
+    app_rapi_socket_path(rapi_socket, sizeof rapi_socket);
     rapi_data_path("sync-manifest.txt", sync_manifest, sizeof sync_manifest);
     app->desktop = desktop_create(rapi_socket, sync_manifest);
-    app->serial_reconnect_mode = SERIAL_OFF;
-    serial_restored(&app->serial, machine, app->settings.serial_device, &app->serial_reconnect_at, &app->serial_reconnect_mode);
-    serial_mode_t mode = app->launch.serial_mode;
-    if (mode != SERIAL_OFF && app->serial_reconnect_at) {
-        app->serial_reconnect_mode = mode;
-    } else if (mode != SERIAL_OFF) {
-        const char *result = serial_open(&app->serial, machine, mode, app->settings.serial_device);
-        if (!notice_current(&app->notice)) notice_show(&app->notice, result, NOTICE_MEDIUM);
-    }
+    serial_service_init(&app->serial, &app->settings);
+    const char *result = serial_service_start(&app->serial, app->session.machine, app->launch.serial_mode);
+    if (!notice_current(&app->notice)) notice_show(&app->notice, result, NOTICE_MEDIUM);
 }
 
 static int start_debugging(app_t *app) {
@@ -1188,7 +1067,7 @@ static void shut_down(app_t *app) {
     app->agent = NULL;
     free(app->picked);
     machine_save(machine, app->session.state_path, (int64_t)time(NULL));
-    serial_close(&app->serial, machine);
+    serial_service_close(&app->serial, machine);
     desktop_destroy(app->desktop);
     if (app_log_verbose()) machine_dump_state(machine);
     SDL_DestroyAudioStream(app->audio);
