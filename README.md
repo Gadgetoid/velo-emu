@@ -72,7 +72,7 @@ On macOS the menus are in the menu bar. On Linux they're in a bar along the top 
 | View | Full Screen | Cmd-Ctrl-F |
 | Devices | PC Card: Insert Card Image…, Eject Card | Cmd-O, Cmd-E |
 | Devices | Paravirtual Disk: Insert Disk Image…, New Disk Image…, Eject Disk (needs the guest driver) | |
-| Devices | Serial Port: Not Connected, Network (PPP), Pseudo-terminal, Host Serial Port (the detected ports) | Cmd-Shift-N for Network |
+| Devices | Serial Port: Not Connected, Network (PPP), Pseudo-terminal, TCP Port, Host Serial Port (the detected ports) | Cmd-Shift-N for Network |
 | Devices | Connect Network at Launch | |
 | Devices | Sound | |
 | PC Link | Send Files to Velo…, Copy My Documents to Mac… | |
@@ -166,7 +166,9 @@ Then use Devices > Insert Disk Image…, New Disk Image… (a blank 32 MB image,
 
 Devices > Network (PPP), or `--serial=net`, plugs COM1 into a built-in PPP server on a libslirp user-mode network. Connecting the cable starts CE's own desktop connection: CE sends `CLIENT`, the emulator responds with `CLIENTSERVER`, and PPP comes up with the Velo at 10.0.2.15, the host at 10.0.2.2 and DNS at 10.0.2.3. CE's sockets reach the host and the internet (outgoing only); 10.0.2.2 is the host's loopback.
 
-Devices > Pseudo-terminal, or `--serial=pty`, puts COM1 on a pty and prints its path in the title bar and on stderr, for a terminal or PPP tools.
+Devices > Pseudo-terminal, or `--serial=pty`, puts COM1 on a pty and prints its path in the title bar and on stderr, for a terminal or PPP tools. The pty stays the same while the app runs; choosing Pseudo-terminal again replugs the cable, so CE starts a new connection.
+
+Devices > TCP Port, or `--serial=tcp`, offers COM1 as raw bytes on TCP port 9991 on every network interface (`serial_tcp_port` in `emu.ini`, or `--serial=tcp:PORT`), and shows the address to use. One client at a time: the cable is plugged in while it's connected, so CE starts its desktop connection when it attaches. This connects COM1 to another emulator, such as a Windows 95 PC in QEMU (`-serial tcp:HOST:9991`) running H/PC Explorer. QEMU connects when the VM starts, so choose TCP Port again to replug the cable once the PC side is listening. `velo-headless --tcp=PORT` does the same.
 
 Devices > Host Serial Port, or `--serial=/dev/cu.usbserial-XXXX`, connects COM1 to a real port: the menu lists `/dev/cu.*` on macOS and `/dev/ttyUSB*` and `/dev/ttyACM*` on Linux, refreshed as devices come and go. The port is raw, with no flow control and modem lines ignored, and follows the baud rate CE sets (nearest standard rate). It's kept as `serial_device=` in `emu.ini`.
 

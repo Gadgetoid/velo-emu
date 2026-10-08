@@ -15,7 +15,7 @@ expect_fail headless_unknown "unknown option --tpa" ./headless rom.bin --tpa=1:2
 expect_fail headless_bad_tap "wants SECONDS:X:Y" ./headless rom.bin --tap=21:108
 expect_fail headless_bad_key "wants SECONDS:SCANCODE" ./headless rom.bin --key=1:19+
 expect_fail headless_long_key "wants SECONDS:SCANCODE" ./headless rom.bin --key=1:01+19+51+11+4B
-expect_fail velo_bad_serial "wants net|pty|off|PORT" ./velo --serial=usb
+expect_fail velo_bad_serial "wants net|pty|tcp" ./velo --serial=usb
 expect_fail headless_bad_screen "wants WxH" ./headless rom.bin --screen=1024x768
 expect_fail velo_bad_screen "wants WxH" ./velo --screen=640
 expect_fail velo_rapi_unknown "unknown option --frob" ./velo-rapi --frob

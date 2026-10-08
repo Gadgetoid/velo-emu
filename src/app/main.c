@@ -65,6 +65,7 @@
 #endif
 #define GDB_DEFAULT_PORT  1234
 #define RAPI_DEFAULT_PORT 9990
+#define SERIAL_TCP_DEFAULT_PORT 9991
 
 #ifdef __APPLE__
 #define SCREENSHOT_FOLDER SDL_FOLDER_DESKTOP
@@ -290,6 +291,8 @@ static void rapi_socket_path(char *path, size_t size) {
 #endif
 }
 
+static void local_address(char *address, size_t size);
+
 static void serial_close(serial_link_t *serial, machine_t *machine) {
     serial_link_close(serial);
     machine_serial_connect(machine, false);
@@ -316,8 +319,14 @@ static const char *serial_open(serial_link_t *serial, machine_t *machine, serial
         if (mode == SERIAL_PTY) fprintf(stderr, "serial: COM1 on %s\n", serial->name);
     }
     machine_set_serial_tag(machine, (uint32_t)mode);
-    if (mode != SERIAL_OFF) machine_serial_connect(machine, true);
+    if (mode != SERIAL_OFF && serial_link_attached(serial)) machine_serial_connect(machine, true);
     if (mode == SERIAL_NETWORK) return "network cable connected";
+    if (mode == SERIAL_TCP) {
+        char address[64];
+        local_address(address, sizeof address);
+        snprintf(notice, sizeof notice, "COM1 at %s:%d", address, serial->tcp_port);
+        return notice;
+    }
     if (mode == SERIAL_PTY) return serial->name;
     if (mode == SERIAL_DEVICE) {
         snprintf(notice, sizeof notice, "COM1 on %s", serial->name);
@@ -331,7 +340,8 @@ static void serial_restored(serial_link_t *serial, machine_t *machine, const cha
     serial_mode_t mode = (serial_mode_t)machine_serial_tag(machine);
     machine_serial_connect(machine, false);
     *reconnect_at = 0;
-    if (was_connected && (mode == SERIAL_NETWORK || mode == SERIAL_PTY || (mode == SERIAL_DEVICE && device && device[0]))) {
+    bool listening = mode == SERIAL_TCP && serial->mode == SERIAL_TCP;
+    if (listening || (was_connected && (mode == SERIAL_NETWORK || mode == SERIAL_PTY || mode == SERIAL_TCP || (mode == SERIAL_DEVICE && device && device[0])))) {
         *reconnect_mode = mode;
         *reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
         if (!serial_keeps_link(serial, mode, device)) serial_link_close(serial);
@@ -676,6 +686,7 @@ typedef struct {
     uint32_t full_brightness;
     uint32_t gdb_server, gdb_port;
     uint32_t network_rapi, rapi_port;
+    uint32_t serial_tcp_port;
 } settings_t;
 
 static void settings_path(char *path, size_t size) {
@@ -709,7 +720,7 @@ static void copy_setting(char *destination, size_t size, const char *value) {
 }
 
 static settings_t settings_load(void) {
-    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .optimisations = DEFAULT_OPTIMISATIONS, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1, .gdb_port = GDB_DEFAULT_PORT, .rapi_port = RAPI_DEFAULT_PORT };
+    settings_t settings = { .memory = 4, .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .speed = 1, .optimisations = DEFAULT_OPTIMISATIONS, .host_time = 1, .scale = 100, .display = VIEW_SIMULATED, .user_agent = NET_GATEWAY_DEFAULT_USER_AGENT, .full_brightness = 1, .gdb_port = GDB_DEFAULT_PORT, .rapi_port = RAPI_DEFAULT_PORT, .serial_tcp_port = SERIAL_TCP_DEFAULT_PORT };
     char path[1100];
     settings_path(path, sizeof path);
     FILE *file = fopen(path, "r");
@@ -739,6 +750,7 @@ static settings_t settings_load(void) {
         else if (sscanf(line, "gdb_port=%u", &value) == 1 && value > 0 && value < 65536) settings.gdb_port = value;
         else if (sscanf(line, "network_rapi=%u", &value) == 1) settings.network_rapi = value != 0;
         else if (sscanf(line, "rapi_port=%u", &value) == 1 && value > 0 && value < 65536) settings.rapi_port = value;
+        else if (sscanf(line, "serial_tcp_port=%u", &value) == 1 && value > 0 && value < 65536) settings.serial_tcp_port = value;
     }
     fclose(file);
     return settings;
@@ -750,10 +762,10 @@ static void settings_save(const settings_t *settings) {
     FILE *file = fopen(path, "w");
     if (!file) return;
     fprintf(file, "optimisations=%u\n", settings->optimisations);
-    fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\nfull_brightness=%u\ngdb_server=%u\ngdb_port=%u\nnetwork_rapi=%u\nrapi_port=%u\n", settings->memory,
+    fprintf(file, "memory=%u\nscreen=%ux%u\nspeed=%u\nhost_time=%u\nscale=%u\ndisplay=%u\nconnect_at_launch=%u\nsystem=%u\nmachine=%s\nserial_device=%s\nuser_agent=%s\nshared_folder=%s\nfull_brightness=%u\ngdb_server=%u\ngdb_port=%u\nnetwork_rapi=%u\nrapi_port=%u\nserial_tcp_port=%u\n", settings->memory,
             settings->screen.width, settings->screen.height, settings->speed, settings->host_time, settings->scale, settings->display, settings->connect_at_launch, settings->system, settings->machine, settings->serial_device,
             settings->user_agent, settings->shared_folder, settings->full_brightness, settings->gdb_server, settings->gdb_port,
-            settings->network_rapi, settings->rapi_port);
+            settings->network_rapi, settings->rapi_port, settings->serial_tcp_port);
     fclose(file);
 }
 
@@ -1317,7 +1329,7 @@ static const option_t LAUNCH_OPTIONS[] = {
     [LAUNCH_SPEED] = { "speed", "N", "CPU speed multiple: 1, 2, 4 or 8", 0 },
     [LAUNCH_OPTIMISATIONS] = { "optimisations", "on|off", "run CE's ROM compression natively and skip busy-waits on the clock", 0 },
     [LAUNCH_HEADING_CONNECTIONS] = { NULL, NULL, "Connections", 0 },
-    [LAUNCH_SERIAL] = { "serial", "net|pty|off|PORT", "COM1 on the PPP network, a pseudo-terminal, nothing, or a host serial port such as /dev/cu.usbserial-1", 0 },
+    [LAUNCH_SERIAL] = { "serial", "net|pty|tcp[:PORT]|off|PORT", "COM1 on the PPP network, a pseudo-terminal, a TCP port (9991 or PORT, kept in emu.ini), nothing, or a host serial port such as /dev/cu.usbserial-1", 0 },
     [LAUNCH_USER_AGENT] = { "user-agent", "TEXT", "the web proxy's user agent", 0 },
     [LAUNCH_AGENT] = { "agent", "SOCKET", "pass messages between a guest agent's break 0x51CE mailbox and one client on this Unix socket", 0 },
     [LAUNCH_HEADING_DEBUGGING] = { NULL, NULL, "Debugging", 0 },
@@ -1355,6 +1367,13 @@ static bool launch_option(void *context, int option, const char *value, char *er
     case LAUNCH_SERIAL:
         if (!strcmp(value, "net")) launch->serial_mode = SERIAL_NETWORK;
         else if (!strcmp(value, "pty")) launch->serial_mode = SERIAL_PTY;
+        else if (!strcmp(value, "tcp")) launch->serial_mode = SERIAL_TCP;
+        else if (!strncmp(value, "tcp:", 4)) {
+            long port;
+            if (!option_integer(value + 4, 10, &port) || port < 1 || port > 65535) return false;
+            settings->serial_tcp_port = (uint32_t)port;
+            launch->serial_mode = SERIAL_TCP;
+        }
         else if (!strcmp(value, "off")) launch->serial_mode = SERIAL_OFF;
         else if (value[0] == '/') {
             snprintf(settings->serial_device, sizeof settings->serial_device, "%s", value);
@@ -1504,6 +1523,7 @@ int main(int argc, char **argv) {
     serial_link_init(&serial, serial_log);
     serial.options.user_agent = settings.user_agent;
     serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
+    serial.tcp_port = (int)settings.serial_tcp_port;
     char rapi_socket[1024], sync_manifest[1024], desktop_notice[256], shared_notice[1200], paste_notice[64];
     static typer_t typer;
     static scroller_t scroller;
@@ -1517,6 +1537,7 @@ int main(int argc, char **argv) {
     rapi_data_path("sync-manifest.txt", sync_manifest, sizeof sync_manifest);
     desktop_t *desktop = desktop_create(rapi_socket, sync_manifest);
     uint64_t serial_reconnect_at = 0, serial_unplug_at = 0;
+    bool serial_tcp_attached = false;
     serial_mode_t serial_reconnect_mode = SERIAL_OFF;
     serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
     if (serial_mode != SERIAL_OFF && serial_reconnect_at) {
@@ -1889,9 +1910,10 @@ int main(int argc, char **argv) {
                 break;
             case MENU_SERIAL_NETWORK:
             case MENU_SERIAL_PTY:
+            case MENU_SERIAL_TCP:
             case MENU_SERIAL_OFF:
                 serial_reconnect_at = 0;
-                notice = serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : SERIAL_OFF, settings.serial_device);
+                notice = serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF, settings.serial_device);
                 notice_left = NOTICE_SECONDS * 3;
                 break;
 #ifdef __ANDROID__
@@ -2126,6 +2148,7 @@ int main(int argc, char **argv) {
         menu_set_enabled(MENU_EJECT_DISK, machine_disk_inserted(machine));
         menu_set_checked(MENU_SERIAL_NETWORK, serial.mode == SERIAL_NETWORK);
         menu_set_checked(MENU_SERIAL_PTY, serial.mode == SERIAL_PTY);
+        menu_set_checked(MENU_SERIAL_TCP, serial.mode == SERIAL_TCP);
         reap_reveal_children();
         if (since_port_scan <= 0) {
             since_port_scan = PORT_SCAN_SECONDS;
@@ -2195,6 +2218,14 @@ int main(int argc, char **argv) {
         typer_step(&typer, machine);
         scroller_step(&scroller, machine);
         serial_link_pump(&serial, machine);
+        if (serial.mode != SERIAL_TCP) {
+            serial_tcp_attached = false;
+        } else if (serial_link_attached(&serial) != serial_tcp_attached) {
+            serial_tcp_attached = !serial_tcp_attached;
+            machine_serial_connect(machine, serial_tcp_attached);
+            notice = serial_tcp_attached ? "TCP client connected" : "TCP client disconnected";
+            notice_left = NOTICE_SECONDS;
+        }
         if (serial_reconnect_at && machine_cycles(machine) >= serial_reconnect_at) {
             serial_reconnect_at = 0;
             notice = serial_open(&serial, machine, serial_reconnect_mode, settings.serial_device);

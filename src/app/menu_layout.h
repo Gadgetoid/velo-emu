@@ -130,6 +130,7 @@ static const menu_entry_t MENU_ENTRIES[] = {
     { MENU_ENTRY_ITEM, MENU_SERIAL_OFF, "Not Connected", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_NETWORK, "Network (PPP)", 'n', MENU_KEY_PRIMARY | MENU_KEY_SHIFT },
     { MENU_ENTRY_ITEM, MENU_SERIAL_PTY, "Pseudo-terminal", 0, 0 },
+    { MENU_ENTRY_ITEM, MENU_SERIAL_TCP, "TCP Port", 0, 0 },
     { MENU_ENTRY_SUBMENU, 0, "Host Serial Port", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_PORT_FIRST + 0, "", 0, 0 },
     { MENU_ENTRY_ITEM, MENU_SERIAL_PORT_FIRST + 1, "", 0, 0 },
