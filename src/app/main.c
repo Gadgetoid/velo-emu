@@ -12,6 +12,7 @@
 #include "app/desktop.h"
 #include "app/dialog.h"
 #include "app/input.h"
+#include "app/log.h"
 #include "app/machine_session.h"
 #include "app/menu.h"
 #include "app/notices.h"
@@ -65,8 +66,6 @@
 #else
 #define SCREENSHOT_FOLDER SDL_FOLDER_PICTURES
 #endif
-
-static bool verbose = false;
 
 #define SERIAL_PORT_MAX   16
 #define PORT_SCAN_SECONDS 2.0
@@ -139,13 +138,6 @@ typedef struct {
     uint64_t power_release_at, backlight_release_at;
 } app_t;
 
-static void log_gdb(const char *message) {
-#ifdef __ANDROID__
-    SDL_Log("%s", message);
-#endif
-    fputs(message, stderr);
-}
-
 static void release_keys(input_queue_t *input, machine_t *machine, bool *held, int only_modifiers_up) {
     static const struct { uint8_t scancode; int modifier; } modifiers[] = {
         { 0x51, MENU_MOD_SHIFT }, { 0x01, MENU_MOD_CONTROL }, { 0x19, MENU_MOD_ALT }, { 0x09, MENU_MOD_ALT },
@@ -166,13 +158,6 @@ static void release_keys(input_queue_t *input, machine_t *machine, bool *held, i
             input_add(input, machine, INPUT_KEY, false, 0, 0, scancode);
         }
     }
-}
-
-static void serial_log(const char *message) {
-#ifdef __ANDROID__
-    SDL_Log("%s", message);
-#endif
-    if (verbose) fputs(message, stderr);
 }
 
 static void rapi_socket_path(char *path, size_t size) {
@@ -308,57 +293,10 @@ static const char *handle_drop(dropped_t *dropped, machine_t *machine, desktop_t
     return desktop_send(desktop, list) ? "sending to \\My Documents" : "busy with the last transfer";
 }
 
-static void log_message(const char *message) {
-#ifdef __ANDROID__
-    SDL_Log("%s", message);
-#endif
-    if (verbose) fputs(message, stderr);
-}
-
-#define DEBUG_LOG_MAX (1024 * 1024)
-
-static FILE *debug_log;
-static bool debug_to_stderr;
-
-static void debug_log_path(char *path, size_t size) {
-    char base[1024];
-    app_data_folder(base, sizeof base);
-    snprintf(path, size, "%s/debug.log", base);
-}
-
 static void print_debug_line(void *context, const char *line) {
     app_t *app = context;
     if (app->debugger) gdb_debug_line(app->debugger, line);
-    if (debug_to_stderr) fprintf(stderr, "debug: %s\n", line);
-    if (!debug_log) return;
-    time_t now = time(NULL);
-    struct tm local;
-    localtime_r(&now, &local);
-    char stamp[16];
-    strftime(stamp, sizeof stamp, "%H:%M:%S", &local);
-    fprintf(debug_log, "%s %s\n", stamp, line);
-    fflush(debug_log);
-}
-
-static void start_debug_log(const char *rom_path) {
-    if (!debug_log) {
-        char path[1100], old[1110];
-        debug_log_path(path, sizeof path);
-        struct stat info;
-        if (stat(path, &info) == 0 && info.st_size > DEBUG_LOG_MAX) {
-            snprintf(old, sizeof old, "%s.old", path);
-            rename(path, old);
-        }
-        debug_log = fopen(path, "a");
-        if (!debug_log) return;
-    }
-    time_t now = time(NULL);
-    struct tm local;
-    localtime_r(&now, &local);
-    char stamp[32];
-    strftime(stamp, sizeof stamp, "%Y-%m-%d %H:%M:%S", &local);
-    fprintf(debug_log, "--- %s %s\n", stamp, file_leaf_name(rom_path));
-    fflush(debug_log);
+    debug_log_line(line);
 }
 
 #ifdef __ANDROID__
@@ -480,7 +418,7 @@ static void local_address(char *address, size_t size) {
 }
 
 static gdb_t *start_network_gdb(machine_t *machine, uint32_t port, char *notice, size_t size) {
-    gdb_t *gdb = gdb_create(machine, (int)port, true, log_gdb);
+    gdb_t *gdb = gdb_create(machine, (int)port, true, app_log_always);
     char address[64];
     local_address(address, sizeof address);
     if (gdb) snprintf(notice, size, "GDB server at %s:%u", address, port);
@@ -809,8 +747,8 @@ static bool launch_option(void *context, int option, const char *value, char *er
         } else return false;
         return true;
     case LAUNCH_USER_AGENT: snprintf(settings->user_agent, sizeof settings->user_agent, "%s", value); return true;
-    case LAUNCH_VERBOSE: verbose = true; return true;
-    case LAUNCH_DEBUG_OUTPUT: debug_to_stderr = true; return true;
+    case LAUNCH_VERBOSE: app_log_set_verbose(true); return true;
+    case LAUNCH_DEBUG_OUTPUT: debug_log_set_stderr(true); return true;
     case LAUNCH_GDB:
         if (!option_integer(value, 10, &integer) || integer < 1 || integer > 65535) return false;
         launch->gdb_port = (int)integer;
@@ -1096,7 +1034,7 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
     case MENU_SHOW_DEBUG_OUTPUT: {
         char path[1100];
         debug_log_path(path, sizeof path);
-        if (debug_log) fflush(debug_log);
+        debug_log_flush();
         open_path(path);
         break;
     }
@@ -1606,7 +1544,7 @@ static bool start_session(app_t *app, const char *state_file, bool fresh, const 
 static int start_machine(app_t *app) {
     settings_t *settings = &app->settings;
     const launch_t *launch = &app->launch;
-    app->session_hooks = (machine_session_hooks_t){ log_message, print_debug_line, start_debug_log, insert_library_card, app };
+    app->session_hooks = (machine_session_hooks_t){ app_log, print_debug_line, debug_log_start, insert_library_card, app };
     find_roms(&app->roms);
     machines_folder(app->profiles_folder, sizeof app->profiles_folder);
     profiles_load(&app->profiles, app->profiles_folder);
@@ -1698,13 +1636,13 @@ static void open_audio(app_t *app) {
     app->audio_spec = (SDL_AudioSpec){ SDL_AUDIO_S16, 1, 11025 };
     app->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &app->audio_spec, NULL, NULL);
     if (app->audio) SDL_ResumeAudioStreamDevice(app->audio);
-    else if (verbose) fprintf(stderr, "audio: %s\n", SDL_GetError());
+    else if (app_log_verbose()) fprintf(stderr, "audio: %s\n", SDL_GetError());
     app->sound = true;
 }
 
 static void open_serial(app_t *app) {
     machine_t *machine = app->session.machine;
-    serial_link_init(&app->serial, serial_log);
+    serial_link_init(&app->serial, app_log);
     app->serial.options.user_agent = app->settings.user_agent;
     app->serial.options.rapi_port = app->settings.network_rapi ? (int)app->settings.rapi_port : 0;
     app->serial.tcp_port = (int)app->settings.serial_tcp_port;
@@ -1731,7 +1669,7 @@ static int start_debugging(app_t *app) {
         return 2;
     }
     if (launch->gdb_port) {
-        app->debugger = gdb_create(machine, launch->gdb_port, false, log_gdb);
+        app->debugger = gdb_create(machine, launch->gdb_port, false, app_log_always);
         if (!app->debugger) {
             fprintf(stderr, "velo: cannot listen for GDB on port %d\n", launch->gdb_port);
             return 1;
@@ -1743,7 +1681,7 @@ static int start_debugging(app_t *app) {
         app->debugger = start_network_gdb(machine, app->settings.gdb_port, message, sizeof message);
         if (!notice_current(&app->notice)) notice_show(&app->notice, message, NOTICE_LONG);
     }
-    if (launch->agent_socket && !(app->agent = agent_create(launch->agent_socket, log_gdb))) {
+    if (launch->agent_socket && !(app->agent = agent_create(launch->agent_socket, app_log_always))) {
         fprintf(stderr, "velo: cannot listen on agent socket %s\n", launch->agent_socket);
         return 1;
     }
@@ -1761,7 +1699,7 @@ static void shut_down(app_t *app) {
     machine_save(machine, app->session.state_path, (int64_t)time(NULL));
     serial_close(&app->serial, machine);
     desktop_destroy(app->desktop);
-    if (verbose) machine_dump_state(machine);
+    if (app_log_verbose()) machine_dump_state(machine);
     SDL_DestroyAudioStream(app->audio);
     view_destroy(app->view);
     SDL_DestroyRenderer(app->renderer);
