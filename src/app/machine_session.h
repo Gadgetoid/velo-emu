@@ -18,6 +18,7 @@ typedef struct {
     machine_debug_fn debug_output;
     void (*start_debug_log)(const char *rom_path);
     void (*insert_library_card)(machine_t *machine);
+    void *debug_context;
 } machine_session_hooks_t;
 
 void       machine_session_state_path(char *path, size_t size, machine_t *machine, const char *rom_path);

@@ -68,9 +68,76 @@
 
 static bool verbose = false;
 
-static gdb_t *debugger;
-static agent_t *agent;
-static snapshot_store_t snapshots;
+#define SERIAL_PORT_MAX   16
+#define PORT_SCAN_SECONDS 2.0
+
+typedef enum { PICK_SEND = 1, PICK_FETCH, PICK_SHARED, PICK_SAVE_SNAPSHOT, PICK_LOAD_SNAPSHOT, PICK_CARD, PICK_DISK, PICK_NEW_DISK } pick_kind_t;
+
+#define PICK_MAX 64
+
+typedef struct {
+    pick_kind_t kind;
+    int count;
+    char paths[PICK_MAX][1024];
+    char export_uri[1024];
+} picked_t;
+
+typedef struct {
+    char paths[PICK_MAX][1024];
+    int count;
+} dropped_t;
+
+typedef struct {
+    settings_t   *settings;
+    serial_mode_t serial_mode;
+    const char   *rom, *card, *disk, *state_file, *machine;
+    bool fresh;
+    int gdb_port;
+    const char   *gdb_process;
+    const char   *agent_socket;
+} launch_t;
+
+typedef struct {
+    settings_t settings;
+    launch_t launch;
+    snapshot_store_t snapshots;
+    rom_set_t roms;
+    char profiles_folder[1100];
+    profiles_t profiles;
+    profile_t current;
+    int current_index;
+    machine_session_hooks_t session_hooks;
+    machine_session_t session;
+    key_layout_t key_layout;
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    view_t *view;
+    SDL_AudioSpec audio_spec;
+    SDL_AudioStream *audio;
+    int16_t samples[AUDIO_CHUNK];
+    bool sound, running, paused, pen_down;
+    bool held[256];
+    input_queue_t input;
+    typer_t typer;
+    scroller_t scroller;
+    notice_queue_t notices;
+    serial_link_t serial;
+    uint64_t serial_reconnect_at, serial_unplug_at;
+    serial_mode_t serial_reconnect_mode;
+    bool serial_tcp_attached;
+    char ports[SERIAL_PORT_MAX][SERIAL_LINK_PORT_NAME];
+    int port_count;
+    double since_port_scan;
+    desktop_t *desktop;
+    dropped_t dropped;
+    picked_t *picked;
+    gdb_t *debugger;
+    agent_t *agent;
+    app_runner_t *runner;
+    uint64_t last_frame;
+    double frequency, since_autosave, since_backup;
+    uint64_t power_release_at, backlight_release_at;
+} app_t;
 
 static void log_gdb(const char *message) {
 #ifdef __ANDROID__
@@ -100,9 +167,6 @@ static void release_keys(input_queue_t *input, machine_t *machine, bool *held, i
         }
     }
 }
-
-#define SERIAL_PORT_MAX   16
-#define PORT_SCAN_SECONDS 2.0
 
 static void serial_log(const char *message) {
 #ifdef __ANDROID__
@@ -178,17 +242,6 @@ static void serial_restored(serial_link_t *serial, machine_t *machine, const cha
     }
 }
 
-typedef enum { PICK_SEND = 1, PICK_FETCH, PICK_SHARED, PICK_SAVE_SNAPSHOT, PICK_LOAD_SNAPSHOT, PICK_CARD, PICK_DISK, PICK_NEW_DISK } pick_kind_t;
-
-#define PICK_MAX 64
-
-typedef struct {
-    pick_kind_t kind;
-    int count;
-    char paths[PICK_MAX][1024];
-    char export_uri[1024];
-} picked_t;
-
 static Uint32 pick_event_type = 0;
 
 static void pick_done(void *userdata, const char *const *files, int filter) {
@@ -209,11 +262,6 @@ static void pick_done(void *userdata, const char *const *files, int filter) {
     event.user.data1 = picked;
     if (!SDL_PushEvent(&event)) free(picked);
 }
-
-typedef struct {
-    char paths[PICK_MAX][1024];
-    int count;
-} dropped_t;
 
 #define BLANK_DISK_BYTES (32 * 1024 * 1024)
 
@@ -279,8 +327,8 @@ static void debug_log_path(char *path, size_t size) {
 }
 
 static void print_debug_line(void *context, const char *line) {
-    (void)context;
-    if (debugger) gdb_debug_line(debugger, line);
+    app_t *app = context;
+    if (app->debugger) gdb_debug_line(app->debugger, line);
     if (debug_to_stderr) fprintf(stderr, "debug: %s\n", line);
     if (!debug_log) return;
     time_t now = time(NULL);
@@ -616,124 +664,6 @@ static int profile_system(const profile_t *profile) {
     return rom_catalog_probe(profile->rom, NULL);
 }
 
-typedef struct {
-    machine_t   **machine;
-    key_layout_t *key_layout;
-    input_queue_t *input;
-    scroller_t  *scroller;
-    SDL_Window  *window;
-    view_t      *view;
-    bool        *running;
-    bool        *pen_down;
-    bool         *held;
-    dropped_t   *dropped;
-    picked_t   **picked;
-    rom_set_t   *roms;
-    machine_session_t *session;
-    serial_link_t *serial;
-    desktop_t   *desktop;
-    notice_queue_t *notices;
-} host_event_context_t;
-
-static bool poll_host_events(host_event_context_t *context) {
-    machine_t *machine = *context->machine;
-    key_layout_t key_layout = *context->key_layout;
-    bool events_seen = false;
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        events_seen = true;
-        if (menu_event(&event)) {
-            if (menu_active()) {
-                release_keys(context->input, machine, context->held, -1);
-                if (*context->pen_down) input_add(context->input, machine, INPUT_PEN, false, 0, 0, 0);
-                *context->pen_down = false;
-            }
-            continue;
-        }
-        switch (event.type) {
-        case SDL_EVENT_QUIT:
-        case SDL_EVENT_TERMINATING:
-            *context->running = false;
-            break;
-        case SDL_EVENT_WILL_ENTER_BACKGROUND:
-            machine_save(machine, context->session->state_path, (int64_t)time(NULL));
-            break;
-        case SDL_EVENT_KEY_DOWN:
-        case SDL_EVENT_KEY_UP: {
-            bool down = event.type == SDL_EVENT_KEY_DOWN;
-            uint8_t scancode;
-            if (!input_find_scancode(key_layout, event.key.key, &scancode)) break;
-            if (down) {
-                if (event.key.repeat || (event.key.mod & SDL_KMOD_GUI) || context->held[scancode]) break;
-                context->held[scancode] = true;
-                input_add(context->input, machine, INPUT_KEY, true, 0, 0, scancode);
-            } else if (context->held[scancode]) {
-                context->held[scancode] = false;
-                input_add(context->input, machine, INPUT_KEY, false, 0, 0, scancode);
-            }
-            break;
-        }
-        case SDL_EVENT_MOUSE_WHEEL:
-            scroller_add(context->scroller, event.wheel.y, event.wheel.x);
-            break;
-        case SDL_EVENT_DROP_FILE:
-            if (event.drop.data && context->dropped->count < PICK_MAX) snprintf(context->dropped->paths[context->dropped->count++], sizeof context->dropped->paths[0], "%s", event.drop.data);
-            break;
-        case SDL_EVENT_DROP_COMPLETE:
-            if (context->dropped->count) {
-                bool online = context->serial->gateway && net_gateway_online(context->serial->gateway);
-                notice_queue_push(context->notices,
-                                  handle_drop(context->dropped, machine, context->desktop, online && !desktop_busy(context->desktop)));
-            }
-            break;
-        case SDL_EVENT_WINDOW_FOCUS_GAINED:
-            find_roms(context->roms);
-#ifdef __ANDROID__
-            SDL_SetWindowFullscreen(context->window, false);
-            SDL_SetWindowFullscreen(context->window, true);
-#endif
-            break;
-        case SDL_EVENT_WINDOW_FOCUS_LOST:
-            release_keys(context->input, machine, context->held, -1);
-            break;
-        case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (event.button.button == SDL_BUTTON_LEFT) {
-                int x, y;
-                if (view_screen_position(context->view, event.button.x, event.button.y, &x, &y)) {
-                    *context->pen_down = true;
-                    input_add(context->input, machine, INPUT_PEN, true, x, y, 0);
-                }
-            }
-            break;
-        case SDL_EVENT_MOUSE_MOTION:
-            if (*context->pen_down) {
-                int x, y;
-                view_screen_position(context->view, event.motion.x, event.motion.y, &x, &y);
-                pen_move(context->input, machine, x, y);
-            }
-            break;
-        case SDL_EVENT_MOUSE_BUTTON_UP:
-            if (event.button.button == SDL_BUTTON_LEFT && *context->pen_down) {
-                int x, y;
-                view_screen_position(context->view, event.button.x, event.button.y, &x, &y);
-                *context->pen_down = false;
-                input_add(context->input, machine, INPUT_PEN, false, x, y, 0);
-            }
-            break;
-        default:
-            if (pick_event_type && event.type == pick_event_type) {
-                free(*context->picked);
-                *context->picked = event.user.data1;
-#ifdef __ANDROID__
-                localize_picked(*context->picked);
-#endif
-            }
-            break;
-        }
-    }
-    return events_seen;
-}
-
 static const void *clipboard_png(void *userdata, const char *mime_type, size_t *size) {
     const size_t *stored = userdata;
     if (strcmp(mime_type, "image/png")) { *size = 0; return NULL; }
@@ -808,16 +738,6 @@ static void fit_window(SDL_Window *window, view_t *view, uint32_t scale) {
     window_size(view_display(view), scale, &width, &height);
     SDL_SetWindowSize(window, width, height);
 }
-
-typedef struct {
-    settings_t   *settings;
-    serial_mode_t serial_mode;
-    const char   *card, *disk, *state_file, *machine;
-    bool fresh;
-    int gdb_port;
-    const char   *gdb_process;
-    const char   *agent_socket;
-} launch_t;
 
 enum {
     LAUNCH_HEADING_MACHINE, LAUNCH_MACHINE, LAUNCH_STATE, LAUNCH_FRESH, LAUNCH_CARD, LAUNCH_DISK, LAUNCH_MEMORY, LAUNCH_SCREEN, LAUNCH_SPEED, LAUNCH_OPTIMISATIONS,
@@ -908,85 +828,169 @@ static const option_spec_t LAUNCH_SPEC = {
     "headless runs the machine without a window, for tests and scripts, and velo-rapi talks to a running Velo.",
 };
 
-typedef struct {
-    SDL_Window      *window;
-    machine_t      **machine;
-    settings_t      *settings;
-    profiles_t      *profiles;
-    profile_t       *current;
-    int             *current_index;
-    const char      *profiles_folder;
-    snapshot_store_t *snapshots;
-    notice_queue_t  *notices;
-    machine_session_t *session;
-    double          *since_backup;
-} machine_menu_context_t;
+static bool poll_host_events(app_t *app) {
+    machine_t *machine = app->session.machine;
+    bool events_seen = false;
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        events_seen = true;
+        if (menu_event(&event)) {
+            if (menu_active()) {
+                release_keys(&app->input, machine, app->held, -1);
+                if (app->pen_down) input_add(&app->input, machine, INPUT_PEN, false, 0, 0, 0);
+                app->pen_down = false;
+            }
+            continue;
+        }
+        switch (event.type) {
+        case SDL_EVENT_QUIT:
+        case SDL_EVENT_TERMINATING:
+            app->running = false;
+            break;
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            machine_save(machine, app->session.state_path, (int64_t)time(NULL));
+            break;
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP: {
+            bool down = event.type == SDL_EVENT_KEY_DOWN;
+            uint8_t scancode;
+            if (!input_find_scancode(app->key_layout, event.key.key, &scancode)) break;
+            if (down) {
+                if (event.key.repeat || (event.key.mod & SDL_KMOD_GUI) || app->held[scancode]) break;
+                app->held[scancode] = true;
+                input_add(&app->input, machine, INPUT_KEY, true, 0, 0, scancode);
+            } else if (app->held[scancode]) {
+                app->held[scancode] = false;
+                input_add(&app->input, machine, INPUT_KEY, false, 0, 0, scancode);
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_WHEEL:
+            scroller_add(&app->scroller, event.wheel.y, event.wheel.x);
+            break;
+        case SDL_EVENT_DROP_FILE:
+            if (event.drop.data && app->dropped.count < PICK_MAX) snprintf(app->dropped.paths[app->dropped.count++], sizeof app->dropped.paths[0], "%s", event.drop.data);
+            break;
+        case SDL_EVENT_DROP_COMPLETE:
+            if (app->dropped.count) {
+                bool online = app->serial.gateway && net_gateway_online(app->serial.gateway);
+                notice_queue_push(&app->notices, handle_drop(&app->dropped, machine, app->desktop, online && !desktop_busy(app->desktop)));
+            }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            find_roms(&app->roms);
+#ifdef __ANDROID__
+            SDL_SetWindowFullscreen(app->window, false);
+            SDL_SetWindowFullscreen(app->window, true);
+#endif
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            release_keys(&app->input, machine, app->held, -1);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (event.button.button == SDL_BUTTON_LEFT) {
+                int x, y;
+                if (view_screen_position(app->view, event.button.x, event.button.y, &x, &y)) {
+                    app->pen_down = true;
+                    input_add(&app->input, machine, INPUT_PEN, true, x, y, 0);
+                }
+            }
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if (app->pen_down) {
+                int x, y;
+                view_screen_position(app->view, event.motion.x, event.motion.y, &x, &y);
+                pen_move(&app->input, machine, x, y);
+            }
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (event.button.button == SDL_BUTTON_LEFT && app->pen_down) {
+                int x, y;
+                view_screen_position(app->view, event.button.x, event.button.y, &x, &y);
+                app->pen_down = false;
+                input_add(&app->input, machine, INPUT_PEN, false, x, y, 0);
+            }
+            break;
+        default:
+            if (pick_event_type && event.type == pick_event_type) {
+                free(app->picked);
+                app->picked = event.user.data1;
+#ifdef __ANDROID__
+                localize_picked(app->picked);
+#endif
+            }
+            break;
+        }
+    }
+    return events_seen;
+}
 
-static bool handle_machine_menu(machine_menu_context_t *context, int item, int *switch_to, bool *events_seen) {
+static bool handle_machine_menu(app_t *app, int item, int *switch_to, bool *events_seen) {
     if (item == MENU_NEW_MACHINE) {
         dialog_rom_t rom_list[32] = { 0 };
         int rom_count = list_roms(rom_list, 32);
-        dialog_machine_t chosen = { .memory = profile_system(context->current) == 2 ? CE2_DEFAULT_MEMORY : 4,
-                                    .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = context->settings->host_time != 0 };
-        if (rom_count) snprintf(chosen.rom, sizeof chosen.rom, "%s", context->current->rom);
+        dialog_machine_t chosen = { .memory = profile_system(&app->current) == 2 ? CE2_DEFAULT_MEMORY : 4,
+                                    .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = app->settings.host_time != 0 };
+        if (rom_count) snprintf(chosen.rom, sizeof chosen.rom, "%s", app->current.rom);
         *events_seen = true;
-        if (!dialog_new_machine(context->window, rom_list, rom_count, probe_rom, &chosen)) return true;
+        if (!dialog_new_machine(app->window, rom_list, rom_count, probe_rom, &chosen)) return true;
         profile_t made = { .screen = chosen.screen, .memory = chosen.memory, .host_time = chosen.host_time };
         snprintf(made.rom, sizeof made.rom, "%s", chosen.rom);
         if (chosen.name[0]) snprintf(made.name, sizeof made.name, "%s", chosen.name);
         else profile_default_name(&made, profile_system(&made), made.name, sizeof made.name);
-        profile_make_unique(context->profiles, &made, context->profiles_folder);
-        if (!profile_save(&made, context->profiles_folder)) {
-            notice_queue_push(context->notices, "could not save the new machine");
+        profile_make_unique(&app->profiles, &made, app->profiles_folder);
+        if (!profile_save(&made, app->profiles_folder)) {
+            notice_queue_push(&app->notices, "could not save the new machine");
             return true;
         }
-        profiles_load(context->profiles, context->profiles_folder);
-        if (context->current->id[0]) *context->current_index = profile_find(context->profiles, context->current->id);
-        *switch_to = profile_find(context->profiles, made.id);
+        profiles_load(&app->profiles, app->profiles_folder);
+        if (app->current.id[0]) app->current_index = profile_find(&app->profiles, app->current.id);
+        *switch_to = profile_find(&app->profiles, made.id);
         return true;
     }
     if (item != MENU_MANAGE_MACHINES) return false;
 
     const char *names[PROFILES_MAX];
-    for (int i = 0; i < context->profiles->count; i++) names[i] = context->profiles->entries[i].name;
-    int chosen = *context->current_index >= 0 ? *context->current_index : 0;
+    for (int i = 0; i < app->profiles.count; i++) names[i] = app->profiles.entries[i].name;
+    int chosen = app->current_index >= 0 ? app->current_index : 0;
     *events_seen = true;
-    dialog_manage_t action = context->profiles->count ? dialog_manage_machines(context->window, names, context->profiles->count, *context->current_index, &chosen) : DIALOG_MANAGE_CLOSE;
-    if (action == DIALOG_MANAGE_CLOSE || chosen < 0 || chosen >= context->profiles->count) return true;
-    profile_t picked_profile = context->profiles->entries[chosen];
+    dialog_manage_t action = app->profiles.count ? dialog_manage_machines(app->window, names, app->profiles.count, app->current_index, &chosen) : DIALOG_MANAGE_CLOSE;
+    if (action == DIALOG_MANAGE_CLOSE || chosen < 0 || chosen >= app->profiles.count) return true;
+    profile_t picked_profile = app->profiles.entries[chosen];
     char message[300];
     if (action == DIALOG_MANAGE_RESET) {
-        if (!confirm_reset(context->window, picked_profile.name)) return true;
-        if (chosen == *context->current_index) {
-            snapshot_store_backup_machine(context->snapshots, *context->machine, context->session->state_path);
-            *context->since_backup = 0;
-            machine_reset(*context->machine);
+        if (!confirm_reset(app->window, picked_profile.name)) return true;
+        if (chosen == app->current_index) {
+            snapshot_store_backup_machine(&app->snapshots, app->session.machine, app->session.state_path);
+            app->since_backup = 0;
+            machine_reset(app->session.machine);
         } else {
-            snapshot_store_backup_file(context->snapshots, picked_profile.state);
+            snapshot_store_backup_file(&app->snapshots, picked_profile.state);
             remove(picked_profile.state);
         }
         snprintf(message, sizeof message, "reset %s; the machine before it is in Snapshots/Backups", picked_profile.name);
     } else {
-        if (chosen == *context->current_index) {
-            notice_queue_push(context->notices, "switch to another machine before deleting this one");
+        if (chosen == app->current_index) {
+            notice_queue_push(&app->notices, "switch to another machine before deleting this one");
             return true;
         }
         char title[160];
         snprintf(title, sizeof title, "Delete %s?", picked_profile.name);
-        if (!confirm_action(context->window, title, "This removes the machine and its saved state. A backup of the state goes in Snapshots/Backups first.", "Delete")) return true;
-        snapshot_store_backup_file(context->snapshots, picked_profile.state);
-        profile_delete(&picked_profile, context->profiles_folder);
-        char current_id[sizeof context->current->id];
-        snprintf(current_id, sizeof current_id, "%s", context->current->id);
-        profiles_load(context->profiles, context->profiles_folder);
-        *context->current_index = current_id[0] ? profile_find(context->profiles, current_id) : -1;
+        if (!confirm_action(app->window, title, "This removes the machine and its saved state. A backup of the state goes in Snapshots/Backups first.", "Delete")) return true;
+        snapshot_store_backup_file(&app->snapshots, picked_profile.state);
+        profile_delete(&picked_profile, app->profiles_folder);
+        char current_id[sizeof app->current.id];
+        snprintf(current_id, sizeof current_id, "%s", app->current.id);
+        profiles_load(&app->profiles, app->profiles_folder);
+        app->current_index = current_id[0] ? profile_find(&app->profiles, current_id) : -1;
         snprintf(message, sizeof message, "deleted %s", picked_profile.name);
     }
-    notice_queue_push(context->notices, message);
+    notice_queue_push(&app->notices, message);
     return true;
 }
 
-static bool handle_view_menu(settings_t *settings, SDL_Window *window, view_t *view, int item, notice_queue_t *notices) {
+static bool handle_view_menu(app_t *app, int item) {
+    settings_t *settings = &app->settings;
     switch (item) {
     case MENU_SCALE_50:
     case MENU_SCALE_75:
@@ -1001,28 +1005,28 @@ static bool handle_view_menu(settings_t *settings, SDL_Window *window, view_t *v
         else index = item - MENU_SCALE_50;
         settings->scale = settings_scale_at(index);
         settings_save(settings);
-        fit_window(window, view, settings->scale);
+        fit_window(app->window, app->view, settings->scale);
         return true;
     }
     case MENU_FULL_SCREEN:
-        SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+        SDL_SetWindowFullscreen(app->window, !(SDL_GetWindowFlags(app->window) & SDL_WINDOW_FULLSCREEN));
         return true;
     case MENU_DISPLAY_SIMULATED:
     case MENU_DISPLAY_SHARP:
         settings->display = item == MENU_DISPLAY_SHARP ? VIEW_SHARP : VIEW_SIMULATED;
         settings_save(settings);
-        view_set_display(view, (view_display_t)settings->display);
-        fit_window(window, view, settings->scale);
+        view_set_display(app->view, (view_display_t)settings->display);
+        fit_window(app->window, app->view, settings->scale);
         return true;
     case MENU_COPY_SCREEN:
-        notice_queue_push(notices, copy_screen(view) ? "screen copied" : "could not copy the screen");
+        notice_queue_push(&app->notices, copy_screen(app->view) ? "screen copied" : "could not copy the screen");
         return true;
     case MENU_SAVE_SCREENSHOT: {
         char path[1100];
         char message[1200];
-        if (save_screenshot(view, path, sizeof path)) snprintf(message, sizeof message, "saved %s", file_leaf_name(path));
+        if (save_screenshot(app->view, path, sizeof path)) snprintf(message, sizeof message, "saved %s", file_leaf_name(path));
         else snprintf(message, sizeof message, "could not save the screenshot");
-        notice_queue_push(notices, message);
+        notice_queue_push(&app->notices, message);
         return true;
     }
     case MENU_CONNECT_AT_LAUNCH:
@@ -1033,9 +1037,540 @@ static bool handle_view_menu(settings_t *settings, SDL_Window *window, view_t *v
     return false;
 }
 
-static int initialize_launch(int argc, char **argv, settings_t *settings, launch_t *launch, const char **rom_path, bool *continue_start) {
-    *rom_path = NULL;
-    *continue_start = false;
+static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen) {
+    if (handle_machine_menu(app, item, switch_to, events_seen)) return;
+    if (handle_view_menu(app, item)) return;
+    machine_t *machine = app->session.machine;
+    settings_t *settings = &app->settings;
+    switch (item) {
+    case MENU_POWER:
+        machine_power_button(machine, true);
+        app->power_release_at = machine_cycles(machine) + (uint64_t)(POWER_PRESS_SECONDS * MACHINE_CLOCK_HZ);
+        break;
+    case MENU_PAUSE: app->paused = !app->paused; break;
+    case MENU_SOFT_RESET:
+        machine_soft_reset(machine);
+        if (app->serial.mode == SERIAL_NETWORK) app->serial_unplug_at = machine_cycles(machine) + SOFT_RESET_REPLUG_SECONDS * MACHINE_CLOCK_HZ;
+        break;
+    case MENU_PASTE: {
+        char *clipboard = SDL_GetClipboardText();
+        size_t typed = clipboard ? typer_start(&app->typer, app->key_layout, clipboard) : 0;
+        SDL_free(clipboard);
+        char message[64];
+        snprintf(message, sizeof message, typed ? "typing %zu characters" : "nothing to type", typed);
+        notice_queue_push(&app->notices, message);
+        break;
+    }
+    case MENU_SAVE_STATE:
+        notice_queue_push(&app->notices, machine_save(machine, app->session.state_path, (int64_t)time(NULL)) ? "state saved" : "could not save state");
+        break;
+    case MENU_LOAD_STATE:
+        snapshot_store_backup_machine(&app->snapshots, machine, app->session.state_path);
+        if (machine_load(machine, app->session.state_path, NULL)) {
+            serial_restored(&app->serial, machine, settings->serial_device, &app->serial_reconnect_at, &app->serial_reconnect_mode);
+            notice_queue_push(&app->notices, "state loaded");
+        } else {
+            notice_queue_push(&app->notices, "no saved state");
+        }
+        break;
+    case MENU_BACKLIGHT:
+        machine_backlight_button(machine, true);
+        app->backlight_release_at = machine_cycles(machine) + (uint64_t)(BACKLIGHT_PRESS_SECONDS * MACHINE_CLOCK_HZ);
+        break;
+    case MENU_SOUND: app->sound = !app->sound; break;
+    case MENU_SHOW_STATE: reveal_file(app->session.state_path); break;
+    case MENU_SAVE_SNAPSHOT: {
+        static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state" } };
+        static char default_snapshot[1200];
+        snapshot_store_default_name(&app->snapshots, default_snapshot, sizeof default_snapshot);
+        SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_SAVE_SNAPSHOT, app->window, filters, 1, default_snapshot);
+        break;
+    }
+    case MENU_LOAD_SNAPSHOT: {
+        static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state;bin" } };
+        static char folder[1100];
+        snapshot_store_folder(&app->snapshots, folder, sizeof folder);
+        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_LOAD_SNAPSHOT, app->window, filters, 1, folder, false);
+        break;
+    }
+    case MENU_SHOW_DEBUG_OUTPUT: {
+        char path[1100];
+        debug_log_path(path, sizeof path);
+        if (debug_log) fflush(debug_log);
+        open_path(path);
+        break;
+    }
+    case MENU_QUIT:
+        app->running = false;
+        break;
+#ifdef __ANDROID__
+    case MENU_IMPORT: {
+        int cards, imported = import_files(&cards);
+        find_roms(&app->roms);
+        char message[160];
+        snprintf(message, sizeof message, "imported %d ROMs and %d cards", imported, cards);
+        notice_queue_push(&app->notices, message);
+        break;
+    }
+#endif
+    case MENU_SPEED_1:
+    case MENU_SPEED_2:
+    case MENU_SPEED_4:
+    case MENU_SPEED_8:
+        settings->speed = item == MENU_SPEED_1 ? 1 : item == MENU_SPEED_2 ? 2 : item == MENU_SPEED_4 ? 4 : 8;
+        machine_set_speed(machine, settings->speed);
+        settings_save(settings);
+        break;
+    case MENU_OPTIMISATIONS:
+        settings->optimisations = !settings->optimisations;
+        machine_set_optimisations(machine, settings->optimisations);
+        settings_save(settings);
+        break;
+    case MENU_INSERT_CARD: {
+        static const SDL_DialogFileFilter filters[] = { { "Card images", "img;bin;raw" }, { "All files", "*" } };
+        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_CARD, app->window, filters, 2, NULL, false);
+        break;
+    }
+    case MENU_INSERT_DISK: {
+        static const SDL_DialogFileFilter filters[] = { { "Disk images", "img;bin;raw" }, { "All files", "*" } };
+        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_DISK, app->window, filters, 2, NULL, false);
+        break;
+    }
+    case MENU_NEW_DISK: {
+#ifdef __ANDROID__
+        free(app->picked);
+        app->picked = new_disk_pick();
+        break;
+#endif
+        static const SDL_DialogFileFilter filters[] = { { "Disk images", "img" } };
+        SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_NEW_DISK, app->window, filters, 1, "Velo Disk.img");
+        break;
+    }
+    case MENU_EJECT_DISK:
+        machine_eject_disk(machine);
+        notice_queue_push(&app->notices, "disk ejected");
+        break;
+    default:
+        if (item >= MENU_MACHINE_FIRST && item <= MENU_MACHINE_LAST && item - MENU_MACHINE_FIRST < app->profiles.count && item - MENU_MACHINE_FIRST != app->current_index) {
+            *switch_to = item - MENU_MACHINE_FIRST;
+            break;
+        }
+        if (item >= MENU_SERIAL_PORT_FIRST && item <= MENU_SERIAL_PORT_LAST && item - MENU_SERIAL_PORT_FIRST < app->port_count) {
+            snprintf(settings->serial_device, sizeof settings->serial_device, "%s", app->ports[item - MENU_SERIAL_PORT_FIRST]);
+            settings_save(settings);
+            app->serial_reconnect_at = 0;
+            notice_queue_push(&app->notices, serial_open(&app->serial, machine, SERIAL_DEVICE, settings->serial_device));
+        }
+        break;
+    case MENU_SERIAL_NETWORK:
+    case MENU_SERIAL_PTY:
+    case MENU_SERIAL_TCP:
+    case MENU_SERIAL_OFF:
+        app->serial_reconnect_at = 0;
+        notice_queue_push(&app->notices,
+                          serial_open(&app->serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF, settings->serial_device));
+        break;
+#ifdef __ANDROID__
+    case MENU_FULL_BRIGHTNESS:
+        settings->full_brightness = !settings->full_brightness;
+        settings_save(settings);
+        break;
+    case MENU_FETCH_DOCUMENTS:
+    case MENU_SHARED_FOLDER: {
+        if (!android_all_files_access()) {
+            android_request_all_files_access();
+            notice_queue_push(&app->notices, "allow All files access for Velo, then try again");
+            break;
+        }
+        bool shared = item == MENU_SHARED_FOLDER;
+        picked_t *folder = calloc(1, sizeof *folder);
+        const char *start = shared && settings->shared_folder[0] ? settings->shared_folder : "/storage/emulated/0/Documents";
+        if (folder && android_choose_folder(shared ? "Folder to share with My Documents" : "Folder to copy My Documents into", start, folder->paths[0], sizeof folder->paths[0])) {
+            folder->kind = shared ? PICK_SHARED : PICK_FETCH;
+            folder->count = 1;
+            free(app->picked);
+            app->picked = folder;
+        } else {
+            free(folder);
+        }
+        *events_seen = true;
+        break;
+    }
+#endif
+    case MENU_GDB_SERVER:
+        if (app->debugger) {
+            app_runner_set_debugger_locked(app->runner, NULL);
+            gdb_destroy(app->debugger);
+            app->debugger = NULL;
+            settings->gdb_server = 0;
+            notice_queue_push(&app->notices, "GDB server stopped");
+        } else {
+            char message[160];
+            app->debugger = start_network_gdb(machine, settings->gdb_port, message, sizeof message);
+            app_runner_set_debugger_locked(app->runner, app->debugger);
+            settings->gdb_server = app->debugger != NULL;
+            notice_queue_push(&app->notices, message);
+        }
+        settings_save(settings);
+        break;
+    case MENU_NETWORK_RAPI: {
+        settings->network_rapi = !settings->network_rapi;
+        settings_save(settings);
+        app->serial.options.rapi_port = settings->network_rapi ? (int)settings->rapi_port : 0;
+        char address[64];
+        local_address(address, sizeof address);
+        char message[160];
+        if (settings->network_rapi) snprintf(message, sizeof message, "RAPI at %s:%u", address, settings->rapi_port);
+        else snprintf(message, sizeof message, "RAPI over the network off");
+        if (app->serial.mode == SERIAL_NETWORK) serial_open(&app->serial, machine, SERIAL_NETWORK, settings->serial_device);
+        notice_queue_push(&app->notices, message);
+        break;
+    }
+    case MENU_SEND_FILES:
+        SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_SEND, app->window, NULL, 0, NULL, true);
+        break;
+#ifndef __ANDROID__
+    case MENU_FETCH_DOCUMENTS:
+        SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_FETCH, app->window, NULL, false);
+        break;
+    case MENU_SHARED_FOLDER:
+        SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_SHARED, app->window, settings->shared_folder[0] ? settings->shared_folder : NULL, false);
+        break;
+#endif
+    case MENU_SYNC_NOW:
+        desktop_sync(app->desktop, settings->shared_folder);
+        break;
+    case MENU_SET_PROXY:
+        desktop_set_proxy(app->desktop);
+        break;
+    case MENU_BAUD_19200:
+    case MENU_BAUD_38400:
+    case MENU_BAUD_57600:
+    case MENU_BAUD_115200:
+        desktop_set_baud(app->desktop, item == MENU_BAUD_19200 ? 19200 : item == MENU_BAUD_38400 ? 38400 : item == MENU_BAUD_57600 ? 57600 : 115200);
+        break;
+    case MENU_STOP_SHARING: {
+        char message[1200];
+        snprintf(message, sizeof message, "stopped sharing %s", file_leaf_name(settings->shared_folder));
+        settings->shared_folder[0] = 0;
+        settings_save(settings);
+        notice_queue_push(&app->notices, message);
+        break;
+    }
+    case MENU_EJECT_CARD:
+        machine_eject_card(machine);
+        notice_queue_push(&app->notices, "card ejected");
+        break;
+    }
+}
+
+static void switch_machine(app_t *app, int index) {
+    if (desktop_busy(app->desktop)) {
+        notice_queue_push(&app->notices, "busy with a desktop transfer");
+        return;
+    }
+    const char *switch_notice = NULL;
+    machine_session_t next_session = { 0 };
+    profile_t next_profile = app->profiles.entries[index];
+    bool next_started = machine_session_start(&next_session, &next_profile, app->settings.speed, app->settings.optimisations != 0,
+                                              NULL, false, &switch_notice, &app->snapshots, &app->session_hooks);
+    if (!next_started) {
+        notice_queue_push(&app->notices, switch_notice);
+        return;
+    }
+    machine_t *machine = app->session.machine;
+    serial_mode_t mode = app->serial.mode;
+    if (serial_keeps_link(&app->serial, mode, app->settings.serial_device)) machine_serial_connect(machine, false);
+    else serial_close(&app->serial, machine);
+    if (app->pen_down) machine_touch(machine, false, 0, 0);
+    input_clear(&app->input);
+    app->pen_down = false;
+    app->typer.length = app->typer.position = 0;
+    machine_save(machine, app->session.state_path, (int64_t)time(NULL));
+    machine_session_destroy(&app->session);
+    app->session = next_session;
+    machine = app->session.machine;
+    app->current = next_profile;
+    app->current_index = index;
+    app->key_layout = machine_key_layout(machine);
+    snprintf(app->settings.machine, sizeof app->settings.machine, "%s", app->current.id);
+    settings_save(&app->settings);
+    app->serial_reconnect_at = app->serial_unplug_at = 0;
+    if (mode != SERIAL_OFF) {
+        app->serial_reconnect_mode = mode;
+        app->serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
+    }
+    app->power_release_at = app->backlight_release_at = 0;
+    app->since_backup = 0;
+    app_runner_set_machine_locked(app->runner, machine);
+    if (app->debugger) gdb_set_machine(app->debugger, machine);
+    char message[160];
+    snprintf(message, sizeof message, "switched to %s", app->current.name);
+    notice_queue_push(&app->notices, switch_notice ? switch_notice : message);
+}
+
+static void handle_picked(app_t *app, bool velo_online) {
+    machine_t *machine = app->session.machine;
+    picked_t *picked = app->picked;
+    if (picked->kind == PICK_CARD) {
+        notice_queue_push(&app->notices, machine_insert_card(machine, picked->paths[0]) ? "card inserted" : "could not open card image");
+    } else if (picked->kind == PICK_DISK) {
+        notice_queue_push(&app->notices, machine_insert_disk(machine, picked->paths[0], false) ? "disk inserted" : "could not open disk image");
+    } else if (picked->kind == PICK_NEW_DISK) {
+        char path[1100];
+        snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".img") ? "" : ".img");
+        bool made = create_blank_disk(path) && machine_insert_disk(machine, path, false);
+        char message[1200];
+        snprintf(message, sizeof message, made ? "inserted new disk %s; the Velo offers to format it" : "could not create %s", file_leaf_name(path));
+        notice_queue_push(&app->notices, message);
+    } else if (picked->kind == PICK_SEND) {
+        const char *files[PICK_MAX + 1];
+        for (int i = 0; i < picked->count; i++) files[i] = picked->paths[i];
+        files[picked->count] = NULL;
+        desktop_send(app->desktop, files);
+    } else if (picked->kind == PICK_SAVE_SNAPSHOT) {
+        char path[1100];
+        snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".state") ? "" : ".state");
+        bool saved = machine_save(machine, path, (int64_t)time(NULL));
+#ifdef __ANDROID__
+        if (saved && picked->export_uri[0]) {
+            saved = android_export(path, picked->export_uri);
+            remove(path);
+        }
+#endif
+        char message[1200];
+        snprintf(message, sizeof message, saved ? "saved snapshot %s" : "could not save %s", file_leaf_name(path));
+        notice_queue_push(&app->notices, message);
+    } else if (picked->kind == PICK_LOAD_SNAPSHOT) {
+        char message[1200];
+        if (machine_state_matches(machine, picked->paths[0])) snapshot_store_backup_machine(&app->snapshots, machine, app->session.state_path);
+        if (machine_load(machine, picked->paths[0], NULL)) {
+            serial_restored(&app->serial, machine, app->settings.serial_device, &app->serial_reconnect_at, &app->serial_reconnect_mode);
+            snprintf(message, sizeof message, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
+        } else {
+            snprintf(message, sizeof message, "%s isn't a snapshot of this ROM", file_leaf_name(picked->paths[0]));
+        }
+        notice_queue_push(&app->notices, message);
+    } else if (picked->kind == PICK_FETCH) {
+        desktop_fetch(app->desktop, picked->paths[0]);
+    } else if (picked->kind == PICK_SHARED) {
+        snprintf(app->settings.shared_folder, sizeof app->settings.shared_folder, "%s", picked->paths[0]);
+        settings_save(&app->settings);
+        char message[1200];
+        snprintf(message, sizeof message, "sharing %s with \\My Documents", file_leaf_name(app->settings.shared_folder));
+        notice_queue_push(&app->notices, message);
+        if (velo_online) desktop_sync(app->desktop, app->settings.shared_folder);
+    }
+    free(picked);
+    app->picked = NULL;
+}
+
+static void poll_desktop(app_t *app) {
+    machine_t *machine = app->session.machine;
+    if (app->serial.gateway && net_gateway_take_desktop_connected(app->serial.gateway) && app->settings.shared_folder[0]) {
+        desktop_sync(app->desktop, app->settings.shared_folder);
+    }
+    if (desktop_take_reconnect(app->desktop) && app->serial.mode == SERIAL_NETWORK) app->serial_unplug_at = machine_cycles(machine) + SPEED_SETTLE_SECONDS * MACHINE_CLOCK_HZ;
+    if (app->serial_unplug_at && machine_cycles(machine) >= app->serial_unplug_at) {
+        app->serial_unplug_at = 0;
+        if (app->serial.mode == SERIAL_NETWORK) {
+            serial_open(&app->serial, machine, SERIAL_OFF, app->settings.serial_device);
+            app->serial_reconnect_mode = SERIAL_NETWORK;
+            app->serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
+        }
+    }
+    char message[256];
+    if (desktop_take_status(app->desktop, message, sizeof message)) notice_queue_push(&app->notices, message);
+}
+
+static void update_menus(app_t *app, bool velo_online) {
+    machine_t *machine = app->session.machine;
+    const settings_t *settings = &app->settings;
+    bool desktop_free = velo_online && !desktop_busy(app->desktop);
+    menu_ensure();
+    menu_set_enabled(MENU_SEND_FILES, desktop_free);
+    menu_set_enabled(MENU_FETCH_DOCUMENTS, desktop_free);
+    menu_set_enabled(MENU_SYNC_NOW, desktop_free && settings->shared_folder[0]);
+    menu_set_enabled(MENU_STOP_SHARING, settings->shared_folder[0] != 0);
+    menu_set_enabled(MENU_SET_PROXY, desktop_free);
+    static const uint32_t LINK_SPEEDS[] = { 19200, 38400, 57600, 115200 };
+    uint32_t link_baud = velo_online ? machine_serial_baud(machine) : 0;
+    for (int baud_item = MENU_BAUD_19200; baud_item <= MENU_BAUD_115200; baud_item++) {
+        uint32_t speed = LINK_SPEEDS[baud_item - MENU_BAUD_19200];
+        menu_set_enabled(baud_item, desktop_free);
+        menu_set_checked(baud_item, link_baud && link_baud * 20 > speed * 19 && link_baud * 20 < speed * 21);
+    }
+    menu_set_enabled(MENU_EJECT_CARD, machine_card_inserted(machine));
+    menu_set_enabled(MENU_EJECT_DISK, machine_disk_inserted(machine));
+    menu_set_checked(MENU_SERIAL_NETWORK, app->serial.mode == SERIAL_NETWORK);
+    menu_set_checked(MENU_SERIAL_PTY, app->serial.mode == SERIAL_PTY);
+    menu_set_checked(MENU_SERIAL_TCP, app->serial.mode == SERIAL_TCP);
+    reap_reveal_children();
+    if (app->since_port_scan <= 0) {
+        app->since_port_scan = PORT_SCAN_SECONDS;
+        app->port_count = serial_link_ports(app->ports, SERIAL_PORT_MAX);
+    }
+    for (int i = 0; i < SERIAL_PORT_MAX; i++) {
+        int port_item = MENU_SERIAL_PORT_FIRST + i;
+        bool shown = i < app->port_count || (i == 0 && app->port_count == 0);
+        menu_set_hidden(port_item, !shown);
+        if (!shown) continue;
+        menu_set_title(port_item, app->port_count ? app->ports[i] + 5 : "No serial ports found");
+        menu_set_enabled(port_item, app->port_count > 0);
+        menu_set_checked(port_item, app->port_count && app->serial.mode == SERIAL_DEVICE && !strcmp(settings->serial_device, app->ports[i]));
+    }
+    menu_set_checked(MENU_SERIAL_OFF, app->serial.mode == SERIAL_OFF);
+    menu_set_checked(MENU_PAUSE, app->paused);
+    menu_set_checked(MENU_BACKLIGHT, machine_backlight(machine));
+    menu_set_checked(MENU_SOUND, app->sound);
+    menu_set_checked(MENU_GDB_SERVER, app->debugger != NULL);
+    menu_set_checked(MENU_NETWORK_RAPI, settings->network_rapi != 0);
+    menu_set_checked(MENU_FULL_BRIGHTNESS, settings->full_brightness != 0);
+    for (int i = 0; i < PROFILES_MAX; i++) {
+        int machine_item = MENU_MACHINE_FIRST + i;
+        menu_set_hidden(machine_item, i >= app->profiles.count);
+        if (i >= app->profiles.count) continue;
+        menu_set_title(machine_item, app->profiles.entries[i].name);
+        menu_set_checked(machine_item, i == app->current_index);
+    }
+    menu_set_enabled(MENU_NEW_MACHINE, app->profiles.count < PROFILES_MAX);
+    menu_set_checked(MENU_CONNECT_AT_LAUNCH, settings->connect_at_launch != 0);
+    for (int scale_item = MENU_SCALE_50; scale_item <= MENU_SCALE_200; scale_item++) menu_set_checked(scale_item, settings->scale == settings_scale_at(scale_item - MENU_SCALE_50));
+    menu_set_enabled(MENU_ZOOM_IN, settings->scale < settings_scale_at(SETTINGS_SCALE_COUNT - 1));
+    menu_set_enabled(MENU_ZOOM_OUT, settings->scale > settings_scale_at(0));
+    menu_set_checked(MENU_FULL_SCREEN, (SDL_GetWindowFlags(app->window) & SDL_WINDOW_FULLSCREEN) != 0);
+    menu_set_checked(MENU_DISPLAY_SIMULATED, settings->display == VIEW_SIMULATED);
+    menu_set_checked(MENU_DISPLAY_SHARP, settings->display == VIEW_SHARP);
+    menu_set_checked(MENU_SPEED_1, machine_speed(machine) == 1);
+    menu_set_checked(MENU_SPEED_2, machine_speed(machine) == 2);
+    menu_set_checked(MENU_SPEED_4, machine_speed(machine) == 4);
+    menu_set_checked(MENU_SPEED_8, machine_speed(machine) == 8);
+    menu_set_checked(MENU_OPTIMISATIONS, machine_optimisations(machine));
+}
+
+static void step_timers(app_t *app, double elapsed) {
+    machine_t *machine = app->session.machine;
+    app->since_autosave += elapsed;
+    if (!app->paused) app->since_backup += elapsed;
+    app->since_port_scan -= elapsed;
+    if (app->since_backup >= BACKUP_SECONDS) {
+        app->since_backup = 0;
+        snapshot_store_backup_machine(&app->snapshots, machine, app->session.state_path);
+    }
+    if (app->since_autosave >= AUTOSAVE_SECONDS) {
+        app->since_autosave = 0;
+        machine_save(machine, app->session.state_path, (int64_t)time(NULL));
+    }
+}
+
+static void step_serial(app_t *app) {
+    machine_t *machine = app->session.machine;
+    serial_link_pump(&app->serial, machine);
+    if (app->serial.mode != SERIAL_TCP) {
+        app->serial_tcp_attached = false;
+    } else if (serial_link_attached(&app->serial) != app->serial_tcp_attached) {
+        app->serial_tcp_attached = !app->serial_tcp_attached;
+        machine_serial_connect(machine, app->serial_tcp_attached);
+        notice_queue_push(&app->notices, app->serial_tcp_attached ? "TCP client connected" : "TCP client disconnected");
+    }
+    if (app->serial_reconnect_at && machine_cycles(machine) >= app->serial_reconnect_at) {
+        app->serial_reconnect_at = 0;
+        notice_queue_push(&app->notices, serial_open(&app->serial, machine, app->serial_reconnect_mode, app->settings.serial_device));
+    }
+}
+
+static void step_buttons(app_t *app) {
+    machine_t *machine = app->session.machine;
+    if (app->backlight_release_at && machine_cycles(machine) >= app->backlight_release_at) {
+        app->backlight_release_at = 0;
+        machine_backlight_button(machine, false);
+    }
+    if (app->power_release_at && machine_cycles(machine) >= app->power_release_at) {
+        app->power_release_at = 0;
+        machine_power_button(machine, false);
+    }
+}
+
+static void step_audio(app_t *app) {
+    uint32_t rate;
+    for (size_t count; (count = machine_audio(app->session.machine, app->samples, AUDIO_CHUNK, &rate)) > 0;) {
+        if (!app->audio || !app->sound) continue;
+        if ((int)rate != app->audio_spec.freq) {
+            app->audio_spec.freq = (int)rate;
+            SDL_SetAudioStreamFormat(app->audio, &app->audio_spec, NULL);
+        }
+        SDL_PutAudioStreamData(app->audio, app->samples, (int)(count * sizeof app->samples[0]));
+    }
+}
+
+static bool sync_screen(app_t *app) {
+    machine_t *machine = app->session.machine;
+    screen_size_t screen = machine_screen_size(machine);
+    if (screen.width != lcd_width() || screen.height != lcd_height()) {
+        view_set_screen_size(app->view, screen.width, screen.height);
+        if (!(SDL_GetWindowFlags(app->window) & SDL_WINDOW_FULLSCREEN)) fit_window(app->window, app->view, app->settings.scale);
+    }
+    lcd_set_power(machine_lcd_enabled(machine));
+    lcd_set_backlight(machine_backlight(machine));
+#ifdef __ANDROID__
+    android_update(app->settings.full_brightness && machine_backlight(machine) && machine_lcd_enabled(machine), !machine_suspended(machine));
+#endif
+    machine_screen(machine, lcd_framebuffer);
+    return machine_lcd_enabled(machine);
+}
+
+static void run_frame(app_t *app) {
+    uint64_t frame_start = SDL_GetTicksNS();
+    app_runner_lock(app->runner);
+    bool events_seen = poll_host_events(app);
+
+    release_keys(&app->input, app->session.machine, app->held, menu_modifiers());
+    int switch_to = -1;
+    for (int item = menu_poll(); item >= 0; item = menu_poll()) {
+        release_keys(&app->input, app->session.machine, app->held, -1);
+        handle_menu(app, item, &switch_to, &events_seen);
+    }
+    if (switch_to >= 0 && switch_to < app->profiles.count && switch_to != app->current_index) switch_machine(app, switch_to);
+    bool velo_online = app->serial.gateway && net_gateway_online(app->serial.gateway);
+    if (app->picked) handle_picked(app, velo_online);
+    poll_desktop(app);
+    update_menus(app, velo_online);
+
+    uint64_t now = SDL_GetPerformanceCounter();
+    double elapsed = (double)(now - app->last_frame) / app->frequency;
+    app->last_frame = now;
+    if (elapsed > MAX_FRAME_SLICE) elapsed = MAX_FRAME_SLICE;
+    const char *notice = notice_queue_current(&app->notices);
+    set_title(app->window, app->current.name, notice, app->paused, machine_suspended(app->session.machine));
+#ifdef __ANDROID__
+    if (android_toast(notice ? notice : app->paused ? "Paused" : NULL)) events_seen = true;
+#endif
+    step_timers(app, elapsed);
+    app_runner_set_paused_locked(app->runner, app->paused);
+    typer_step(&app->typer, app->session.machine);
+    scroller_step(&app->scroller, app->session.machine);
+    step_serial(app);
+    step_buttons(app);
+    step_audio(app);
+    bool lcd_on = sync_screen(app);
+    app_runner_unlock(app->runner);
+
+    int inset_left, inset_top, inset_right, inset_bottom;
+    menu_insets(&inset_left, &inset_top, &inset_right, &inset_bottom);
+    view_set_insets(app->view, inset_left, inset_top, inset_right, inset_bottom);
+    bool screen_changed = view_update(app->view, (float)elapsed, lcd_on);
+    if (screen_changed || events_seen || menu_active()) {
+        view_render(app->view);
+        menu_draw(app->renderer);
+        SDL_RenderPresent(app->renderer);
+    } else {
+        uint64_t spent = SDL_GetTicksNS() - frame_start;
+        if (spent < IDLE_FRAME_NS) SDL_DelayNS(IDLE_FRAME_NS - spent);
+    }
+}
+
+static int load_launch(app_t *app, int argc, char **argv, bool *start) {
+    *start = false;
 #ifdef __ANDROID__
     const char *storage = SDL_GetAndroidExternalStoragePath();
     if (storage) {
@@ -1050,712 +1585,218 @@ static int initialize_launch(int argc, char **argv, settings_t *settings, launch
     app_paths_migrate_old_folders();
     char base[1024];
     app_data_folder(base, sizeof base);
-    snapshot_store_init(&snapshots, base);
-    *settings = settings_load();
-    *launch = (launch_t){ settings, settings->connect_at_launch ? SERIAL_NETWORK : SERIAL_OFF,
-                          NULL, NULL, NULL, NULL, false, 0, NULL, NULL };
+    snapshot_store_init(&app->snapshots, base);
+    app->settings = settings_load();
+    app->launch = (launch_t){ .settings = &app->settings, .serial_mode = app->settings.connect_at_launch ? SERIAL_NETWORK : SERIAL_OFF };
     const char *positional[1];
     int positional_count;
-    options_result_t parsed = options_parse(&LAUNCH_SPEC, argc, argv, launch_option, launch, positional, 1, &positional_count);
+    options_result_t parsed = options_parse(&LAUNCH_SPEC, argc, argv, launch_option, &app->launch, positional, 1, &positional_count);
     if (parsed == OPTIONS_EXIT) return 0;
     if (parsed == OPTIONS_ERROR) return 2;
-    if (positional_count) *rom_path = positional[0];
-    *continue_start = true;
+    if (positional_count) app->launch.rom = positional[0];
+    *start = true;
     return 0;
 }
 
-typedef struct {
-    rom_set_t roms;
-    char profiles_folder[1100];
-    profiles_t profiles;
-    int current_index;
-    machine_session_t session;
-    const char *startup_notice;
-    char fallback_notice[1600];
-} machine_startup_t;
+static bool start_session(app_t *app, const char *state_file, bool fresh, const char **notice) {
+    return machine_session_start(&app->session, &app->current, app->settings.speed, app->settings.optimisations != 0,
+                                 state_file, fresh, notice, &app->snapshots, &app->session_hooks);
+}
 
-static int initialize_machine(machine_startup_t *startup, settings_t *settings, const launch_t *launch, const char *rom_path,
-                              profile_t *current, const machine_session_hooks_t *session_hooks) {
-    find_roms(&startup->roms);
-    machines_folder(startup->profiles_folder, sizeof startup->profiles_folder);
-    profiles_load(&startup->profiles, startup->profiles_folder);
-    if (!startup->profiles.count) machine_session_migrate_profiles(&startup->profiles, &startup->roms, settings, startup->profiles_folder);
-    startup->current_index = -1;
-    if (rom_path) {
-        *current = (profile_t){ .memory = settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
-        snprintf(current->rom, sizeof current->rom, "%s", rom_path);
-        snprintf(current->name, sizeof current->name, "%s", file_leaf_name(rom_path));
+static int start_machine(app_t *app) {
+    settings_t *settings = &app->settings;
+    const launch_t *launch = &app->launch;
+    app->session_hooks = (machine_session_hooks_t){ log_message, print_debug_line, start_debug_log, insert_library_card, app };
+    find_roms(&app->roms);
+    machines_folder(app->profiles_folder, sizeof app->profiles_folder);
+    profiles_load(&app->profiles, app->profiles_folder);
+    if (!app->profiles.count) machine_session_migrate_profiles(&app->profiles, &app->roms, settings, app->profiles_folder);
+    app->current_index = -1;
+    if (launch->rom) {
+        app->current = (profile_t){ .memory = settings->memory, .screen = settings->screen, .host_time = settings->host_time != 0 };
+        snprintf(app->current.rom, sizeof app->current.rom, "%s", launch->rom);
+        snprintf(app->current.name, sizeof app->current.name, "%s", file_leaf_name(launch->rom));
     } else {
         if (launch->machine) {
-            startup->current_index = profile_find(&startup->profiles, launch->machine);
-            if (startup->current_index < 0) {
+            app->current_index = profile_find(&app->profiles, launch->machine);
+            if (app->current_index < 0) {
                 fprintf(stderr, "no machine called %s\n", launch->machine);
                 return 2;
             }
         } else {
-            startup->current_index = settings->machine[0] ? profile_find(&startup->profiles, settings->machine) : -1;
-            if (startup->current_index < 0) startup->current_index = startup->profiles.count ? 0 : -1;
+            app->current_index = settings->machine[0] ? profile_find(&app->profiles, settings->machine) : -1;
+            if (app->current_index < 0) app->current_index = app->profiles.count ? 0 : -1;
         }
 #ifdef __ANDROID__
-        while (startup->current_index < 0 && first_run_import()) {
-            find_roms(&startup->roms);
-            machine_session_migrate_profiles(&startup->profiles, &startup->roms, settings, startup->profiles_folder);
-            startup->current_index = startup->profiles.count ? 0 : -1;
+        while (app->current_index < 0 && first_run_import()) {
+            find_roms(&app->roms);
+            machine_session_migrate_profiles(&app->profiles, &app->roms, settings, app->profiles_folder);
+            app->current_index = app->profiles.count ? 0 : -1;
         }
 #endif
-        if (startup->current_index < 0) return no_roms_dialog() ? 0 : 1;
-        *current = startup->profiles.entries[startup->current_index];
+        if (app->current_index < 0) return no_roms_dialog() ? 0 : 1;
+        app->current = app->profiles.entries[app->current_index];
     }
-    bool started = machine_session_start(&startup->session, current, settings->speed, settings->optimisations != 0,
-                                         launch->state_file, launch->fresh, &startup->startup_notice, &snapshots, session_hooks);
-    if (!started && startup->current_index >= 0 && !launch->machine) {
-        snprintf(startup->fallback_notice, sizeof startup->fallback_notice, "Couldn't start %s: %s",
-                 current->name, startup->startup_notice);
-        fprintf(stderr, "%s\n", startup->fallback_notice);
-        for (int i = 0; i < startup->profiles.count && !started; i++) {
-            if (i == startup->current_index) continue;
-            *current = startup->profiles.entries[i];
-            started = machine_session_start(&startup->session, current, settings->speed, settings->optimisations != 0,
-                                            NULL, false, &startup->startup_notice, &snapshots, session_hooks);
+    const char *notice;
+    char fallback_notice[1600];
+    bool started = start_session(app, launch->state_file, launch->fresh, &notice);
+    if (!started && app->current_index >= 0 && !launch->machine) {
+        snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", app->current.name, notice);
+        fprintf(stderr, "%s\n", fallback_notice);
+        for (int i = 0; i < app->profiles.count && !started; i++) {
+            if (i == app->current_index) continue;
+            app->current = app->profiles.entries[i];
+            started = start_session(app, NULL, false, &notice);
             if (started) {
-                startup->current_index = i;
-                startup->startup_notice = startup->fallback_notice;
+                app->current_index = i;
+                notice = fallback_notice;
             }
         }
     }
     if (!started) {
-        fprintf(stderr, "%s\n", startup->startup_notice);
+        fprintf(stderr, "%s\n", notice);
         return 1;
     }
-    if (startup->current_index >= 0) {
-        snprintf(settings->machine, sizeof settings->machine, "%s", current->id);
+    if (app->current_index >= 0) {
+        snprintf(settings->machine, sizeof settings->machine, "%s", app->current.id);
         settings_save(settings);
     }
+    notice_queue_push(&app->notices, notice);
     return 0;
 }
 
-int main(int argc, char **argv) {
-    settings_t settings;
-    launch_t launch;
-    const char *rom_path;
-    bool continue_start;
-    int result = initialize_launch(argc, argv, &settings, &launch, &rom_path, &continue_start);
-    if (result || !continue_start) return result;
-    machine_session_hooks_t session_hooks = { log_message, print_debug_line, start_debug_log, insert_library_card };
-    machine_startup_t machine_startup = { 0 };
-    profile_t current = { 0 };
-    result = initialize_machine(&machine_startup, &settings, &launch, rom_path, &current, &session_hooks);
-    if (result) return result;
-    serial_mode_t serial_mode = launch.serial_mode;
-    const char *card = launch.card, *disk = launch.disk;
-    rom_set_t roms = machine_startup.roms;
-    char profiles_folder[sizeof machine_startup.profiles_folder];
-    snprintf(profiles_folder, sizeof profiles_folder, "%s", machine_startup.profiles_folder);
-    profiles_t profiles = machine_startup.profiles;
-    int current_index = machine_startup.current_index;
-    machine_session_t session = machine_startup.session;
-    machine_startup.session.machine = NULL;
-    const char *startup_notice = machine_startup.startup_notice;
-    machine_t *machine = session.machine;
-    key_layout_t key_layout = machine_key_layout(machine);
+static bool open_window(app_t *app) {
+    machine_t *machine = app->session.machine;
+    app->key_layout = machine_key_layout(machine);
     screen_size_t screen = machine_screen_size(machine);
     lcd_set_size(screen.width, screen.height);
 
     SDL_SetAppMetadata("Velo", options_version(), "velo-emu");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return false;
+    }
     pick_event_type = SDL_RegisterEvents(1);
     int window_width, window_height;
-    window_size((view_display_t)settings.display, settings.scale, &window_width, &window_height);
-    SDL_Window *window = SDL_CreateWindow("Philips Velo 1", window_width, window_height, SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, NULL) : NULL;
-    if (!renderer) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
-    SDL_SetRenderVSync(renderer, 1);
+    window_size((view_display_t)app->settings.display, app->settings.scale, &window_width, &window_height);
+    app->window = SDL_CreateWindow("Philips Velo 1", window_width, window_height, SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    app->renderer = app->window ? SDL_CreateRenderer(app->window, NULL) : NULL;
+    if (!app->renderer) {
+        fprintf(stderr, "SDL: %s\n", SDL_GetError());
+        return false;
+    }
+    SDL_SetRenderVSync(app->renderer, 1);
 #ifdef __ANDROID__
-    SDL_SetWindowFullscreen(window, true);
+    SDL_SetWindowFullscreen(app->window, true);
     lcd_set_unlit_level(ANDROID_UNLIT_LEVEL);
 #endif
+    app->view = view_create(app->window, app->renderer, (view_display_t)app->settings.display, menu_bar_height());
+    return true;
+}
 
-    view_t *view = view_create(window, renderer, (view_display_t)settings.display, menu_bar_height());
-
-
-    if (card && !machine_insert_card(machine, card)) fprintf(stderr, "cannot open card image %s\n", card);
-    if (disk && !machine_insert_disk(machine, disk, false)) fprintf(stderr, "cannot open disk image %s\n", disk);
-
-    menu_install(window);
-
-    SDL_AudioSpec audio_spec = { SDL_AUDIO_S16, 1, 11025 };
-    SDL_AudioStream *audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, NULL, NULL);
-    if (audio) SDL_ResumeAudioStreamDevice(audio);
+static void open_audio(app_t *app) {
+    app->audio_spec = (SDL_AudioSpec){ SDL_AUDIO_S16, 1, 11025 };
+    app->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &app->audio_spec, NULL, NULL);
+    if (app->audio) SDL_ResumeAudioStreamDevice(app->audio);
     else if (verbose) fprintf(stderr, "audio: %s\n", SDL_GetError());
-    bool sound = true;
-    int16_t samples[AUDIO_CHUNK] = { 0 };
+    app->sound = true;
+}
 
-    bool running = true, pen_down = false, paused = false;
-    bool held[256] = { false };
-    uint64_t last = SDL_GetPerformanceCounter();
-    double frequency = (double)SDL_GetPerformanceFrequency();
-    double since_autosave = 0, since_backup = 0;
-    uint64_t power_release_at = 0, backlight_release_at = 0;
-    notice_queue_t notices;
-    notice_queue_init(&notices);
-    notice_queue_push(&notices, startup_notice);
-    serial_link_t serial = { 0 };
-    serial_link_init(&serial, serial_log);
-    serial.options.user_agent = settings.user_agent;
-    serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
-    serial.tcp_port = (int)settings.serial_tcp_port;
-    char rapi_socket[1024], sync_manifest[1024], desktop_notice[256], shared_notice[1200], paste_notice[64];
-    typer_t typer = { 0 };
-    scroller_t scroller = { 0 };
-    input_queue_t input = { 0 };
-    char ports[SERIAL_PORT_MAX][SERIAL_LINK_PORT_NAME] = { 0 };
-    int port_count = 0;
-    double since_port_scan = 0;
-    dropped_t dropped = { 0 };
-    picked_t *picked = NULL;
+static void open_serial(app_t *app) {
+    machine_t *machine = app->session.machine;
+    serial_link_init(&app->serial, serial_log);
+    app->serial.options.user_agent = app->settings.user_agent;
+    app->serial.options.rapi_port = app->settings.network_rapi ? (int)app->settings.rapi_port : 0;
+    app->serial.tcp_port = (int)app->settings.serial_tcp_port;
+    char rapi_socket[1024], sync_manifest[1024];
     rapi_socket_path(rapi_socket, sizeof rapi_socket);
     rapi_data_path("sync-manifest.txt", sync_manifest, sizeof sync_manifest);
-    desktop_t *desktop = desktop_create(rapi_socket, sync_manifest);
-    uint64_t serial_reconnect_at = 0, serial_unplug_at = 0;
-    bool serial_tcp_attached = false;
-    serial_mode_t serial_reconnect_mode = SERIAL_OFF;
-    serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
-    if (serial_mode != SERIAL_OFF && serial_reconnect_at) {
-        serial_reconnect_mode = serial_mode;
-    } else if (serial_mode != SERIAL_OFF) {
-        const char *result = serial_open(&serial, machine, serial_mode, settings.serial_device);
-        if (!notice_queue_current(&notices)) notice_queue_push(&notices, result);
+    app->desktop = desktop_create(rapi_socket, sync_manifest);
+    app->serial_reconnect_mode = SERIAL_OFF;
+    serial_restored(&app->serial, machine, app->settings.serial_device, &app->serial_reconnect_at, &app->serial_reconnect_mode);
+    serial_mode_t mode = app->launch.serial_mode;
+    if (mode != SERIAL_OFF && app->serial_reconnect_at) {
+        app->serial_reconnect_mode = mode;
+    } else if (mode != SERIAL_OFF) {
+        const char *result = serial_open(&app->serial, machine, mode, app->settings.serial_device);
+        if (!notice_queue_current(&app->notices)) notice_queue_push(&app->notices, result);
     }
+}
 
-    if (launch.gdb_process && !launch.gdb_port) {
+static int start_debugging(app_t *app) {
+    machine_t *machine = app->session.machine;
+    const launch_t *launch = &app->launch;
+    if (launch->gdb_process && !launch->gdb_port) {
         fprintf(stderr, "velo: --gdb-process needs --gdb\n");
         return 2;
     }
-    if (launch.gdb_port) {
-        debugger = gdb_create(machine, launch.gdb_port, false, log_gdb);
-        if (!debugger) {
-            fprintf(stderr, "velo: cannot listen for GDB on port %d\n", launch.gdb_port);
+    if (launch->gdb_port) {
+        app->debugger = gdb_create(machine, launch->gdb_port, false, log_gdb);
+        if (!app->debugger) {
+            fprintf(stderr, "velo: cannot listen for GDB on port %d\n", launch->gdb_port);
             return 1;
         }
-        if (launch.gdb_process) gdb_set_process(debugger, launch.gdb_process);
+        if (launch->gdb_process) gdb_set_process(app->debugger, launch->gdb_process);
     }
-    char gdb_notice[160] = { 0 };
-    if (!debugger && settings.gdb_server) {
-        debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
-        if (!notice_queue_current(&notices)) notice_queue_push(&notices, gdb_notice);
+    if (!app->debugger && app->settings.gdb_server) {
+        char message[160];
+        app->debugger = start_network_gdb(machine, app->settings.gdb_port, message, sizeof message);
+        if (!notice_queue_current(&app->notices)) notice_queue_push(&app->notices, message);
     }
-    if (launch.agent_socket && !(agent = agent_create(launch.agent_socket, log_gdb))) {
-        fprintf(stderr, "velo: cannot listen on agent socket %s\n", launch.agent_socket);
+    if (launch->agent_socket && !(app->agent = agent_create(launch->agent_socket, log_gdb))) {
+        fprintf(stderr, "velo: cannot listen on agent socket %s\n", launch->agent_socket);
         return 1;
     }
-    app_runner_t *runner = NULL;
-    runner = app_runner_create(machine, &input, debugger, agent);
-    if (!runner) {
+    return 0;
+}
+
+static void shut_down(app_t *app) {
+    machine_t *machine = app->session.machine;
+    app_runner_destroy(app->runner);
+    gdb_destroy(app->debugger);
+    app->debugger = NULL;
+    agent_destroy(app->agent);
+    app->agent = NULL;
+    free(app->picked);
+    machine_save(machine, app->session.state_path, (int64_t)time(NULL));
+    serial_close(&app->serial, machine);
+    desktop_destroy(app->desktop);
+    if (verbose) machine_dump_state(machine);
+    SDL_DestroyAudioStream(app->audio);
+    view_destroy(app->view);
+    SDL_DestroyRenderer(app->renderer);
+    SDL_DestroyWindow(app->window);
+    SDL_Quit();
+    machine_session_destroy(&app->session);
+}
+
+int main(int argc, char **argv) {
+    app_t *app = calloc(1, sizeof *app);
+    if (!app) return 1;
+    bool start;
+    int result = load_launch(app, argc, argv, &start);
+    if (result || !start) return result;
+    result = start_machine(app);
+    if (result) return result;
+    if (!open_window(app)) return 1;
+    machine_t *machine = app->session.machine;
+    if (app->launch.card && !machine_insert_card(machine, app->launch.card)) fprintf(stderr, "cannot open card image %s\n", app->launch.card);
+    if (app->launch.disk && !machine_insert_disk(machine, app->launch.disk, false)) fprintf(stderr, "cannot open disk image %s\n", app->launch.disk);
+    menu_install(app->window);
+    open_audio(app);
+    app->running = true;
+    app->last_frame = SDL_GetPerformanceCounter();
+    app->frequency = (double)SDL_GetPerformanceFrequency();
+    open_serial(app);
+    result = start_debugging(app);
+    if (result) return result;
+    app->runner = app_runner_create(machine, &app->input, app->debugger, app->agent);
+    if (!app->runner) {
         fprintf(stderr, "velo: cannot start machine runner\n");
         return 1;
     }
-    host_event_context_t host_events = {
-        &machine, &key_layout, &input, &scroller, window, view, &running, &pen_down, held, &dropped, &picked, &roms,
-        &session, &serial, desktop, &notices,
-    };
-    machine_menu_context_t machine_menu = {
-        window, &machine, &settings, &profiles, &current, &current_index, profiles_folder, &snapshots, &notices, &session, &since_backup,
-    };
-    while (running) {
-        uint64_t frame_start = SDL_GetTicksNS();
-        app_runner_lock(runner);
-        bool events_seen = poll_host_events(&host_events);
-
-        release_keys(&input, machine, held, menu_modifiers());
-        int switch_to = -1;
-        for (int item = menu_poll(); item >= 0; item = menu_poll()) {
-            release_keys(&input, machine, held, -1);
-            if (handle_machine_menu(&machine_menu, item, &switch_to, &events_seen)) continue;
-            if (handle_view_menu(&settings, window, view, item, &notices)) continue;
-            switch (item) {
-            case MENU_POWER:
-                machine_power_button(machine, true);
-                power_release_at = machine_cycles(machine) + (uint64_t)(POWER_PRESS_SECONDS * MACHINE_CLOCK_HZ);
-                break;
-            case MENU_PAUSE: paused = !paused; break;
-            case MENU_SOFT_RESET:
-                machine_soft_reset(machine);
-                if (serial.mode == SERIAL_NETWORK) serial_unplug_at = machine_cycles(machine) + SOFT_RESET_REPLUG_SECONDS * MACHINE_CLOCK_HZ;
-                break;
-            case MENU_PASTE: {
-                char *clipboard = SDL_GetClipboardText();
-                size_t typed = clipboard ? typer_start(&typer, key_layout, clipboard) : 0;
-                SDL_free(clipboard);
-                snprintf(paste_notice, sizeof paste_notice, typed ? "typing %zu characters" : "nothing to type", typed);
-                notice_queue_push(&notices, paste_notice);
-                break;
-            }
-            case MENU_SAVE_STATE:
-                notice_queue_push(&notices, machine_save(machine, session.state_path, (int64_t)time(NULL)) ? "state saved" : "could not save state");
-                break;
-            case MENU_LOAD_STATE:
-                snapshot_store_backup_machine(&snapshots, machine, session.state_path);
-                if (machine_load(machine, session.state_path, NULL)) {
-                    serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
-                    notice_queue_push(&notices, "state loaded");
-                } else {
-                    notice_queue_push(&notices, "no saved state");
-                }
-                break;
-            case MENU_BACKLIGHT:
-                machine_backlight_button(machine, true);
-                backlight_release_at = machine_cycles(machine) + (uint64_t)(BACKLIGHT_PRESS_SECONDS * MACHINE_CLOCK_HZ);
-                break;
-            case MENU_SOUND: sound = !sound; break;
-            case MENU_SHOW_STATE: reveal_file(session.state_path); break;
-            case MENU_SAVE_SNAPSHOT: {
-                static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state" } };
-                static char default_snapshot[1200];
-                snapshot_store_default_name(&snapshots, default_snapshot, sizeof default_snapshot);
-                SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_SAVE_SNAPSHOT, window, filters, 1, default_snapshot);
-                break;
-            }
-            case MENU_LOAD_SNAPSHOT: {
-                static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state;bin" } };
-                static char folder[1100];
-                snapshot_store_folder(&snapshots, folder, sizeof folder);
-                SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_LOAD_SNAPSHOT, window, filters, 1, folder, false);
-                break;
-            }
-            case MENU_SHOW_DEBUG_OUTPUT: {
-                char path[1100];
-                debug_log_path(path, sizeof path);
-                if (debug_log) fflush(debug_log);
-                open_path(path);
-                break;
-            }
-            case MENU_QUIT:
-                running = false;
-                break;
-#ifdef __ANDROID__
-            case MENU_IMPORT: {
-                int cards, imported = import_files(&cards);
-                find_roms(&roms);
-                char message[160];
-                snprintf(message, sizeof message, "imported %d ROMs and %d cards", imported, cards);
-                notice_queue_push(&notices, message);
-                break;
-            }
-#endif
-            case MENU_SPEED_1:
-            case MENU_SPEED_2:
-            case MENU_SPEED_4:
-            case MENU_SPEED_8:
-                settings.speed = item == MENU_SPEED_1 ? 1 : item == MENU_SPEED_2 ? 2 : item == MENU_SPEED_4 ? 4 : 8;
-                machine_set_speed(machine, settings.speed);
-                settings_save(&settings);
-                break;
-            case MENU_OPTIMISATIONS:
-                settings.optimisations = !settings.optimisations;
-                machine_set_optimisations(machine, settings.optimisations);
-                settings_save(&settings);
-                break;
-            case MENU_INSERT_CARD: {
-                static const SDL_DialogFileFilter filters[] = { { "Card images", "img;bin;raw" }, { "All files", "*" } };
-                SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_CARD, window, filters, 2, NULL, false);
-                break;
-            }
-            case MENU_INSERT_DISK: {
-                static const SDL_DialogFileFilter filters[] = { { "Disk images", "img;bin;raw" }, { "All files", "*" } };
-                SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_DISK, window, filters, 2, NULL, false);
-                break;
-            }
-            case MENU_NEW_DISK: {
-#ifdef __ANDROID__
-                free(picked);
-                picked = new_disk_pick();
-                break;
-#endif
-                static const SDL_DialogFileFilter filters[] = { { "Disk images", "img" } };
-                SDL_ShowSaveFileDialog(pick_done, (void *)(intptr_t)PICK_NEW_DISK, window, filters, 1, "Velo Disk.img");
-                break;
-            }
-            case MENU_EJECT_DISK:
-                machine_eject_disk(machine);
-                notice_queue_push(&notices, "disk ejected");
-                break;
-            default:
-                if (item >= MENU_MACHINE_FIRST && item <= MENU_MACHINE_LAST && item - MENU_MACHINE_FIRST < profiles.count && item - MENU_MACHINE_FIRST != current_index) {
-                    switch_to = item - MENU_MACHINE_FIRST;
-                    break;
-                }
-                if (item >= MENU_SERIAL_PORT_FIRST && item <= MENU_SERIAL_PORT_LAST && item - MENU_SERIAL_PORT_FIRST < port_count) {
-                    snprintf(settings.serial_device, sizeof settings.serial_device, "%s", ports[item - MENU_SERIAL_PORT_FIRST]);
-                    settings_save(&settings);
-                    serial_reconnect_at = 0;
-                    notice_queue_push(&notices, serial_open(&serial, machine, SERIAL_DEVICE, settings.serial_device));
-                }
-                break;
-            case MENU_SERIAL_NETWORK:
-            case MENU_SERIAL_PTY:
-            case MENU_SERIAL_TCP:
-            case MENU_SERIAL_OFF:
-                serial_reconnect_at = 0;
-                notice_queue_push(&notices,
-                                  serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF, settings.serial_device));
-                break;
-#ifdef __ANDROID__
-            case MENU_FULL_BRIGHTNESS:
-                settings.full_brightness = !settings.full_brightness;
-                settings_save(&settings);
-                break;
-            case MENU_FETCH_DOCUMENTS:
-            case MENU_SHARED_FOLDER: {
-                if (!android_all_files_access()) {
-                    android_request_all_files_access();
-                    notice_queue_push(&notices, "allow All files access for Velo, then try again");
-                    break;
-                }
-                bool shared = item == MENU_SHARED_FOLDER;
-                picked_t *folder = calloc(1, sizeof *folder);
-                const char *start = shared && settings.shared_folder[0] ? settings.shared_folder : "/storage/emulated/0/Documents";
-                if (folder && android_choose_folder(shared ? "Folder to share with My Documents" : "Folder to copy My Documents into", start, folder->paths[0], sizeof folder->paths[0])) {
-                    folder->kind = shared ? PICK_SHARED : PICK_FETCH;
-                    folder->count = 1;
-                    free(picked);
-                    picked = folder;
-                } else {
-                    free(folder);
-                }
-                events_seen = true;
-                break;
-            }
-#endif
-            case MENU_GDB_SERVER:
-                if (debugger) {
-                    app_runner_set_debugger_locked(runner, NULL);
-                    gdb_destroy(debugger);
-                    debugger = NULL;
-                    settings.gdb_server = 0;
-                    notice_queue_push(&notices, "GDB server stopped");
-                } else {
-                    debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
-                    app_runner_set_debugger_locked(runner, debugger);
-                    settings.gdb_server = debugger != NULL;
-                    notice_queue_push(&notices, gdb_notice);
-                }
-                settings_save(&settings);
-                break;
-            case MENU_NETWORK_RAPI: {
-                settings.network_rapi = !settings.network_rapi;
-                settings_save(&settings);
-                serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
-                char address[64];
-                local_address(address, sizeof address);
-                char message[160];
-                if (settings.network_rapi) snprintf(message, sizeof message, "RAPI at %s:%u", address, settings.rapi_port);
-                else snprintf(message, sizeof message, "RAPI over the network off");
-                if (serial.mode == SERIAL_NETWORK) serial_open(&serial, machine, SERIAL_NETWORK, settings.serial_device);
-                notice_queue_push(&notices, message);
-                break;
-            }
-            case MENU_SEND_FILES:
-                SDL_ShowOpenFileDialog(pick_done, (void *)(intptr_t)PICK_SEND, window, NULL, 0, NULL, true);
-                break;
-#ifndef __ANDROID__
-            case MENU_FETCH_DOCUMENTS:
-                SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_FETCH, window, NULL, false);
-                break;
-            case MENU_SHARED_FOLDER:
-                SDL_ShowOpenFolderDialog(pick_done, (void *)(intptr_t)PICK_SHARED, window, settings.shared_folder[0] ? settings.shared_folder : NULL, false);
-                break;
-#endif
-            case MENU_SYNC_NOW:
-                desktop_sync(desktop, settings.shared_folder);
-                break;
-            case MENU_SET_PROXY:
-                desktop_set_proxy(desktop);
-                break;
-            case MENU_BAUD_19200:
-            case MENU_BAUD_38400:
-            case MENU_BAUD_57600:
-            case MENU_BAUD_115200:
-                desktop_set_baud(desktop, item == MENU_BAUD_19200 ? 19200 : item == MENU_BAUD_38400 ? 38400 : item == MENU_BAUD_57600 ? 57600 : 115200);
-                break;
-            case MENU_STOP_SHARING:
-                snprintf(shared_notice, sizeof shared_notice, "stopped sharing %s", file_leaf_name(settings.shared_folder));
-                settings.shared_folder[0] = 0;
-                settings_save(&settings);
-                notice_queue_push(&notices, shared_notice);
-                break;
-            case MENU_EJECT_CARD:
-                machine_eject_card(machine);
-                notice_queue_push(&notices, "card ejected");
-                break;
-            }
-        }
-        if (switch_to >= 0 && switch_to < profiles.count && switch_to != current_index) {
-            if (desktop_busy(desktop)) {
-                notice_queue_push(&notices, "busy with a desktop transfer");
-            } else {
-                const char *switch_notice = NULL;
-                machine_session_t next_session = { 0 };
-                profile_t next_profile = profiles.entries[switch_to];
-                bool next_started = machine_session_start(&next_session, &next_profile, settings.speed, settings.optimisations != 0,
-                                                          NULL, false, &switch_notice, &snapshots, &session_hooks);
-                if (!next_started) {
-                    notice_queue_push(&notices, switch_notice);
-                } else {
-                    serial_mode_t mode = serial.mode;
-                    if (serial_keeps_link(&serial, mode, settings.serial_device)) machine_serial_connect(machine, false);
-                    else serial_close(&serial, machine);
-                    if (pen_down) machine_touch(machine, false, 0, 0);
-                    input_clear(&input);
-                    pen_down = false;
-                    typer.length = typer.position = 0;
-                    machine_save(machine, session.state_path, (int64_t)time(NULL));
-                    machine_session_destroy(&session);
-                    session = next_session;
-                    machine = session.machine;
-                    current = next_profile;
-                    current_index = switch_to;
-                    key_layout = machine_key_layout(machine);
-                    snprintf(settings.machine, sizeof settings.machine, "%s", current.id);
-                    settings_save(&settings);
-                    serial_reconnect_at = serial_unplug_at = 0;
-                    if (mode != SERIAL_OFF) {
-                        serial_reconnect_mode = mode;
-                        serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
-                    }
-                    power_release_at = backlight_release_at = 0;
-                    since_backup = 0;
-                    app_runner_set_machine_locked(runner, machine);
-                    if (debugger) gdb_set_machine(debugger, machine);
-                    char message[160];
-                    snprintf(message, sizeof message, "switched to %s", current.name);
-                    notice_queue_push(&notices, switch_notice ? switch_notice : message);
-                }
-            }
-        }
-        bool velo_online = serial.gateway && net_gateway_online(serial.gateway);
-        if (picked) {
-            if (picked->kind == PICK_CARD) {
-                notice_queue_push(&notices, machine_insert_card(machine, picked->paths[0]) ? "card inserted" : "could not open card image");
-            } else if (picked->kind == PICK_DISK) {
-                notice_queue_push(&notices, machine_insert_disk(machine, picked->paths[0], false) ? "disk inserted" : "could not open disk image");
-            } else if (picked->kind == PICK_NEW_DISK) {
-                char path[1100];
-                snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".img") ? "" : ".img");
-                bool made = create_blank_disk(path) && machine_insert_disk(machine, path, false);
-                char message[1200];
-                snprintf(message, sizeof message, made ? "inserted new disk %s; the Velo offers to format it" : "could not create %s", file_leaf_name(path));
-                notice_queue_push(&notices, message);
-            } else if (picked->kind == PICK_SEND) {
-                const char *files[PICK_MAX + 1];
-                for (int i = 0; i < picked->count; i++) files[i] = picked->paths[i];
-                files[picked->count] = NULL;
-                desktop_send(desktop, files);
-            } else if (picked->kind == PICK_SAVE_SNAPSHOT) {
-                char path[1100];
-                snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".state") ? "" : ".state");
-                bool saved = machine_save(machine, path, (int64_t)time(NULL));
-#ifdef __ANDROID__
-                if (saved && picked->export_uri[0]) {
-                    saved = android_export(path, picked->export_uri);
-                    remove(path);
-                }
-#endif
-                char message[1200];
-                snprintf(message, sizeof message, saved ? "saved snapshot %s" : "could not save %s", file_leaf_name(path));
-                notice_queue_push(&notices, message);
-            } else if (picked->kind == PICK_LOAD_SNAPSHOT) {
-                char message[1200];
-                if (machine_state_matches(machine, picked->paths[0])) snapshot_store_backup_machine(&snapshots, machine, session.state_path);
-                if (machine_load(machine, picked->paths[0], NULL)) {
-                    serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
-                    snprintf(message, sizeof message, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
-                } else {
-                    snprintf(message, sizeof message, "%s isn't a snapshot of this ROM", file_leaf_name(picked->paths[0]));
-                }
-                notice_queue_push(&notices, message);
-            } else if (picked->kind == PICK_FETCH) {
-                desktop_fetch(desktop, picked->paths[0]);
-            } else if (picked->kind == PICK_SHARED) {
-                snprintf(settings.shared_folder, sizeof settings.shared_folder, "%s", picked->paths[0]);
-                settings_save(&settings);
-                snprintf(shared_notice, sizeof shared_notice, "sharing %s with \\My Documents", file_leaf_name(settings.shared_folder));
-                notice_queue_push(&notices, shared_notice);
-                if (velo_online) desktop_sync(desktop, settings.shared_folder);
-            }
-            free(picked);
-            picked = NULL;
-        }
-        if (serial.gateway && net_gateway_take_desktop_connected(serial.gateway) && settings.shared_folder[0]) {
-            desktop_sync(desktop, settings.shared_folder);
-        }
-        if (desktop_take_reconnect(desktop) && serial.mode == SERIAL_NETWORK) serial_unplug_at = machine_cycles(machine) + SPEED_SETTLE_SECONDS * MACHINE_CLOCK_HZ;
-        if (serial_unplug_at && machine_cycles(machine) >= serial_unplug_at) {
-            serial_unplug_at = 0;
-            if (serial.mode == SERIAL_NETWORK) {
-                serial_open(&serial, machine, SERIAL_OFF, settings.serial_device);
-                serial_reconnect_mode = SERIAL_NETWORK;
-                serial_reconnect_at = machine_cycles(machine) + 2ull * MACHINE_CLOCK_HZ;
-            }
-        }
-        if (desktop_take_status(desktop, desktop_notice, sizeof desktop_notice)) {
-            notice_queue_push(&notices, desktop_notice);
-        }
-        bool desktop_free = velo_online && !desktop_busy(desktop);
-        menu_ensure();
-        menu_set_enabled(MENU_SEND_FILES, desktop_free);
-        menu_set_enabled(MENU_FETCH_DOCUMENTS, desktop_free);
-        menu_set_enabled(MENU_SYNC_NOW, desktop_free && settings.shared_folder[0]);
-        menu_set_enabled(MENU_STOP_SHARING, settings.shared_folder[0] != 0);
-        menu_set_enabled(MENU_SET_PROXY, desktop_free);
-        static const uint32_t LINK_SPEEDS[] = { 19200, 38400, 57600, 115200 };
-        uint32_t link_baud = velo_online ? machine_serial_baud(machine) : 0;
-        for (int baud_item = MENU_BAUD_19200; baud_item <= MENU_BAUD_115200; baud_item++) {
-            uint32_t speed = LINK_SPEEDS[baud_item - MENU_BAUD_19200];
-            menu_set_enabled(baud_item, desktop_free);
-            menu_set_checked(baud_item, link_baud && link_baud * 20 > speed * 19 && link_baud * 20 < speed * 21);
-        }
-        menu_set_enabled(MENU_EJECT_CARD, machine_card_inserted(machine));
-        menu_set_enabled(MENU_EJECT_DISK, machine_disk_inserted(machine));
-        menu_set_checked(MENU_SERIAL_NETWORK, serial.mode == SERIAL_NETWORK);
-        menu_set_checked(MENU_SERIAL_PTY, serial.mode == SERIAL_PTY);
-        menu_set_checked(MENU_SERIAL_TCP, serial.mode == SERIAL_TCP);
-        reap_reveal_children();
-        if (since_port_scan <= 0) {
-            since_port_scan = PORT_SCAN_SECONDS;
-            port_count = serial_link_ports(ports, SERIAL_PORT_MAX);
-        }
-        for (int i = 0; i < SERIAL_PORT_MAX; i++) {
-            int port_item = MENU_SERIAL_PORT_FIRST + i;
-            bool shown = i < port_count || (i == 0 && port_count == 0);
-            menu_set_hidden(port_item, !shown);
-            if (!shown) continue;
-            menu_set_title(port_item, port_count ? ports[i] + 5 : "No serial ports found");
-            menu_set_enabled(port_item, port_count > 0);
-            menu_set_checked(port_item, port_count && serial.mode == SERIAL_DEVICE && !strcmp(settings.serial_device, ports[i]));
-        }
-        menu_set_checked(MENU_SERIAL_OFF, serial.mode == SERIAL_OFF);
-        menu_set_checked(MENU_PAUSE, paused);
-        menu_set_checked(MENU_BACKLIGHT, machine_backlight(machine));
-        menu_set_checked(MENU_SOUND, sound);
-        menu_set_checked(MENU_GDB_SERVER, debugger != NULL);
-        menu_set_checked(MENU_NETWORK_RAPI, settings.network_rapi != 0);
-        menu_set_checked(MENU_FULL_BRIGHTNESS, settings.full_brightness != 0);
-        for (int i = 0; i < PROFILES_MAX; i++) {
-            int machine_item = MENU_MACHINE_FIRST + i;
-            menu_set_hidden(machine_item, i >= profiles.count);
-            if (i >= profiles.count) continue;
-            menu_set_title(machine_item, profiles.entries[i].name);
-            menu_set_checked(machine_item, i == current_index);
-        }
-        menu_set_enabled(MENU_NEW_MACHINE, profiles.count < PROFILES_MAX);
-        menu_set_checked(MENU_CONNECT_AT_LAUNCH, settings.connect_at_launch != 0);
-        for (int scale_item = MENU_SCALE_50; scale_item <= MENU_SCALE_200; scale_item++) menu_set_checked(scale_item, settings.scale == settings_scale_at(scale_item - MENU_SCALE_50));
-        menu_set_enabled(MENU_ZOOM_IN, settings.scale < settings_scale_at(SETTINGS_SCALE_COUNT - 1));
-        menu_set_enabled(MENU_ZOOM_OUT, settings.scale > settings_scale_at(0));
-        menu_set_checked(MENU_FULL_SCREEN, (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0);
-        menu_set_checked(MENU_DISPLAY_SIMULATED, settings.display == VIEW_SIMULATED);
-        menu_set_checked(MENU_DISPLAY_SHARP, settings.display == VIEW_SHARP);
-        menu_set_checked(MENU_SPEED_1, machine_speed(machine) == 1);
-        menu_set_checked(MENU_SPEED_2, machine_speed(machine) == 2);
-        menu_set_checked(MENU_SPEED_4, machine_speed(machine) == 4);
-        menu_set_checked(MENU_SPEED_8, machine_speed(machine) == 8);
-        menu_set_checked(MENU_OPTIMISATIONS, machine_optimisations(machine));
-
-        uint64_t now = SDL_GetPerformanceCounter();
-        double elapsed = (double)(now - last) / frequency;
-        last = now;
-        if (elapsed > MAX_FRAME_SLICE) elapsed = MAX_FRAME_SLICE;
-        const char *notice = notice_queue_current(&notices);
-        set_title(window, current.name, notice, paused, machine_suspended(machine));
-#ifdef __ANDROID__
-        if (android_toast(notice ? notice : paused ? "Paused" : NULL)) events_seen = true;
-#endif
-        since_autosave += elapsed;
-        if (!paused) since_backup += elapsed;
-        since_port_scan -= elapsed;
-        if (since_backup >= BACKUP_SECONDS) {
-            since_backup = 0;
-            snapshot_store_backup_machine(&snapshots, machine, session.state_path);
-        }
-        if (since_autosave >= AUTOSAVE_SECONDS) {
-            since_autosave = 0;
-            machine_save(machine, session.state_path, (int64_t)time(NULL));
-        }
-        app_runner_set_paused_locked(runner, paused);
-        typer_step(&typer, machine);
-        scroller_step(&scroller, machine);
-        serial_link_pump(&serial, machine);
-        if (serial.mode != SERIAL_TCP) {
-            serial_tcp_attached = false;
-        } else if (serial_link_attached(&serial) != serial_tcp_attached) {
-            serial_tcp_attached = !serial_tcp_attached;
-            machine_serial_connect(machine, serial_tcp_attached);
-            notice_queue_push(&notices, serial_tcp_attached ? "TCP client connected" : "TCP client disconnected");
-        }
-        if (serial_reconnect_at && machine_cycles(machine) >= serial_reconnect_at) {
-            serial_reconnect_at = 0;
-            notice_queue_push(&notices, serial_open(&serial, machine, serial_reconnect_mode, settings.serial_device));
-        }
-        if (backlight_release_at && machine_cycles(machine) >= backlight_release_at) {
-            backlight_release_at = 0;
-            machine_backlight_button(machine, false);
-        }
-        if (power_release_at && machine_cycles(machine) >= power_release_at) {
-            power_release_at = 0;
-            machine_power_button(machine, false);
-        }
-        uint32_t rate;
-        for (size_t count; (count = machine_audio(machine, samples, AUDIO_CHUNK, &rate)) > 0;) {
-            if (!audio || !sound) continue;
-            if ((int)rate != audio_spec.freq) {
-                audio_spec.freq = (int)rate;
-                SDL_SetAudioStreamFormat(audio, &audio_spec, NULL);
-            }
-            SDL_PutAudioStreamData(audio, samples, (int)(count * sizeof samples[0]));
-        }
-
-        screen = machine_screen_size(machine);
-        if (screen.width != lcd_width() || screen.height != lcd_height()) {
-            view_set_screen_size(view, screen.width, screen.height);
-            if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)) fit_window(window, view, settings.scale);
-        }
-        lcd_set_power(machine_lcd_enabled(machine));
-        lcd_set_backlight(machine_backlight(machine));
-#ifdef __ANDROID__
-        android_update(settings.full_brightness && machine_backlight(machine) && machine_lcd_enabled(machine), !machine_suspended(machine));
-#endif
-        machine_screen(machine, lcd_framebuffer);
-        bool lcd_on = machine_lcd_enabled(machine);
-        app_runner_unlock(runner);
-        int inset_left, inset_top, inset_right, inset_bottom;
-        menu_insets(&inset_left, &inset_top, &inset_right, &inset_bottom);
-        view_set_insets(view, inset_left, inset_top, inset_right, inset_bottom);
-        bool screen_changed = view_update(view, (float)elapsed, lcd_on);
-        if (screen_changed || events_seen || menu_active()) {
-            view_render(view);
-            menu_draw(renderer);
-            SDL_RenderPresent(renderer);
-        } else {
-            uint64_t spent = SDL_GetTicksNS() - frame_start;
-            if (spent < IDLE_FRAME_NS) SDL_DelayNS(IDLE_FRAME_NS - spent);
-        }
-    }
-
-    app_runner_destroy(runner);
-    gdb_destroy(debugger);
-    debugger = NULL;
-    agent_destroy(agent);
-    agent = NULL;
-    free(picked);
-    machine_save(machine, session.state_path, (int64_t)time(NULL));
-    serial_close(&serial, machine);
-    desktop_destroy(desktop);
-    if (verbose) machine_dump_state(machine);
-    SDL_DestroyAudioStream(audio);
-    view_destroy(view);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    machine_session_destroy(&session);
+    while (app->running) run_frame(app);
+    shut_down(app);
+    free(app);
     return 0;
 }

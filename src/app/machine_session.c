@@ -78,7 +78,7 @@ bool machine_session_start(machine_session_t *session, const profile_t *profile,
     machine_set_speed(machine, speed);
     machine_set_optimisations(machine, optimisations);
     machine_set_host_clock(machine, profile->host_time);
-    machine_set_debug_output(machine, hooks->debug_output, NULL);
+    machine_set_debug_output(machine, hooks->debug_output, hooks->debug_context);
     hooks->start_debug_log(rom_path);
     if (state_file) snprintf(session->state_path, sizeof session->state_path, "%s", state_file);
     else if (profile->state[0]) snprintf(session->state_path, sizeof session->state_path, "%s", profile->state);
