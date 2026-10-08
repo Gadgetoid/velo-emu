@@ -269,10 +269,10 @@ static void prepare(kind_t kind, mips_cpu_t *cpu, int trial) {
         cpu->gpr[5] = (uint32_t)(1 + rand() % 64) * 32;
         break;
     case KIND_MOVE: {
-        uint32_t length = (uint32_t)(rand() % 600), base = TARGET_VA;
-        for (uint32_t i = 0; i < 2048; i++) ram[(base & AREA_MASK) + i] = (uint8_t)random_word();
-        cpu->gpr[4] = base + (uint32_t)(rand() % 700);
-        cpu->gpr[5] = trial % 3 ? base + (uint32_t)(rand() % 700) : SOURCE_VA + (uint32_t)(rand() % 64);
+        uint32_t length = (uint32_t)(trial % 2 ? rand() % 600 : rand() % 3000), base = TARGET_VA;
+        for (uint32_t i = 0; i < 8192; i++) ram[(base & AREA_MASK) + i] = (uint8_t)random_word();
+        cpu->gpr[4] = base + (uint32_t)(rand() % 3500);
+        cpu->gpr[5] = trial % 3 ? base + (uint32_t)(rand() % 3500) : SOURCE_VA + (uint32_t)(rand() % 64);
         cpu->gpr[6] = length;
         break;
     }

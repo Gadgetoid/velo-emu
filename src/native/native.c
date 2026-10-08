@@ -41,7 +41,7 @@
 #define SURFACE_WIDTH    24u
 #define SURFACE_HEIGHT   28u
 #define SURFACE_SIZE     32u
-#define BLT_ROW_MAX      0x2000u
+#define BLT_ROW_MAX      0x800u
 #define BLT_LOOKUP_MAX   256u
 
 bool native_read(const native_memory_t *memory, uint32_t va, uint8_t *data, uint32_t length) {
@@ -235,19 +235,26 @@ bool native_strcmp(const native_memory_t *memory, const uint32_t *arguments, nat
 }
 bool native_widen(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
     reader_t reader = { memory, 0, NULL };
-    static uint8_t text[STRING_MAX];
     uint32_t destination = arguments[0], source = arguments[1];
     int32_t limit = (int32_t)arguments[2];
     uint32_t count = 0;
+    uint8_t character;
     while ((int32_t)(count + 1) < limit) {
-        if (count == STRING_MAX || !reader_byte(&reader, source + count, &text[count])) return false;
-        if (!text[count]) break;
+        if (count == STRING_MAX || !reader_byte(&reader, source + count, &character)) return false;
+        if (!character) break;
         count++;
     }
     if (!guest_writable(memory, destination, (count + 1) * 2)) return false;
-    for (uint32_t i = 0; i <= count; i++) {
-        uint8_t wide[2] = { i < count ? text[i] : 0, 0 };
-        guest_write(memory, destination + i * 2, wide, 2);
+    uint8_t wide[PAGE];
+    for (uint32_t done = 0; done <= count;) {
+        uint32_t chunk = count + 1 - done < PAGE / 2 ? count + 1 - done : PAGE / 2;
+        for (uint32_t i = 0; i < chunk; i++) {
+            wide[i * 2] = 0;
+            wide[i * 2 + 1] = 0;
+            if (done + i < count) reader_byte(&reader, source + done + i, &wide[i * 2]);
+        }
+        guest_write(memory, destination + done * 2, wide, chunk * 2);
+        done += chunk;
     }
     result->value = count + 1;
     return true;
@@ -371,11 +378,25 @@ bool native_zero(const native_memory_t *memory, const uint32_t *arguments, nativ
     return true;
 }
 
+static bool guest_readable(const native_memory_t *memory, uint32_t va, uint32_t length) {
+    for (uint32_t at = va & ~(PAGE - 1); at < va + length; at += PAGE) {
+        if (!memory->map(memory->context, at < va ? va : at, false)) return false;
+    }
+    return true;
+}
+
 bool native_memmove(const native_memory_t *memory, const uint32_t *arguments, native_result_t *result) {
-    static uint8_t buffer[MOVE_MAX];
+    uint8_t buffer[PAGE];
     uint32_t destination = arguments[0], source = arguments[1], length = arguments[2];
-    if (length > MOVE_MAX || !native_read(memory, source, buffer, length) || !guest_writable(memory, destination, length)) return false;
-    guest_write(memory, destination, buffer, length);
+    if (length > MOVE_MAX || !guest_readable(memory, source, length) || !guest_writable(memory, destination, length)) return false;
+    bool backwards = destination > source && destination - source < length;
+    for (uint32_t done = 0; done < length;) {
+        uint32_t chunk = length - done < PAGE ? length - done : PAGE;
+        uint32_t offset = backwards ? length - done - chunk : done;
+        native_read(memory, source + offset, buffer, chunk);
+        guest_write(memory, destination + offset, buffer, chunk);
+        done += chunk;
+    }
     result->value = destination;
     return true;
 }
