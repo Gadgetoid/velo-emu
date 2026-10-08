@@ -1,8 +1,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
-#include <ctype.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,28 +30,13 @@
 #include "app/view.h"
 #include "core/agent.h"
 #include "core/gdb.h"
-#include "core/key_text.h"
 #include "core/lcd.h"
 #include "core/machine.h"
 #include "net/net_gateway.h"
-#include "net/serial_link.h"
 #include "rapi/rapi.h"
-#include "util/fat.h"
 #include "util/file.h"
-#include "util/marker.h"
 #include "util/options.h"
-#include "util/png.h"
 
-#include <arpa/inet.h>
-#include <dirent.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <strings.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <spawn.h>
-#include <unistd.h>
 
 #define WINDOW_SCALE     2
 #define IDLE_FRAME_NS    (SDL_NS_PER_SECOND / 60)
