@@ -629,7 +629,7 @@ typedef struct {
     dropped_t   *dropped;
     picked_t   **picked;
     rom_set_t   *roms;
-    const char  *state;
+    machine_session_t *session;
     serial_link_t *serial;
     desktop_t   *desktop;
     notice_queue_t *notices;
@@ -656,7 +656,7 @@ static bool poll_host_events(host_event_context_t *context) {
             *context->running = false;
             break;
         case SDL_EVENT_WILL_ENTER_BACKGROUND:
-            machine_save(machine, context->state, (int64_t)time(NULL));
+            machine_save(machine, context->session->state_path, (int64_t)time(NULL));
             break;
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP: {
@@ -918,7 +918,7 @@ typedef struct {
     const char      *profiles_folder;
     snapshot_store_t *snapshots;
     notice_queue_t  *notices;
-    char            *state;
+    machine_session_t *session;
     double          *since_backup;
 } machine_menu_context_t;
 
@@ -958,7 +958,7 @@ static bool handle_machine_menu(machine_menu_context_t *context, int item, int *
     if (action == DIALOG_MANAGE_RESET) {
         if (!confirm_reset(context->window, picked_profile.name)) return true;
         if (chosen == *context->current_index) {
-            snapshot_store_backup_machine(context->snapshots, *context->machine, context->state);
+            snapshot_store_backup_machine(context->snapshots, *context->machine, context->session->state_path);
             *context->since_backup = 0;
             machine_reset(*context->machine);
         } else {
@@ -1093,26 +1093,28 @@ int main(int argc, char **argv) {
         if (current_index < 0) return no_roms_dialog() ? 0 : 1;
         current = profiles.entries[current_index];
     }
-    char state[1100];
     const char *startup_notice = NULL;
     char fallback_notice[1600] = { 0 };
-    machine_t *machine = machine_session_start(&current, settings.speed, settings.optimisations != 0, state_file, fresh,
-                                               state, sizeof state, &startup_notice, &snapshots, &session_hooks);
-    if (!machine && current_index >= 0 && !launch.machine) {
+    machine_session_t session = { 0 };
+    bool started = machine_session_start(&session, &current, settings.speed, settings.optimisations != 0,
+                                         state_file, fresh, &startup_notice, &snapshots, &session_hooks);
+    machine_t *machine = session.machine;
+    if (!started && current_index >= 0 && !launch.machine) {
         snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", current.name, startup_notice);
         fprintf(stderr, "%s\n", fallback_notice);
-        for (int i = 0; i < profiles.count && !machine; i++) {
+        for (int i = 0; i < profiles.count && !started; i++) {
             if (i == current_index) continue;
             current = profiles.entries[i];
-            machine = machine_session_start(&current, settings.speed, settings.optimisations != 0, NULL, false,
-                                            state, sizeof state, &startup_notice, &snapshots, &session_hooks);
-            if (machine) {
+            started = machine_session_start(&session, &current, settings.speed, settings.optimisations != 0,
+                                            NULL, false, &startup_notice, &snapshots, &session_hooks);
+            if (started) {
+                machine = session.machine;
                 current_index = i;
                 startup_notice = fallback_notice;
             }
         }
     }
-    if (!machine) { fprintf(stderr, "%s\n", startup_notice); return 1; }
+    if (!started) { fprintf(stderr, "%s\n", startup_notice); return 1; }
     if (current_index >= 0) {
         snprintf(settings.machine, sizeof settings.machine, "%s", current.id);
         settings_save(&settings);
@@ -1216,10 +1218,10 @@ int main(int argc, char **argv) {
     }
     host_event_context_t host_events = {
         &machine, &key_layout, &input, &scroller, window, view, &running, &pen_down, held, &dropped, &picked, &roms,
-        state, &serial, desktop, &notices,
+        &session, &serial, desktop, &notices,
     };
     machine_menu_context_t machine_menu = {
-        window, &machine, &settings, &profiles, &current, &current_index, profiles_folder, &snapshots, &notices, state, &since_backup,
+        window, &machine, &settings, &profiles, &current, &current_index, profiles_folder, &snapshots, &notices, &session, &since_backup,
     };
     while (running) {
         uint64_t frame_start = SDL_GetTicksNS();
@@ -1251,11 +1253,11 @@ int main(int argc, char **argv) {
                 break;
             }
             case MENU_SAVE_STATE:
-                notice_queue_push(&notices, machine_save(machine, state, (int64_t)time(NULL)) ? "state saved" : "could not save state");
+                notice_queue_push(&notices, machine_save(machine, session.state_path, (int64_t)time(NULL)) ? "state saved" : "could not save state");
                 break;
             case MENU_LOAD_STATE:
-                snapshot_store_backup_machine(&snapshots, machine, state);
-                if (machine_load(machine, state, NULL)) {
+                snapshot_store_backup_machine(&snapshots, machine, session.state_path);
+                if (machine_load(machine, session.state_path, NULL)) {
                     serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
                     notice_queue_push(&notices, "state loaded");
                 } else {
@@ -1267,7 +1269,7 @@ int main(int argc, char **argv) {
                 backlight_release_at = machine_cycles(machine) + (uint64_t)(BACKLIGHT_PRESS_SECONDS * MACHINE_CLOCK_HZ);
                 break;
             case MENU_SOUND: sound = !sound; break;
-            case MENU_SHOW_STATE: reveal_file(state); break;
+            case MENU_SHOW_STATE: reveal_file(session.state_path); break;
             case MENU_SAVE_SNAPSHOT: {
                 static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state" } };
                 static char default_snapshot[1200];
@@ -1452,11 +1454,11 @@ int main(int argc, char **argv) {
                 notice_queue_push(&notices, "busy with a desktop transfer");
             } else {
                 const char *switch_notice = NULL;
-                char next_state[sizeof state];
+                machine_session_t next_session = { 0 };
                 profile_t next_profile = profiles.entries[switch_to];
-                machine_t *next = machine_session_start(&next_profile, settings.speed, settings.optimisations != 0, NULL, false,
-                                                        next_state, sizeof next_state, &switch_notice, &snapshots, &session_hooks);
-                if (!next) {
+                bool next_started = machine_session_start(&next_session, &next_profile, settings.speed, settings.optimisations != 0,
+                                                          NULL, false, &switch_notice, &snapshots, &session_hooks);
+                if (!next_started) {
                     notice_queue_push(&notices, switch_notice);
                 } else {
                     serial_mode_t mode = serial.mode;
@@ -1466,10 +1468,10 @@ int main(int argc, char **argv) {
                     input_clear(&input);
                     pen_down = false;
                     typer.length = typer.position = 0;
-                    machine_save(machine, state, (int64_t)time(NULL));
-                    machine_destroy(machine);
-                    machine = next;
-                    memcpy(state, next_state, sizeof state);
+                    machine_save(machine, session.state_path, (int64_t)time(NULL));
+                    machine_session_destroy(&session);
+                    session = next_session;
+                    machine = session.machine;
                     current = next_profile;
                     current_index = switch_to;
                     key_layout = machine_key_layout(machine);
@@ -1523,7 +1525,7 @@ int main(int argc, char **argv) {
                 notice_queue_push(&notices, message);
             } else if (picked->kind == PICK_LOAD_SNAPSHOT) {
                 char message[1200];
-                if (machine_state_matches(machine, picked->paths[0])) snapshot_store_backup_machine(&snapshots, machine, state);
+                if (machine_state_matches(machine, picked->paths[0])) snapshot_store_backup_machine(&snapshots, machine, session.state_path);
                 if (machine_load(machine, picked->paths[0], NULL)) {
                     serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
                     snprintf(message, sizeof message, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
@@ -1633,11 +1635,11 @@ int main(int argc, char **argv) {
         since_port_scan -= elapsed;
         if (since_backup >= BACKUP_SECONDS) {
             since_backup = 0;
-            snapshot_store_backup_machine(&snapshots, machine, state);
+            snapshot_store_backup_machine(&snapshots, machine, session.state_path);
         }
         if (since_autosave >= AUTOSAVE_SECONDS) {
             since_autosave = 0;
-            machine_save(machine, state, (int64_t)time(NULL));
+            machine_save(machine, session.state_path, (int64_t)time(NULL));
         }
         app_runner_set_paused_locked(runner, paused);
         typer_step(&typer, machine);
@@ -1705,7 +1707,7 @@ int main(int argc, char **argv) {
     agent_destroy(agent);
     agent = NULL;
     free(picked);
-    machine_save(machine, state, (int64_t)time(NULL));
+    machine_save(machine, session.state_path, (int64_t)time(NULL));
     serial_close(&serial, machine);
     desktop_destroy(desktop);
     if (verbose) machine_dump_state(machine);
@@ -1714,6 +1716,6 @@ int main(int argc, char **argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    machine_destroy(machine);
+    machine_session_destroy(&session);
     return 0;
 }
