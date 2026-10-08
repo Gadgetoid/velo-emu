@@ -49,8 +49,7 @@ static bool is_directory(const char *path) {
     return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
 }
 
-const char *picks_handle_drop(dropped_t *dropped, machine_t *machine, desktop_t *desktop, bool online) {
-    static char message[1200];
+void picks_handle_drop(dropped_t *dropped, machine_t *machine, desktop_t *desktop, bool online, char *message, size_t size) {
     int files = 0, scripts = -1, cards = -1;
     const char *list[PICK_MAX + 1];
     for (int i = 0; i < dropped->count; i++) {
@@ -63,16 +62,17 @@ const char *picks_handle_drop(dropped_t *dropped, machine_t *machine, desktop_t 
     list[files] = NULL;
     dropped->count = 0;
     if (cards >= 0 && files == 1) {
-        snprintf(message, sizeof message, machine_insert_card(machine, list[0]) ? "inserted %s" : "could not open %s", file_leaf_name(list[0]));
-        return message;
+        snprintf(message, size, machine_insert_card(machine, list[0]) ? "inserted %s" : "could not open %s", file_leaf_name(list[0]));
+    } else if (!files) {
+        snprintf(message, size, "drop files, a .load script or a card image");
+    } else if (!online) {
+        snprintf(message, size, "connect Devices > Network (PPP) to send files to the Velo");
+    } else if (scripts >= 0) {
+        if (desktop_load(desktop, dropped->paths[scripts])) snprintf(message, size, "installing %s", file_leaf_name(dropped->paths[scripts]));
+        else snprintf(message, size, "busy with the last transfer");
+    } else {
+        snprintf(message, size, desktop_send(desktop, list) ? "sending to \\My Documents" : "busy with the last transfer");
     }
-    if (!files) return "drop files, a .load script or a card image";
-    if (!online) return "connect Devices > Network (PPP) to send files to the Velo";
-    if (scripts >= 0) {
-        snprintf(message, sizeof message, "installing %s", file_leaf_name(dropped->paths[scripts]));
-        return desktop_load(desktop, dropped->paths[scripts]) ? message : "busy with the last transfer";
-    }
-    return desktop_send(desktop, list) ? "sending to \\My Documents" : "busy with the last transfer";
 }
 
 #ifdef __ANDROID__

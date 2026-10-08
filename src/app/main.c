@@ -214,7 +214,9 @@ static bool poll_host_events(app_t *app) {
         case SDL_EVENT_DROP_COMPLETE:
             if (app->dropped.count) {
                 bool online = serial_service_online(&app->serial);
-                notice_show(&app->notice, picks_handle_drop(&app->dropped, machine, app->desktop, online && !desktop_busy(app->desktop)), NOTICE_MEDIUM);
+                char message[NOTICE_TEXT_CAPACITY];
+                picks_handle_drop(&app->dropped, machine, app->desktop, online && !desktop_busy(app->desktop), message, sizeof message);
+                notice_show(&app->notice, message, NOTICE_MEDIUM);
             }
             break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -420,14 +422,14 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
     case MENU_SHOW_STATE: host_reveal_file(app->session.state_path); break;
     case MENU_SAVE_SNAPSHOT: {
         static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state" } };
-        static char default_snapshot[1200];
+        char default_snapshot[1200];
         snapshot_store_default_name(&app->snapshots, default_snapshot, sizeof default_snapshot);
         SDL_ShowSaveFileDialog(picks_done, (void *)(intptr_t)PICK_SAVE_SNAPSHOT, app->window, filters, 1, default_snapshot);
         break;
     }
     case MENU_LOAD_SNAPSHOT: {
         static const SDL_DialogFileFilter filters[] = { { "Velo snapshot", "state;bin" } };
-        static char folder[1100];
+        char folder[1100];
         snapshot_store_folder(&app->snapshots, folder, sizeof folder);
         SDL_ShowOpenFileDialog(picks_done, (void *)(intptr_t)PICK_LOAD_SNAPSHOT, app->window, filters, 1, folder, false);
         break;

@@ -6,7 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
 
 #include "util/file.h"
@@ -44,11 +43,6 @@ static int compare_name_pointers(const void *a, const void *b) {
     return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-static bool has_state_extension(const char *name) {
-    const char *extension = strrchr(name, '.');
-    return extension && !strcasecmp(extension, ".state");
-}
-
 static void prune_backups(const char *path, const char *prefix) {
     char folder[1100];
     snprintf(folder, sizeof folder, "%s", path);
@@ -62,7 +56,7 @@ static void prune_backups(const char *path, const char *prefix) {
     size_t prefix_length = strlen(prefix);
     struct dirent *entry;
     while ((entry = readdir(dir)) && count < 256) {
-        if (strncmp(entry->d_name, prefix, prefix_length) || !has_state_extension(entry->d_name)) continue;
+        if (strncmp(entry->d_name, prefix, prefix_length) || !file_has_extension(entry->d_name, ".state")) continue;
         names[count] = strdup(entry->d_name);
         if (names[count]) count++;
     }

@@ -27,7 +27,7 @@ void        picks_init(void);
 void        picks_done(void *userdata, const char *const *files, int filter);
 picked_t   *picks_take(const SDL_Event *event);
 bool        picks_create_blank_disk(const char *path);
-const char *picks_handle_drop(dropped_t *dropped, machine_t *machine, desktop_t *desktop, bool online);
+void        picks_handle_drop(dropped_t *dropped, machine_t *machine, desktop_t *desktop, bool online, char *message, size_t size);
 #ifdef __ANDROID__
 picked_t   *picks_new_disk(void);
 #endif
