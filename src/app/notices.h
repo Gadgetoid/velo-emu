@@ -1,22 +1,16 @@
 #pragma once
 
-#include <stddef.h>
 #include <stdint.h>
 
-#define NOTICE_QUEUE_CAPACITY 16
 #define NOTICE_TEXT_CAPACITY 1200
+#define NOTICE_SHORT  2
+#define NOTICE_MEDIUM 4
+#define NOTICE_LONG   6
 
 typedef struct {
     char text[NOTICE_TEXT_CAPACITY];
-    uint64_t queued_at;
-} notice_entry_t;
+    uint64_t until;
+} notice_t;
 
-typedef struct {
-    notice_entry_t entries[NOTICE_QUEUE_CAPACITY];
-    size_t head;
-    size_t count;
-} notice_queue_t;
-
-void        notice_queue_init(notice_queue_t *queue);
-void        notice_queue_push(notice_queue_t *queue, const char *text);
-const char *notice_queue_current(notice_queue_t *queue);
+void        notice_show(notice_t *notice, const char *text, unsigned seconds);
+const char *notice_current(const notice_t *notice);
