@@ -14,6 +14,7 @@
 #include "app/input.h"
 #include "app/machine_session.h"
 #include "app/menu.h"
+#include "app/notices.h"
 #include "app/paths.h"
 #include "app/profiles.h"
 #include "app/rom_catalog.h"
@@ -52,7 +53,6 @@
 #define MAX_FRAME_SLICE  0.1
 #define AUTOSAVE_SECONDS 60
 #define BACKUP_SECONDS   600
-#define NOTICE_SECONDS   2
 #define SPEED_SETTLE_SECONDS 10ull
 #define SOFT_RESET_REPLUG_SECONDS 2ull
 #define POWER_PRESS_SECONDS 0.2
@@ -535,7 +535,7 @@ static void import_picked(void *userdata, const char *const *files, int filter) 
 }
 
 static int import_files(int *cards) {
-    static import_pick_t pick;
+    import_pick_t pick = { 0 };
     pick.count = 0;
     SDL_SetAtomicInt(&pick.done, 0);
     SDL_ShowOpenFileDialog(import_picked, &pick, NULL, NULL, 0, NULL, true);
@@ -632,8 +632,7 @@ typedef struct {
     const char  *state;
     serial_link_t *serial;
     desktop_t   *desktop;
-    const char **notice;
-    double      *notice_left;
+    notice_queue_t *notices;
 } host_event_context_t;
 
 static bool poll_host_events(host_event_context_t *context) {
@@ -683,8 +682,8 @@ static bool poll_host_events(host_event_context_t *context) {
         case SDL_EVENT_DROP_COMPLETE:
             if (context->dropped->count) {
                 bool online = context->serial->gateway && net_gateway_online(context->serial->gateway);
-                *context->notice = handle_drop(context->dropped, machine, context->desktop, online && !desktop_busy(context->desktop));
-                *context->notice_left = NOTICE_SECONDS * 2;
+                notice_queue_push(context->notices,
+                                  handle_drop(context->dropped, machine, context->desktop, online && !desktop_busy(context->desktop)));
             }
             break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -918,15 +917,14 @@ typedef struct {
     int             *current_index;
     const char      *profiles_folder;
     snapshot_store_t *snapshots;
+    notice_queue_t  *notices;
     char            *state;
     double          *since_backup;
-    const char     **notice;
-    double          *notice_left;
 } machine_menu_context_t;
 
 static bool handle_machine_menu(machine_menu_context_t *context, int item, int *switch_to, bool *events_seen) {
     if (item == MENU_NEW_MACHINE) {
-        static dialog_rom_t rom_list[32];
+        dialog_rom_t rom_list[32] = { 0 };
         int rom_count = list_roms(rom_list, 32);
         dialog_machine_t chosen = { .memory = profile_system(context->current) == 2 ? CE2_DEFAULT_MEMORY : 4,
                                     .screen = { SCREEN_STOCK_WIDTH, SCREEN_STOCK_HEIGHT }, .host_time = context->settings->host_time != 0 };
@@ -939,8 +937,7 @@ static bool handle_machine_menu(machine_menu_context_t *context, int item, int *
         else profile_default_name(&made, profile_system(&made), made.name, sizeof made.name);
         profile_make_unique(context->profiles, &made, context->profiles_folder);
         if (!profile_save(&made, context->profiles_folder)) {
-            *context->notice = "could not save the new machine";
-            *context->notice_left = NOTICE_SECONDS * 2;
+            notice_queue_push(context->notices, "could not save the new machine");
             return true;
         }
         profiles_load(context->profiles, context->profiles_folder);
@@ -957,7 +954,7 @@ static bool handle_machine_menu(machine_menu_context_t *context, int item, int *
     dialog_manage_t action = context->profiles->count ? dialog_manage_machines(context->window, names, context->profiles->count, *context->current_index, &chosen) : DIALOG_MANAGE_CLOSE;
     if (action == DIALOG_MANAGE_CLOSE || chosen < 0 || chosen >= context->profiles->count) return true;
     profile_t picked_profile = context->profiles->entries[chosen];
-    static char manage_notice[300];
+    char message[300];
     if (action == DIALOG_MANAGE_RESET) {
         if (!confirm_reset(context->window, picked_profile.name)) return true;
         if (chosen == *context->current_index) {
@@ -968,11 +965,10 @@ static bool handle_machine_menu(machine_menu_context_t *context, int item, int *
             snapshot_store_backup_file(context->snapshots, picked_profile.state);
             remove(picked_profile.state);
         }
-        snprintf(manage_notice, sizeof manage_notice, "reset %s; the machine before it is in Snapshots/Backups", picked_profile.name);
+        snprintf(message, sizeof message, "reset %s; the machine before it is in Snapshots/Backups", picked_profile.name);
     } else {
         if (chosen == *context->current_index) {
-            *context->notice = "switch to another machine before deleting this one";
-            *context->notice_left = NOTICE_SECONDS * 3;
+            notice_queue_push(context->notices, "switch to another machine before deleting this one");
             return true;
         }
         char title[160];
@@ -984,11 +980,57 @@ static bool handle_machine_menu(machine_menu_context_t *context, int item, int *
         snprintf(current_id, sizeof current_id, "%s", context->current->id);
         profiles_load(context->profiles, context->profiles_folder);
         *context->current_index = current_id[0] ? profile_find(context->profiles, current_id) : -1;
-        snprintf(manage_notice, sizeof manage_notice, "deleted %s", picked_profile.name);
+        snprintf(message, sizeof message, "deleted %s", picked_profile.name);
     }
-    *context->notice = manage_notice;
-    *context->notice_left = NOTICE_SECONDS * 3;
+    notice_queue_push(context->notices, message);
     return true;
+}
+
+static bool handle_view_menu(settings_t *settings, SDL_Window *window, view_t *view, int item, notice_queue_t *notices) {
+    switch (item) {
+    case MENU_SCALE_50:
+    case MENU_SCALE_75:
+    case MENU_SCALE_100:
+    case MENU_SCALE_150:
+    case MENU_SCALE_200:
+    case MENU_ZOOM_IN:
+    case MENU_ZOOM_OUT: {
+        int index = settings_scale_index(settings->scale);
+        if (item == MENU_ZOOM_IN) index = index + 1 < SETTINGS_SCALE_COUNT ? index + 1 : index;
+        else if (item == MENU_ZOOM_OUT) index = index > 0 ? index - 1 : index;
+        else index = item - MENU_SCALE_50;
+        settings->scale = settings_scale_at(index);
+        settings_save(settings);
+        fit_window(window, view, settings->scale);
+        return true;
+    }
+    case MENU_FULL_SCREEN:
+        SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+        return true;
+    case MENU_DISPLAY_SIMULATED:
+    case MENU_DISPLAY_SHARP:
+        settings->display = item == MENU_DISPLAY_SHARP ? VIEW_SHARP : VIEW_SIMULATED;
+        settings_save(settings);
+        view_set_display(view, (view_display_t)settings->display);
+        fit_window(window, view, settings->scale);
+        return true;
+    case MENU_COPY_SCREEN:
+        notice_queue_push(notices, copy_screen(view) ? "screen copied" : "could not copy the screen");
+        return true;
+    case MENU_SAVE_SCREENSHOT: {
+        char path[1100];
+        char message[1200];
+        if (save_screenshot(view, path, sizeof path)) snprintf(message, sizeof message, "saved %s", file_leaf_name(path));
+        else snprintf(message, sizeof message, "could not save the screenshot");
+        notice_queue_push(notices, message);
+        return true;
+    }
+    case MENU_CONNECT_AT_LAUNCH:
+        settings->connect_at_launch = !settings->connect_at_launch;
+        settings_save(settings);
+        return true;
+    }
+    return false;
 }
 
 int main(int argc, char **argv) {
@@ -1020,14 +1062,14 @@ int main(int argc, char **argv) {
     serial_mode_t serial_mode = launch.serial_mode;
     const char *card = launch.card, *disk = launch.disk, *state_file = launch.state_file;
     bool fresh = launch.fresh;
-    static rom_set_t roms;
+    rom_set_t roms = { 0 };
     find_roms(&roms);
     char profiles_folder[1100];
     machines_folder(profiles_folder, sizeof profiles_folder);
-    static profiles_t profiles;
+    profiles_t profiles = { 0 };
     profiles_load(&profiles, profiles_folder);
     if (!profiles.count) machine_session_migrate_profiles(&profiles, &roms, &settings, profiles_folder);
-    static profile_t current;
+    profile_t current = { 0 };
     int current_index = -1;
     if (rom_path) {
         current = (profile_t){ .memory = settings.memory, .screen = settings.screen, .host_time = settings.host_time != 0 };
@@ -1053,10 +1095,10 @@ int main(int argc, char **argv) {
     }
     char state[1100];
     const char *startup_notice = NULL;
+    char fallback_notice[1600] = { 0 };
     machine_t *machine = machine_session_start(&current, settings.speed, settings.optimisations != 0, state_file, fresh,
                                                state, sizeof state, &startup_notice, &snapshots, &session_hooks);
     if (!machine && current_index >= 0 && !launch.machine) {
-        static char fallback_notice[1600];
         snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", current.name, startup_notice);
         fprintf(stderr, "%s\n", fallback_notice);
         for (int i = 0; i < profiles.count && !machine; i++) {
@@ -1106,29 +1148,30 @@ int main(int argc, char **argv) {
     if (audio) SDL_ResumeAudioStreamDevice(audio);
     else if (verbose) fprintf(stderr, "audio: %s\n", SDL_GetError());
     bool sound = true;
-    static int16_t samples[AUDIO_CHUNK];
+    int16_t samples[AUDIO_CHUNK] = { 0 };
 
     bool running = true, pen_down = false, paused = false;
     bool held[256] = { false };
     uint64_t last = SDL_GetPerformanceCounter();
     double frequency = (double)SDL_GetPerformanceFrequency();
-    double since_autosave = 0, since_backup = 0, notice_left = 0;
+    double since_autosave = 0, since_backup = 0;
     uint64_t power_release_at = 0, backlight_release_at = 0;
-    const char *notice = startup_notice;
-    if (notice) notice_left = 6;
-    static serial_link_t serial;
+    notice_queue_t notices;
+    notice_queue_init(&notices);
+    notice_queue_push(&notices, startup_notice);
+    serial_link_t serial = { 0 };
     serial_link_init(&serial, serial_log);
     serial.options.user_agent = settings.user_agent;
     serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
     serial.tcp_port = (int)settings.serial_tcp_port;
     char rapi_socket[1024], sync_manifest[1024], desktop_notice[256], shared_notice[1200], paste_notice[64];
-    static typer_t typer;
-    static scroller_t scroller;
-    static input_queue_t input;
-    static char ports[SERIAL_PORT_MAX][SERIAL_LINK_PORT_NAME];
+    typer_t typer = { 0 };
+    scroller_t scroller = { 0 };
+    input_queue_t input = { 0 };
+    char ports[SERIAL_PORT_MAX][SERIAL_LINK_PORT_NAME] = { 0 };
     int port_count = 0;
     double since_port_scan = 0;
-    static dropped_t dropped;
+    dropped_t dropped = { 0 };
     picked_t *picked = NULL;
     rapi_socket_path(rapi_socket, sizeof rapi_socket);
     rapi_data_path("sync-manifest.txt", sync_manifest, sizeof sync_manifest);
@@ -1141,7 +1184,7 @@ int main(int argc, char **argv) {
         serial_reconnect_mode = serial_mode;
     } else if (serial_mode != SERIAL_OFF) {
         const char *result = serial_open(&serial, machine, serial_mode, settings.serial_device);
-        if (!notice) { notice = result; notice_left = NOTICE_SECONDS * 2; }
+        if (!notice_queue_current(&notices)) notice_queue_push(&notices, result);
     }
 
     if (launch.gdb_process && !launch.gdb_port) {
@@ -1156,19 +1199,16 @@ int main(int argc, char **argv) {
         }
         if (launch.gdb_process) gdb_set_process(debugger, launch.gdb_process);
     }
-    static char gdb_notice[160];
+    char gdb_notice[160] = { 0 };
     if (!debugger && settings.gdb_server) {
         debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
-        if (!notice) {
-            notice = gdb_notice;
-            notice_left = NOTICE_SECONDS * 3;
-        }
+        if (!notice_queue_current(&notices)) notice_queue_push(&notices, gdb_notice);
     }
     if (launch.agent_socket && !(agent = agent_create(launch.agent_socket, log_gdb))) {
         fprintf(stderr, "velo: cannot listen on agent socket %s\n", launch.agent_socket);
         return 1;
     }
-    static app_runner_t *runner;
+    app_runner_t *runner = NULL;
     runner = app_runner_create(machine, &input, debugger, agent);
     if (!runner) {
         fprintf(stderr, "velo: cannot start machine runner\n");
@@ -1176,10 +1216,10 @@ int main(int argc, char **argv) {
     }
     host_event_context_t host_events = {
         &machine, &key_layout, &input, &scroller, window, view, &running, &pen_down, held, &dropped, &picked, &roms,
-        state, &serial, desktop, &notice, &notice_left,
+        state, &serial, desktop, &notices,
     };
     machine_menu_context_t machine_menu = {
-        window, &machine, &settings, &profiles, &current, &current_index, profiles_folder, &snapshots, state, &since_backup, &notice, &notice_left,
+        window, &machine, &settings, &profiles, &current, &current_index, profiles_folder, &snapshots, &notices, state, &since_backup,
     };
     while (running) {
         uint64_t frame_start = SDL_GetTicksNS();
@@ -1191,6 +1231,7 @@ int main(int argc, char **argv) {
         for (int item = menu_poll(); item >= 0; item = menu_poll()) {
             release_keys(&input, machine, held, -1);
             if (handle_machine_menu(&machine_menu, item, &switch_to, &events_seen)) continue;
+            if (handle_view_menu(&settings, window, view, item, &notices)) continue;
             switch (item) {
             case MENU_POWER:
                 machine_power_button(machine, true);
@@ -1201,71 +1242,25 @@ int main(int argc, char **argv) {
                 machine_soft_reset(machine);
                 if (serial.mode == SERIAL_NETWORK) serial_unplug_at = machine_cycles(machine) + SOFT_RESET_REPLUG_SECONDS * MACHINE_CLOCK_HZ;
                 break;
-            case MENU_SCALE_50:
-            case MENU_SCALE_75:
-            case MENU_SCALE_100:
-            case MENU_SCALE_150:
-            case MENU_SCALE_200:
-            case MENU_ZOOM_IN:
-            case MENU_ZOOM_OUT: {
-                int index = settings_scale_index(settings.scale);
-                if (item == MENU_ZOOM_IN) index = index + 1 < SETTINGS_SCALE_COUNT ? index + 1 : index;
-                else if (item == MENU_ZOOM_OUT) index = index > 0 ? index - 1 : index;
-                else index = item - MENU_SCALE_50;
-                settings.scale = settings_scale_at(index);
-                settings_save(&settings);
-                fit_window(window, view, settings.scale);
-                break;
-            }
-            case MENU_FULL_SCREEN:
-                SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
-                break;
-            case MENU_DISPLAY_SIMULATED:
-            case MENU_DISPLAY_SHARP:
-                settings.display = item == MENU_DISPLAY_SHARP ? VIEW_SHARP : VIEW_SIMULATED;
-                settings_save(&settings);
-                view_set_display(view, (view_display_t)settings.display);
-                fit_window(window, view, settings.scale);
-                break;
-            case MENU_COPY_SCREEN:
-                notice = copy_screen(view) ? "screen copied" : "could not copy the screen";
-                notice_left = NOTICE_SECONDS;
-                break;
-            case MENU_SAVE_SCREENSHOT: {
-                static char screenshot_notice[1200];
-                char path[1100];
-                if (save_screenshot(view, path, sizeof path)) snprintf(screenshot_notice, sizeof screenshot_notice, "saved %s", file_leaf_name(path));
-                else snprintf(screenshot_notice, sizeof screenshot_notice, "could not save the screenshot");
-                notice = screenshot_notice;
-                notice_left = NOTICE_SECONDS * 2;
-                break;
-            }
-            case MENU_CONNECT_AT_LAUNCH:
-                settings.connect_at_launch = !settings.connect_at_launch;
-                settings_save(&settings);
-                break;
             case MENU_PASTE: {
                 char *clipboard = SDL_GetClipboardText();
                 size_t typed = clipboard ? typer_start(&typer, key_layout, clipboard) : 0;
                 SDL_free(clipboard);
                 snprintf(paste_notice, sizeof paste_notice, typed ? "typing %zu characters" : "nothing to type", typed);
-                notice = paste_notice;
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, paste_notice);
                 break;
             }
             case MENU_SAVE_STATE:
-                notice = machine_save(machine, state, (int64_t)time(NULL)) ? "state saved" : "could not save state";
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, machine_save(machine, state, (int64_t)time(NULL)) ? "state saved" : "could not save state");
                 break;
             case MENU_LOAD_STATE:
                 snapshot_store_backup_machine(&snapshots, machine, state);
                 if (machine_load(machine, state, NULL)) {
                     serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
-                    notice = "state loaded";
+                    notice_queue_push(&notices, "state loaded");
                 } else {
-                    notice = "no saved state";
+                    notice_queue_push(&notices, "no saved state");
                 }
-                notice_left = NOTICE_SECONDS;
                 break;
             case MENU_BACKLIGHT:
                 machine_backlight_button(machine, true);
@@ -1299,12 +1294,11 @@ int main(int argc, char **argv) {
                 break;
 #ifdef __ANDROID__
             case MENU_IMPORT: {
-                static char import_notice[160];
                 int cards, imported = import_files(&cards);
                 find_roms(&roms);
-                snprintf(import_notice, sizeof import_notice, "imported %d ROMs and %d cards", imported, cards);
-                notice = import_notice;
-                notice_left = NOTICE_SECONDS * 2;
+                char message[160];
+                snprintf(message, sizeof message, "imported %d ROMs and %d cards", imported, cards);
+                notice_queue_push(&notices, message);
                 break;
             }
 #endif
@@ -1343,8 +1337,7 @@ int main(int argc, char **argv) {
             }
             case MENU_EJECT_DISK:
                 machine_eject_disk(machine);
-                notice = "disk ejected";
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, "disk ejected");
                 break;
             default:
                 if (item >= MENU_MACHINE_FIRST && item <= MENU_MACHINE_LAST && item - MENU_MACHINE_FIRST < profiles.count && item - MENU_MACHINE_FIRST != current_index) {
@@ -1355,8 +1348,7 @@ int main(int argc, char **argv) {
                     snprintf(settings.serial_device, sizeof settings.serial_device, "%s", ports[item - MENU_SERIAL_PORT_FIRST]);
                     settings_save(&settings);
                     serial_reconnect_at = 0;
-                    notice = serial_open(&serial, machine, SERIAL_DEVICE, settings.serial_device);
-                    notice_left = NOTICE_SECONDS * 3;
+                    notice_queue_push(&notices, serial_open(&serial, machine, SERIAL_DEVICE, settings.serial_device));
                 }
                 break;
             case MENU_SERIAL_NETWORK:
@@ -1364,8 +1356,8 @@ int main(int argc, char **argv) {
             case MENU_SERIAL_TCP:
             case MENU_SERIAL_OFF:
                 serial_reconnect_at = 0;
-                notice = serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF, settings.serial_device);
-                notice_left = NOTICE_SECONDS * 3;
+                notice_queue_push(&notices,
+                                  serial_open(&serial, machine, item == MENU_SERIAL_NETWORK ? SERIAL_NETWORK : item == MENU_SERIAL_PTY ? SERIAL_PTY : item == MENU_SERIAL_TCP ? SERIAL_TCP : SERIAL_OFF, settings.serial_device));
                 break;
 #ifdef __ANDROID__
             case MENU_FULL_BRIGHTNESS:
@@ -1376,8 +1368,7 @@ int main(int argc, char **argv) {
             case MENU_SHARED_FOLDER: {
                 if (!android_all_files_access()) {
                     android_request_all_files_access();
-                    notice = "allow All files access for Velo, then try again";
-                    notice_left = NOTICE_SECONDS * 3;
+                    notice_queue_push(&notices, "allow All files access for Velo, then try again");
                     break;
                 }
                 bool shared = item == MENU_SHARED_FOLDER;
@@ -1400,27 +1391,25 @@ int main(int argc, char **argv) {
                     gdb_destroy(debugger);
                     debugger = NULL;
                     settings.gdb_server = 0;
-                    notice = "GDB server stopped";
+                    notice_queue_push(&notices, "GDB server stopped");
                 } else {
                     debugger = start_network_gdb(machine, settings.gdb_port, gdb_notice, sizeof gdb_notice);
                     settings.gdb_server = debugger != NULL;
-                    notice = gdb_notice;
+                    notice_queue_push(&notices, gdb_notice);
                 }
                 settings_save(&settings);
-                notice_left = NOTICE_SECONDS * 3;
                 break;
             case MENU_NETWORK_RAPI: {
-                static char rapi_notice[160];
                 settings.network_rapi = !settings.network_rapi;
                 settings_save(&settings);
                 serial.options.rapi_port = settings.network_rapi ? (int)settings.rapi_port : 0;
                 char address[64];
                 local_address(address, sizeof address);
-                if (settings.network_rapi) snprintf(rapi_notice, sizeof rapi_notice, "RAPI at %s:%u", address, settings.rapi_port);
-                else snprintf(rapi_notice, sizeof rapi_notice, "RAPI over the network off");
+                char message[160];
+                if (settings.network_rapi) snprintf(message, sizeof message, "RAPI at %s:%u", address, settings.rapi_port);
+                else snprintf(message, sizeof message, "RAPI over the network off");
                 if (serial.mode == SERIAL_NETWORK) serial_open(&serial, machine, SERIAL_NETWORK, settings.serial_device);
-                notice = rapi_notice;
-                notice_left = NOTICE_SECONDS * 3;
+                notice_queue_push(&notices, message);
                 break;
             }
             case MENU_SEND_FILES:
@@ -1450,20 +1439,17 @@ int main(int argc, char **argv) {
                 snprintf(shared_notice, sizeof shared_notice, "stopped sharing %s", file_leaf_name(settings.shared_folder));
                 settings.shared_folder[0] = 0;
                 settings_save(&settings);
-                notice = shared_notice;
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, shared_notice);
                 break;
             case MENU_EJECT_CARD:
                 machine_eject_card(machine);
-                notice = "card ejected";
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, "card ejected");
                 break;
             }
         }
         if (switch_to >= 0 && switch_to < profiles.count && switch_to != current_index) {
             if (desktop_busy(desktop)) {
-                notice = "busy with a desktop transfer";
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, "busy with a desktop transfer");
             } else {
                 const char *switch_notice = NULL;
                 char next_state[sizeof state];
@@ -1471,8 +1457,7 @@ int main(int argc, char **argv) {
                 machine_t *next = machine_session_start(&next_profile, settings.speed, settings.optimisations != 0, NULL, false,
                                                         next_state, sizeof next_state, &switch_notice, &snapshots, &session_hooks);
                 if (!next) {
-                    notice = switch_notice;
-                    notice_left = NOTICE_SECONDS * 2;
+                    notice_queue_push(&notices, switch_notice);
                 } else {
                     serial_mode_t mode = serial.mode;
                     if (serial_keeps_link(&serial, mode, settings.serial_device)) machine_serial_connect(machine, false);
@@ -1499,36 +1484,31 @@ int main(int argc, char **argv) {
                     since_backup = 0;
                     app_runner_set_machine_locked(runner, machine);
                     if (debugger) gdb_set_machine(debugger, machine);
-                    static char switched_notice[160];
-                    snprintf(switched_notice, sizeof switched_notice, "switched to %s", current.name);
-                    notice = switch_notice ? switch_notice : switched_notice;
-                    notice_left = NOTICE_SECONDS * 2;
+                    char message[160];
+                    snprintf(message, sizeof message, "switched to %s", current.name);
+                    notice_queue_push(&notices, switch_notice ? switch_notice : message);
                 }
             }
         }
         bool velo_online = serial.gateway && net_gateway_online(serial.gateway);
         if (picked) {
             if (picked->kind == PICK_CARD) {
-                notice = machine_insert_card(machine, picked->paths[0]) ? "card inserted" : "could not open card image";
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, machine_insert_card(machine, picked->paths[0]) ? "card inserted" : "could not open card image");
             } else if (picked->kind == PICK_DISK) {
-                notice = machine_insert_disk(machine, picked->paths[0], false) ? "disk inserted" : "could not open disk image";
-                notice_left = NOTICE_SECONDS;
+                notice_queue_push(&notices, machine_insert_disk(machine, picked->paths[0], false) ? "disk inserted" : "could not open disk image");
             } else if (picked->kind == PICK_NEW_DISK) {
-                static char disk_notice[1200];
                 char path[1100];
                 snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".img") ? "" : ".img");
                 bool made = create_blank_disk(path) && machine_insert_disk(machine, path, false);
-                snprintf(disk_notice, sizeof disk_notice, made ? "inserted new disk %s; the Velo offers to format it" : "could not create %s", file_leaf_name(path));
-                notice = disk_notice;
-                notice_left = NOTICE_SECONDS * 2;
+                char message[1200];
+                snprintf(message, sizeof message, made ? "inserted new disk %s; the Velo offers to format it" : "could not create %s", file_leaf_name(path));
+                notice_queue_push(&notices, message);
             } else if (picked->kind == PICK_SEND) {
                 const char *files[PICK_MAX + 1];
                 for (int i = 0; i < picked->count; i++) files[i] = picked->paths[i];
                 files[picked->count] = NULL;
                 desktop_send(desktop, files);
             } else if (picked->kind == PICK_SAVE_SNAPSHOT) {
-                static char snapshot_notice[1200];
                 char path[1100];
                 snprintf(path, sizeof path, "%s%s", picked->paths[0], has_extension(picked->paths[0], ".state") ? "" : ".state");
                 bool saved = machine_save(machine, path, (int64_t)time(NULL));
@@ -1538,28 +1518,26 @@ int main(int argc, char **argv) {
                     remove(path);
                 }
 #endif
-                snprintf(snapshot_notice, sizeof snapshot_notice, saved ? "saved snapshot %s" : "could not save %s", file_leaf_name(path));
-                notice = snapshot_notice;
-                notice_left = NOTICE_SECONDS * 2;
+                char message[1200];
+                snprintf(message, sizeof message, saved ? "saved snapshot %s" : "could not save %s", file_leaf_name(path));
+                notice_queue_push(&notices, message);
             } else if (picked->kind == PICK_LOAD_SNAPSHOT) {
-                static char snapshot_notice[1200];
+                char message[1200];
                 if (machine_state_matches(machine, picked->paths[0])) snapshot_store_backup_machine(&snapshots, machine, state);
                 if (machine_load(machine, picked->paths[0], NULL)) {
                     serial_restored(&serial, machine, settings.serial_device, &serial_reconnect_at, &serial_reconnect_mode);
-                    snprintf(snapshot_notice, sizeof snapshot_notice, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
+                    snprintf(message, sizeof message, "loaded snapshot %s", file_leaf_name(picked->paths[0]));
                 } else {
-                    snprintf(snapshot_notice, sizeof snapshot_notice, "%s isn't a snapshot of this ROM", file_leaf_name(picked->paths[0]));
+                    snprintf(message, sizeof message, "%s isn't a snapshot of this ROM", file_leaf_name(picked->paths[0]));
                 }
-                notice = snapshot_notice;
-                notice_left = NOTICE_SECONDS * 2;
+                notice_queue_push(&notices, message);
             } else if (picked->kind == PICK_FETCH) {
                 desktop_fetch(desktop, picked->paths[0]);
             } else if (picked->kind == PICK_SHARED) {
                 snprintf(settings.shared_folder, sizeof settings.shared_folder, "%s", picked->paths[0]);
                 settings_save(&settings);
                 snprintf(shared_notice, sizeof shared_notice, "sharing %s with \\My Documents", file_leaf_name(settings.shared_folder));
-                notice = shared_notice;
-                notice_left = NOTICE_SECONDS * 2;
+                notice_queue_push(&notices, shared_notice);
                 if (velo_online) desktop_sync(desktop, settings.shared_folder);
             }
             free(picked);
@@ -1578,8 +1556,7 @@ int main(int argc, char **argv) {
             }
         }
         if (desktop_take_status(desktop, desktop_notice, sizeof desktop_notice)) {
-            notice = desktop_notice;
-            notice_left = NOTICE_SECONDS * 2;
+            notice_queue_push(&notices, desktop_notice);
         }
         bool desktop_free = velo_online && !desktop_busy(desktop);
         menu_ensure();
@@ -1646,10 +1623,7 @@ int main(int argc, char **argv) {
         double elapsed = (double)(now - last) / frequency;
         last = now;
         if (elapsed > MAX_FRAME_SLICE) elapsed = MAX_FRAME_SLICE;
-        if (notice_left > 0) {
-            notice_left -= elapsed;
-            if (notice_left <= 0) notice = NULL;
-        }
+        const char *notice = notice_queue_current(&notices);
         set_title(window, current.name, notice, paused, machine_suspended(machine));
 #ifdef __ANDROID__
         if (android_toast(notice ? notice : paused ? "Paused" : NULL)) events_seen = true;
@@ -1674,13 +1648,11 @@ int main(int argc, char **argv) {
         } else if (serial_link_attached(&serial) != serial_tcp_attached) {
             serial_tcp_attached = !serial_tcp_attached;
             machine_serial_connect(machine, serial_tcp_attached);
-            notice = serial_tcp_attached ? "TCP client connected" : "TCP client disconnected";
-            notice_left = NOTICE_SECONDS;
+            notice_queue_push(&notices, serial_tcp_attached ? "TCP client connected" : "TCP client disconnected");
         }
         if (serial_reconnect_at && machine_cycles(machine) >= serial_reconnect_at) {
             serial_reconnect_at = 0;
-            notice = serial_open(&serial, machine, serial_reconnect_mode, settings.serial_device);
-            notice_left = NOTICE_SECONDS * 2;
+            notice_queue_push(&notices, serial_open(&serial, machine, serial_reconnect_mode, settings.serial_device));
         }
         if (backlight_release_at && machine_cycles(machine) >= backlight_release_at) {
             backlight_release_at = 0;
