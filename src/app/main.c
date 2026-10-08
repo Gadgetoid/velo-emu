@@ -616,6 +616,125 @@ static int profile_system(const profile_t *profile) {
     return rom_catalog_probe(profile->rom, NULL);
 }
 
+typedef struct {
+    machine_t   **machine;
+    key_layout_t *key_layout;
+    input_queue_t *input;
+    scroller_t  *scroller;
+    SDL_Window  *window;
+    view_t      *view;
+    bool        *running;
+    bool        *pen_down;
+    bool         *held;
+    dropped_t   *dropped;
+    picked_t   **picked;
+    rom_set_t   *roms;
+    const char  *state;
+    serial_link_t *serial;
+    desktop_t   *desktop;
+    const char **notice;
+    double      *notice_left;
+} host_event_context_t;
+
+static bool poll_host_events(host_event_context_t *context) {
+    machine_t *machine = *context->machine;
+    key_layout_t key_layout = *context->key_layout;
+    bool events_seen = false;
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        events_seen = true;
+        if (menu_event(&event)) {
+            if (menu_active()) {
+                release_keys(context->input, machine, context->held, -1);
+                if (*context->pen_down) input_add(context->input, machine, INPUT_PEN, false, 0, 0, 0);
+                *context->pen_down = false;
+            }
+            continue;
+        }
+        switch (event.type) {
+        case SDL_EVENT_QUIT:
+        case SDL_EVENT_TERMINATING:
+            *context->running = false;
+            break;
+        case SDL_EVENT_WILL_ENTER_BACKGROUND:
+            machine_save(machine, context->state, (int64_t)time(NULL));
+            break;
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP: {
+            bool down = event.type == SDL_EVENT_KEY_DOWN;
+            uint8_t scancode;
+            if (!input_find_scancode(key_layout, event.key.key, &scancode)) break;
+            if (down) {
+                if (event.key.repeat || (event.key.mod & SDL_KMOD_GUI) || context->held[scancode]) break;
+                context->held[scancode] = true;
+                input_add(context->input, machine, INPUT_KEY, true, 0, 0, scancode);
+            } else if (context->held[scancode]) {
+                context->held[scancode] = false;
+                input_add(context->input, machine, INPUT_KEY, false, 0, 0, scancode);
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_WHEEL:
+            scroller_add(context->scroller, event.wheel.y, event.wheel.x);
+            break;
+        case SDL_EVENT_DROP_FILE:
+            if (event.drop.data && context->dropped->count < PICK_MAX) snprintf(context->dropped->paths[context->dropped->count++], sizeof context->dropped->paths[0], "%s", event.drop.data);
+            break;
+        case SDL_EVENT_DROP_COMPLETE:
+            if (context->dropped->count) {
+                bool online = context->serial->gateway && net_gateway_online(context->serial->gateway);
+                *context->notice = handle_drop(context->dropped, machine, context->desktop, online && !desktop_busy(context->desktop));
+                *context->notice_left = NOTICE_SECONDS * 2;
+            }
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            find_roms(context->roms);
+#ifdef __ANDROID__
+            SDL_SetWindowFullscreen(context->window, false);
+            SDL_SetWindowFullscreen(context->window, true);
+#endif
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            release_keys(context->input, machine, context->held, -1);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            if (event.button.button == SDL_BUTTON_LEFT) {
+                int x, y;
+                if (view_screen_position(context->view, event.button.x, event.button.y, &x, &y)) {
+                    *context->pen_down = true;
+                    input_add(context->input, machine, INPUT_PEN, true, x, y, 0);
+                }
+            }
+            break;
+        case SDL_EVENT_MOUSE_MOTION:
+            if (*context->pen_down) {
+                int x, y;
+                view_screen_position(context->view, event.motion.x, event.motion.y, &x, &y);
+                pen_move(context->input, machine, x, y);
+            }
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (event.button.button == SDL_BUTTON_LEFT && *context->pen_down) {
+                int x, y;
+                view_screen_position(context->view, event.button.x, event.button.y, &x, &y);
+                *context->pen_down = false;
+                input_add(context->input, machine, INPUT_PEN, false, x, y, 0);
+            }
+            break;
+        default:
+            if (pick_event_type && event.type == pick_event_type) {
+                free(*context->picked);
+                *context->picked = event.user.data1;
+#ifdef __ANDROID__
+                localize_picked(*context->picked);
+#endif
+            }
+            break;
+        }
+    }
+    return events_seen;
+}
+
 static const void *clipboard_png(void *userdata, const char *mime_type, size_t *size) {
     const size_t *stored = userdata;
     if (strcmp(mime_type, "image/png")) { *size = 0; return NULL; }
@@ -973,102 +1092,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "velo: cannot start machine runner\n");
         return 1;
     }
+    host_event_context_t host_events = {
+        &machine, &key_layout, &input, &scroller, window, view, &running, &pen_down, held, &dropped, &picked, &roms,
+        state, &serial, desktop, &notice, &notice_left,
+    };
     while (running) {
-        SDL_Event event;
         uint64_t frame_start = SDL_GetTicksNS();
-        bool events_seen = false;
         app_runner_lock(runner);
-        while (SDL_PollEvent(&event)) {
-            events_seen = true;
-            if (menu_event(&event)) {
-                if (menu_active()) {
-                    release_keys(&input, machine, held, -1);
-                    if (pen_down) input_add(&input, machine, INPUT_PEN, false, 0, 0, 0);
-                    pen_down = false;
-                }
-                continue;
-            }
-            switch (event.type) {
-            case SDL_EVENT_QUIT:
-            case SDL_EVENT_TERMINATING:
-                running = false;
-                break;
-            case SDL_EVENT_WILL_ENTER_BACKGROUND:
-                machine_save(machine, state, (int64_t)time(NULL));
-                break;
-            case SDL_EVENT_KEY_DOWN:
-            case SDL_EVENT_KEY_UP: {
-                bool down = event.type == SDL_EVENT_KEY_DOWN;
-                uint8_t scancode;
-                if (!input_find_scancode(key_layout, event.key.key, &scancode)) break;
-                if (down) {
-                    if (event.key.repeat || (event.key.mod & SDL_KMOD_GUI) || held[scancode]) break;
-                    held[scancode] = true;
-                    input_add(&input, machine, INPUT_KEY, true, 0, 0, scancode);
-                } else if (held[scancode]) {
-                    held[scancode] = false;
-                    input_add(&input, machine, INPUT_KEY, false, 0, 0, scancode);
-                }
-                break;
-            }
-            case SDL_EVENT_MOUSE_WHEEL:
-                scroller_add(&scroller, event.wheel.y, event.wheel.x);
-                break;
-            case SDL_EVENT_DROP_FILE:
-                if (event.drop.data && dropped.count < PICK_MAX) snprintf(dropped.paths[dropped.count++], sizeof dropped.paths[0], "%s", event.drop.data);
-                break;
-            case SDL_EVENT_DROP_COMPLETE:
-                if (dropped.count) {
-                    bool online = serial.gateway && net_gateway_online(serial.gateway);
-                    notice = handle_drop(&dropped, machine, desktop, online && !desktop_busy(desktop));
-                    notice_left = NOTICE_SECONDS * 2;
-                }
-                break;
-            case SDL_EVENT_WINDOW_FOCUS_GAINED:
-                find_roms(&roms);
-#ifdef __ANDROID__
-                SDL_SetWindowFullscreen(window, false);
-                SDL_SetWindowFullscreen(window, true);
-#endif
-                break;
-            case SDL_EVENT_WINDOW_FOCUS_LOST:
-                release_keys(&input, machine, held, -1);
-                break;
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                if (event.button.button == SDL_BUTTON_LEFT) {
-                    int x, y;
-                    if (view_screen_position(view, event.button.x, event.button.y, &x, &y)) {
-                        pen_down = true;
-                        input_add(&input, machine, INPUT_PEN, true, x, y, 0);
-                    }
-                }
-                break;
-            case SDL_EVENT_MOUSE_MOTION:
-                if (pen_down) {
-                    int x, y;
-                    view_screen_position(view, event.motion.x, event.motion.y, &x, &y);
-                    pen_move(&input, machine, x, y);
-                }
-                break;
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (event.button.button == SDL_BUTTON_LEFT && pen_down) {
-                    int x, y;
-                    view_screen_position(view, event.button.x, event.button.y, &x, &y);
-                    pen_down = false;
-                    input_add(&input, machine, INPUT_PEN, false, x, y, 0);
-                }
-                break;
-            default:
-                if (pick_event_type && event.type == pick_event_type) {
-                    free(picked);
-                    picked = event.user.data1;
-#ifdef __ANDROID__
-                    localize_picked(picked);
-#endif
-                }
-                break;
-            }
-        }
+        bool events_seen = poll_host_events(&host_events);
 
         release_keys(&input, machine, held, menu_modifiers());
         int switch_to = -1;
