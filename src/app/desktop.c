@@ -136,10 +136,10 @@ static void run_sync(desktop_t *desktop, rapi_t *rapi) {
         set_status(desktop, "sync stopped: %s", rapi_error(rapi));
         return;
     }
-    unsigned changes = result.uploaded + result.downloaded + result.deleted_on_mac + result.deleted_on_velo;
+    unsigned changes = result.uploaded + result.downloaded + result.deleted_on_mac + result.deleted_on_device;
     if (!changes && !result.skipped) set_status(desktop, "%s is up to date", leaf_of(desktop->folder));
     else set_status(desktop, "synced: %u to the Velo, %u from it, %u deleted%s%s", result.uploaded, result.downloaded,
-                    result.deleted_on_mac + result.deleted_on_velo, result.conflicts ? ", conflicts kept as (Velo) copies" : "",
+                    result.deleted_on_mac + result.deleted_on_device, result.conflicts ? ", conflicts kept as (Velo) copies" : "",
                     result.skipped ? ", some skipped" : "");
 }
 

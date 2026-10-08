@@ -1,4 +1,5 @@
 #include "rapi/rapi_load.h"
+#include "rapi/rapi_project.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -11,7 +12,7 @@
 #define PATH_SIZE   1024
 #define TOKENS_MAX  8
 #define TOKEN_SIZE  1024
-#define CPU_SUFFIX  ".mips"
+#define CPU_SUFFIX  RAPI_CPU_SUFFIX
 #define CPU_EXT     ".mip"
 
 typedef struct {

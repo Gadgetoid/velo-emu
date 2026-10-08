@@ -1,4 +1,5 @@
 #include "rapi/rapi_sync.h"
+#include "rapi/rapi_project.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -14,19 +15,19 @@
 
 #define PATH_SIZE       1024
 #define FREE_MARGIN     (64 * 1024)
-#define MANIFEST_HEADER "velo-sync 1"
+#define MANIFEST_HEADER RAPI_SYNC_MANIFEST
 
 typedef struct {
     char     path[PATH_SIZE];
-    bool     on_mac, on_velo, in_manifest, failed;
+    bool     on_mac, on_device, in_manifest, failed;
     int64_t  mac_time;
     uint64_t mac_size;
-    uint64_t velo_time;
-    uint32_t velo_size;
+    uint64_t device_time;
+    uint32_t device_size;
     int64_t  known_mac_time;
     uint64_t known_mac_size;
-    uint64_t known_velo_time;
-    uint32_t known_velo_size;
+    uint64_t known_device_time;
+    uint32_t known_device_size;
 } entry_t;
 
 typedef struct {
@@ -89,7 +90,7 @@ static void remote_path(const sync_t *sync, const char *relative, char *out, siz
     }
 }
 
-static bool valid_on_velo(const char *relative) {
+static bool valid_on_device(const char *relative) {
     return strpbrk(relative, "\\:*?\"<>|") == NULL;
 }
 
@@ -122,7 +123,7 @@ static void scan_mac(sync_t *sync, entries_t *entries, const char *relative) {
     closedir(dir);
 }
 
-static bool scan_velo(sync_t *sync, entries_t *entries, const char *relative, int depth) {
+static bool scan_device(sync_t *sync, entries_t *entries, const char *relative, int depth) {
     if (depth > RAPI_FOLDER_DEPTH_MAX) {
         sync_log(sync, "can't list %s: folders nested too deeply", relative);
         return false;
@@ -141,14 +142,14 @@ static bool scan_velo(sync_t *sync, entries_t *entries, const char *relative, in
         char child[PATH_SIZE];
         join_relative(child, sizeof child, relative, files[i].name);
         if (files[i].attributes & RAPI_ATTRIBUTE_DIRECTORY) {
-            success = scan_velo(sync, entries, child, depth + 1);
+            success = scan_device(sync, entries, child, depth + 1);
             continue;
         }
         entry_t *entry = find_or_add(entries, child);
         if (!entry) continue;
-        entry->on_velo = true;
-        entry->velo_time = files[i].write_time;
-        entry->velo_size = files[i].size;
+        entry->on_device = true;
+        entry->device_time = files[i].write_time;
+        entry->device_size = files[i].size;
     }
     free(files);
     return success;
@@ -168,16 +169,16 @@ static void load_manifest(sync_t *sync, entries_t *entries, const char *manifest
         if (!tab) continue;
         *tab = 0;
         long long mac_time;
-        unsigned long long mac_size, velo_time;
-        unsigned velo_size;
-        if (sscanf(tab + 1, "%lld\t%llu\t%llu\t%u", &mac_time, &mac_size, &velo_time, &velo_size) != 4) continue;
+        unsigned long long mac_size, device_time;
+        unsigned device_size;
+        if (sscanf(tab + 1, "%lld\t%llu\t%llu\t%u", &mac_time, &mac_size, &device_time, &device_size) != 4) continue;
         entry_t *entry = find_or_add(entries, line);
         if (!entry) continue;
         entry->in_manifest = true;
         entry->known_mac_time = mac_time;
         entry->known_mac_size = mac_size;
-        entry->known_velo_time = velo_time;
-        entry->known_velo_size = velo_size;
+        entry->known_device_time = device_time;
+        entry->known_device_size = device_size;
     }
     fclose(file);
 }
@@ -192,10 +193,10 @@ static void save_manifest(sync_t *sync, const entries_t *entries, const char *ma
         const entry_t *entry = &entries->items[i];
         if (entry->failed && entry->in_manifest) {
             fprintf(file, "%s\t%lld\t%llu\t%llu\t%u\n", entry->path, (long long)entry->known_mac_time,
-                    (unsigned long long)entry->known_mac_size, (unsigned long long)entry->known_velo_time, entry->known_velo_size);
-        } else if (!entry->failed && entry->on_mac && entry->on_velo) {
+                    (unsigned long long)entry->known_mac_size, (unsigned long long)entry->known_device_time, entry->known_device_size);
+        } else if (!entry->failed && entry->on_mac && entry->on_device) {
             fprintf(file, "%s\t%lld\t%llu\t%llu\t%u\n", entry->path, (long long)entry->mac_time,
-                    (unsigned long long)entry->mac_size, (unsigned long long)entry->velo_time, entry->velo_size);
+                    (unsigned long long)entry->mac_size, (unsigned long long)entry->device_time, entry->device_size);
         }
     }
     if (fclose(file) == 0) rename(partial, manifest_path);
@@ -329,29 +330,29 @@ static bool upload(sync_t *sync, entry_t *entry) {
     char local[PATH_SIZE * 2], remote[PATH_SIZE * 2];
     local_path(sync, entry->path, local, sizeof local);
     remote_path(sync, entry->path, remote, sizeof remote);
-    if (!valid_on_velo(entry->path)) {
-        sync_log(sync, "skipped %s: name not allowed on the Velo", entry->path);
+    if (!valid_on_device(entry->path)) {
+        sync_log(sync, "skipped %s: name not allowed on the " RAPI_DEVICE, entry->path);
         sync->result->skipped++;
         return false;
     }
     if (entry->mac_size + FREE_MARGIN > sync->free_space) {
-        sync_log(sync, "skipped %s: not enough storage on the Velo", entry->path);
+        sync_log(sync, "skipped %s: not enough storage on the " RAPI_DEVICE, entry->path);
         sync->result->skipped++;
         return false;
     }
     make_remote_directories(sync, entry->path);
     rapi_file_t info;
     if (!rapi_upload(sync->rapi, local, remote, NULL, NULL) || !rapi_stat(sync->rapi, remote, &info)) {
-        sync_log(sync, "can't copy %s to the Velo: %s", entry->path, rapi_error(sync->rapi));
+        sync_log(sync, "can't copy %s to the " RAPI_DEVICE ": %s", entry->path, rapi_error(sync->rapi));
         check_connection(sync);
         return false;
     }
-    entry->on_velo = true;
-    entry->velo_time = info.write_time;
-    entry->velo_size = info.size;
+    entry->on_device = true;
+    entry->device_time = info.write_time;
+    entry->device_size = info.size;
     sync->free_space -= entry->mac_size < sync->free_space ? entry->mac_size : sync->free_space;
     sync->result->uploaded++;
-    sync_log(sync, "copied %s to the Velo", entry->path);
+    sync_log(sync, "copied %s to the " RAPI_DEVICE, entry->path);
     return true;
 }
 
@@ -361,12 +362,12 @@ static bool download_as(sync_t *sync, entry_t *entry, const char *relative) {
     remote_path(sync, entry->path, remote, sizeof remote);
     make_local_directories(local);
     if (!rapi_download(sync->rapi, remote, local, NULL, NULL)) {
-        sync_log(sync, "can't copy %s from the Velo: %s", entry->path, rapi_error(sync->rapi));
+        sync_log(sync, "can't copy %s from the " RAPI_DEVICE ": %s", entry->path, rapi_error(sync->rapi));
         check_connection(sync);
         return false;
     }
     sync->result->downloaded++;
-    sync_log(sync, "copied %s from the Velo", relative);
+    sync_log(sync, "copied %s from the " RAPI_DEVICE, relative);
     return true;
 }
 
@@ -387,11 +388,11 @@ static bool resolve_conflict(sync_t *sync, entries_t *entries, size_t index) {
     const char *path = entries->items[index].path;
     const char *leaf = strrchr(path, '/');
     const char *dot = strrchr(leaf ? leaf : path, '.');
-    if (dot && dot != (leaf ? leaf + 1 : path)) snprintf(copy, sizeof copy, "%.*s (Velo)%s", (int)(dot - path), path, dot);
-    else snprintf(copy, sizeof copy, "%s (Velo)", path);
+    if (dot && dot != (leaf ? leaf + 1 : path)) snprintf(copy, sizeof copy, "%.*s (" RAPI_DEVICE ")%s", (int)(dot - path), path, dot);
+    else snprintf(copy, sizeof copy, "%s (" RAPI_DEVICE ")", path);
     if (!download_as(sync, &entries->items[index], copy)) return false;
     sync->result->conflicts++;
-    sync_log(sync, "%s changed on both: kept the Velo's copy as %s", path, copy);
+    sync_log(sync, "%s changed on both: kept the " RAPI_DEVICE "'s copy as %s", path, copy);
     char local[PATH_SIZE * 2];
     struct stat info;
     local_path(sync, copy, local, sizeof local);
@@ -407,12 +408,12 @@ static bool resolve_conflict(sync_t *sync, entries_t *entries, size_t index) {
 static bool apply(sync_t *sync, entries_t *entries, size_t index) {
     entry_t *entry = &entries->items[index];
     bool mac_changed = entry->on_mac && (!entry->in_manifest || entry->mac_time != entry->known_mac_time || entry->mac_size != entry->known_mac_size);
-    bool velo_changed = entry->on_velo && (!entry->in_manifest || entry->velo_time != entry->known_velo_time || entry->velo_size != entry->known_velo_size);
-    if (entry->on_mac && entry->on_velo) {
-        if (!entry->in_manifest && entry->mac_size == entry->velo_size) return true;
-        if (!entry->in_manifest || (mac_changed && velo_changed)) return resolve_conflict(sync, entries, index);
+    bool device_changed = entry->on_device && (!entry->in_manifest || entry->device_time != entry->known_device_time || entry->device_size != entry->known_device_size);
+    if (entry->on_mac && entry->on_device) {
+        if (!entry->in_manifest && entry->mac_size == entry->device_size) return true;
+        if (!entry->in_manifest || (mac_changed && device_changed)) return resolve_conflict(sync, entries, index);
         if (mac_changed) return upload(sync, entry);
-        if (velo_changed) return download(sync, entry);
+        if (device_changed) return download(sync, entry);
         return true;
     }
     if (entry->on_mac) {
@@ -420,26 +421,26 @@ static bool apply(sync_t *sync, entries_t *entries, size_t index) {
         char local[PATH_SIZE * 2];
         local_path(sync, entry->path, local, sizeof local);
         if (!move_to_trash(local)) {
-            sync_log(sync, "%s was deleted on the Velo; couldn't move the Mac copy to the Trash", entry->path);
+            sync_log(sync, "%s was deleted on the " RAPI_DEVICE "; couldn't move the Mac copy to the Trash", entry->path);
             return false;
         }
         entry->on_mac = false;
         sync->result->deleted_on_mac++;
-        sync_log(sync, "%s was deleted on the Velo: moved the Mac copy to the Trash", entry->path);
+        sync_log(sync, "%s was deleted on the " RAPI_DEVICE ": moved the Mac copy to the Trash", entry->path);
         return true;
     }
-    if (entry->on_velo) {
-        if (!entry->in_manifest || velo_changed) return download(sync, entry);
+    if (entry->on_device) {
+        if (!entry->in_manifest || device_changed) return download(sync, entry);
         char remote[PATH_SIZE * 2];
         remote_path(sync, entry->path, remote, sizeof remote);
         if (!rapi_delete(sync->rapi, remote)) {
-            sync_log(sync, "can't delete %s on the Velo: %s", entry->path, rapi_error(sync->rapi));
+            sync_log(sync, "can't delete %s on the " RAPI_DEVICE ": %s", entry->path, rapi_error(sync->rapi));
             check_connection(sync);
             return false;
         }
-        entry->on_velo = false;
-        sync->result->deleted_on_velo++;
-        sync_log(sync, "%s was deleted on the Mac: deleted it on the Velo", entry->path);
+        entry->on_device = false;
+        sync->result->deleted_on_device++;
+        sync_log(sync, "%s was deleted on the host: deleted it on the " RAPI_DEVICE, entry->path);
         return true;
     }
     return true;
@@ -454,7 +455,7 @@ bool rapi_sync_run(rapi_t *rapi, const char *folder, const char *remote_root, co
     sync.free_space = rapi_store(rapi, &store) ? store.free_size : 0;
     load_manifest(&sync, &entries, manifest_path);
     scan_mac(&sync, &entries, "");
-    if (!scan_velo(&sync, &entries, "", 0)) {
+    if (!scan_device(&sync, &entries, "", 0)) {
         free(entries.items);
         return false;
     }

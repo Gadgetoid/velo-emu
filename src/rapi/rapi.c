@@ -1,4 +1,5 @@
 #include "rapi/rapi.h"
+#include "rapi/rapi_project.h"
 
 #include <netdb.h>
 #include <stdarg.h>
@@ -227,7 +228,7 @@ static bool socket_write(int socket, const void *data, size_t length) {
 
 static bool reply_u32(rapi_t *rapi, uint32_t *value) {
     if (rapi->reply_offset + 4 > rapi->reply_length) {
-        set_error(rapi, "short reply from the Velo");
+        set_error(rapi, "short reply from the " RAPI_DEVICE);
         return false;
     }
     const uint8_t *p = rapi->reply + rapi->reply_offset;
@@ -238,7 +239,7 @@ static bool reply_u32(rapi_t *rapi, uint32_t *value) {
 
 static const uint8_t *reply_bytes(rapi_t *rapi, size_t length) {
     if (rapi->reply_offset + length > rapi->reply_length) {
-        set_error(rapi, "short reply from the Velo");
+        set_error(rapi, "short reply from the " RAPI_DEVICE);
         return NULL;
     }
     const uint8_t *p = rapi->reply + rapi->reply_offset;
@@ -265,9 +266,9 @@ static bool call(rapi_t *rapi, message_t *message) {
     free(message->data);
     *message = (message_t){ 0 };
     if (!connected) return false;
-    if (!sent) return connection_broken(rapi, "lost the connection to the Velo");
+    if (!sent) return connection_broken(rapi, "lost the connection to the " RAPI_DEVICE);
     uint8_t header[4];
-    if (!socket_read(rapi->socket, header, 4)) return connection_broken(rapi, "the Velo closed the connection");
+    if (!socket_read(rapi->socket, header, 4)) return connection_broken(rapi, "the " RAPI_DEVICE " closed the connection");
     size_t length = (size_t)header[0] | (size_t)header[1] << 8 | (size_t)header[2] << 16 | (size_t)header[3] << 24;
     if (length > REPLY_MAX) return connection_broken(rapi, "reply too large (%zu bytes)", length);
     uint8_t *reply = realloc(rapi->reply, length ? length : 1);
@@ -275,13 +276,13 @@ static bool call(rapi_t *rapi, message_t *message) {
     rapi->reply = reply;
     rapi->reply_length = length;
     rapi->reply_offset = 0;
-    if (!socket_read(rapi->socket, rapi->reply, length)) return connection_broken(rapi, "the Velo closed the connection");
+    if (!socket_read(rapi->socket, rapi->reply, length)) return connection_broken(rapi, "the " RAPI_DEVICE " closed the connection");
     uint32_t status;
     if (!reply_u32(rapi, &status)) return false;
     if (status == 1) {
         uint32_t code = 0;
         reply_u32(rapi, &code);
-        set_error(rapi, "the Velo rejected the call (0x%08x)", code);
+        set_error(rapi, "the " RAPI_DEVICE " rejected the call (0x%08x)", code);
         return false;
     }
     return true;
@@ -295,11 +296,11 @@ bool rapi_data_path(const char *leaf, char *path, size_t size) {
     const char *data_home = getenv("XDG_DATA_HOME");
     const char *home = getenv("HOME") ? getenv("HOME") : ".";
     int length;
-    if (data_home && data_home[0] == '/') length = snprintf(path, size, "%s/velo-emu/%s", data_home, leaf);
+    if (data_home && data_home[0] == '/') length = snprintf(path, size, "%s/" RAPI_DATA_FOLDER "/%s", data_home, leaf);
 #ifdef __APPLE__
-    else length = snprintf(path, size, "%s/Library/Application Support/Velo/%s", home, leaf);
+    else length = snprintf(path, size, "%s/Library/Application Support/" RAPI_MAC_FOLDER "/%s", home, leaf);
 #else
-    else length = snprintf(path, size, "%s/.local/share/velo-emu/%s", home, leaf);
+    else length = snprintf(path, size, "%s/.local/share/" RAPI_DATA_FOLDER "/%s", home, leaf);
 #endif
     return length > 0 && (size_t)length < size;
 }
@@ -351,7 +352,7 @@ static rapi_t *rapi_start(int fd, char *error, size_t error_size) {
     rapi->socket = fd;
     rapi_version_t version;
     if (!rapi_version(rapi, &version)) {
-        snprintf(error, error_size, "the Velo isn't answering (is PC Link connected?): %s", rapi->error);
+        snprintf(error, error_size, "the " RAPI_DEVICE " isn't answering (is PC Link connected?): %s", rapi->error);
         rapi_disconnect(rapi);
         return NULL;
     }
@@ -423,7 +424,7 @@ bool rapi_list(rapi_t *rapi, const char *pattern, rapi_file_t **files, size_t *c
     if (!call(rapi, &message) || !reply_u32(rapi, &found)) return false;
     if (!found) return true;
     if (found > (rapi->reply_length - rapi->reply_offset) / FIND_ENTRY_MIN) {
-        set_error(rapi, "short reply from the Velo");
+        set_error(rapi, "short reply from the " RAPI_DEVICE);
         return false;
     }
     rapi_file_t *list = calloc(found, sizeof *list);

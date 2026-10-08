@@ -1,5 +1,6 @@
 #include "rapi/rapi.h"
 #include "rapi/rapi_load.h"
+#include "rapi/rapi_project.h"
 #include "rapi/rapi_setup.h"
 #include "rapi/rapi_sync.h"
 #include "util/options.h"
@@ -14,13 +15,13 @@
 #define REMOTE_HOME "\\My Documents"
 
 static const char *usage =
-    "usage: velo-rapi [--socket=PATH | --connect=HOST:PORT] [--timeout=SECONDS] COMMAND [ARGUMENTS]\n"
-    "Talks to a running Velo over RAPI (the emulator with Network (PPP) connected, or headless --net --rapi).\n"
+    "usage: " RAPI_TOOL " [--socket=PATH | --connect=HOST:PORT] [--timeout=SECONDS] COMMAND [ARGUMENTS]\n"
+    "Talks to a running " RAPI_DEVICE " over RAPI (the emulator with Network (PPP) connected, or headless --net --rapi).\n"
     "\n"
     "  info                     OS version and storage\n"
     "  ls [PATH]                list a folder (default \\My Documents)\n"
-    "  get PATH [LOCAL]         copy a file from the Velo\n"
-    "  put LOCAL [PATH]         copy a file to the Velo\n"
+    "  get PATH [LOCAL]         copy a file from the " RAPI_DEVICE "\n"
+    "  put LOCAL [PATH]         copy a file to the " RAPI_DEVICE "\n"
     "  rm PATH                  delete a file\n"
     "  mkdir PATH | rmdir PATH  create or remove a folder\n"
     "  mv FROM TO               move or rename\n"
@@ -33,10 +34,10 @@ static const char *usage =
     "  reg get KEY NAME         read a value\n"
     "  reg set KEY NAME dword|string VALUE\n"
     "\n"
-    "Velo paths are relative to \\My Documents unless they start with / or \\; / and \\ both separate folders.\n"
-    "--socket=PATH picks another RAPI socket (default rapi.sock in the data folder); --connect=HOST:PORT uses an emulator's RAPI over the Network instead; --timeout=SECONDS is how long to wait for the Velo once connected (default 30); --help and --version as usual.\n";
+    "Paths on the " RAPI_DEVICE " are relative to \\My Documents unless they start with / or \\; / and \\ both separate folders.\n"
+    "--socket=PATH picks another RAPI socket (default rapi.sock in the data folder); --connect=HOST:PORT uses an emulator's RAPI over the Network instead; --timeout=SECONDS is how long to wait for the " RAPI_DEVICE " once connected (default 30); --help and --version as usual.\n";
 
-static void velo_path(const char *path, char *out, size_t size) {
+static void device_path(const char *path, char *out, size_t size) {
     if (path[0] == '/' || path[0] == '\\') snprintf(out, size, "%s", path);
     else if (*path) snprintf(out, size, "%s\\%s", REMOTE_HOME, path);
     else snprintf(out, size, "%s", REMOTE_HOME);
@@ -67,16 +68,16 @@ static void log_line(void *context, const char *message) {
 }
 
 static int fail(rapi_t *rapi) {
-    fprintf(stderr, "velo-rapi: %s\n", rapi_error(rapi));
+    fprintf(stderr, RAPI_TOOL ": %s\n", rapi_error(rapi));
     return 1;
 }
 
 static int list(rapi_t *rapi, const char *path) {
     char pattern[1100];
-    velo_path(path, pattern, sizeof pattern - 2);
+    device_path(path, pattern, sizeof pattern - 2);
     rapi_file_t info;
     if (strpbrk(pattern, "*?") == NULL && (!rapi_stat(rapi, pattern, &info) || (info.attributes & RAPI_ATTRIBUTE_DIRECTORY))) {
-        strcat(pattern, "\\*");
+        strcat(pattern, pattern[strlen(pattern) - 1] == '\\' ? "*" : "\\*");
     }
     rapi_file_t *files;
     size_t count;
@@ -91,7 +92,7 @@ static int list(rapi_t *rapi, const char *path) {
 
 static int put(rapi_t *rapi, const char *local, const char *path) {
     char remote[1100];
-    velo_path(path ? path : "", remote, sizeof remote);
+    device_path(path ? path : "", remote, sizeof remote);
     rapi_file_t info;
     if (!path || (rapi_stat(rapi, remote, &info) && (info.attributes & RAPI_ATTRIBUTE_DIRECTORY))) {
         size_t length = strlen(remote);
@@ -102,7 +103,7 @@ static int put(rapi_t *rapi, const char *local, const char *path) {
 
 static int get(rapi_t *rapi, const char *path, const char *local) {
     char remote[1100];
-    velo_path(path, remote, sizeof remote);
+    device_path(path, remote, sizeof remote);
     const char *target = local ? local : leaf_of(remote);
     return rapi_download(rapi, remote, target, show_progress, (void *)leaf_of(remote)) ? 0 : fail(rapi);
 }
@@ -128,7 +129,7 @@ static bool open_key(rapi_t *rapi, const char *path, bool create, uint32_t *key)
         }
         return rapi_reg_open(rapi, roots[i].key, subkey, create, key);
     }
-    fprintf(stderr, "velo-rapi: key must start with HKCR, HKCU, HKLM or HKU: %s\n", path);
+    fprintf(stderr, RAPI_TOOL ": key must start with HKCR, HKCU, HKLM or HKU: %s\n", path);
     return false;
 }
 
@@ -220,14 +221,14 @@ static int registry(rapi_t *rapi, int count, char **args) {
 static int sync_folder(rapi_t *rapi, const char *folder) {
     char manifest[1100], absolute[PATH_MAX];
     if (!realpath(folder, absolute)) {
-        fprintf(stderr, "velo-rapi: no folder %s\n", folder);
+        fprintf(stderr, RAPI_TOOL ": no folder %s\n", folder);
         return 1;
     }
     rapi_data_path("sync-manifest.txt", manifest, sizeof manifest);
     rapi_sync_result_t result;
     if (!rapi_sync_run(rapi, absolute, REMOTE_HOME, manifest, log_line, NULL, &result)) return fail(rapi);
-    printf("%u to the Velo, %u from the Velo, %u deleted on the Mac, %u deleted on the Velo, %u conflicts, %u skipped\n",
-           result.uploaded, result.downloaded, result.deleted_on_mac, result.deleted_on_velo, result.conflicts, result.skipped);
+    printf("%u to the " RAPI_DEVICE ", %u from the " RAPI_DEVICE ", %u deleted on the host, %u deleted on the " RAPI_DEVICE ", %u conflicts, %u skipped\n",
+           result.uploaded, result.downloaded, result.deleted_on_mac, result.deleted_on_device, result.conflicts, result.skipped);
     return 0;
 }
 
@@ -253,7 +254,7 @@ int main(int argc, char **argv) {
             const char *value = option[9] == '=' ? option + 10 : argv[++first];
             const char *colon = strrchr(value, ':');
             if (!colon || colon == value || !colon[1] || strlen(value) >= sizeof connect_to) {
-                fprintf(stderr, "velo-rapi: --connect wants HOST:PORT, got %s\n", value);
+                fprintf(stderr, RAPI_TOOL ": --connect wants HOST:PORT, got %s\n", value);
                 return 2;
             }
             snprintf(connect_to, sizeof connect_to, "%s", value);
@@ -261,11 +262,11 @@ int main(int argc, char **argv) {
         else if (!strncmp(option, "--timeout=", 10) || (!strcmp(option, "--timeout") && first + 1 < argc)) {
             const char *value = option[9] == '=' ? option + 10 : argv[++first];
             if (!option_integer(value, 10, &timeout) || timeout <= 0 || timeout > 3600) {
-                fprintf(stderr, "velo-rapi: --timeout wants SECONDS, got %s\n", value);
+                fprintf(stderr, RAPI_TOOL ": --timeout wants SECONDS, got %s\n", value);
                 return 2;
             }
         } else {
-            fprintf(stderr, "velo-rapi: unknown option %s (see --help)\n", option);
+            fprintf(stderr, RAPI_TOOL ": unknown option %s (see --help)\n", option);
             return 2;
         }
     }
@@ -286,7 +287,7 @@ int main(int argc, char **argv) {
         rapi = rapi_connect(socket_path, error, sizeof error);
     }
     if (!rapi) {
-        fprintf(stderr, "velo-rapi: %s\n", error);
+        fprintf(stderr, RAPI_TOOL ": %s\n", error);
         return 1;
     }
     if (timeout) rapi_set_timeout(rapi, (int)timeout);
@@ -305,12 +306,12 @@ int main(int argc, char **argv) {
     else if (!strcmp(command, "ls") && count <= 1) status = list(rapi, count ? args[0] : "");
     else if (!strcmp(command, "get") && (count == 1 || count == 2)) status = get(rapi, args[0], count == 2 ? args[1] : NULL);
     else if (!strcmp(command, "put") && (count == 1 || count == 2)) status = put(rapi, args[0], count == 2 ? args[1] : NULL);
-    else if (!strcmp(command, "rm") && count == 1) { velo_path(args[0], path, sizeof path); status = rapi_delete(rapi, path) ? 0 : fail(rapi); }
-    else if (!strcmp(command, "mkdir") && count == 1) { velo_path(args[0], path, sizeof path); status = rapi_make_directory(rapi, path) ? 0 : fail(rapi); }
-    else if (!strcmp(command, "rmdir") && count == 1) { velo_path(args[0], path, sizeof path); status = rapi_remove_directory(rapi, path) ? 0 : fail(rapi); }
+    else if (!strcmp(command, "rm") && count == 1) { device_path(args[0], path, sizeof path); status = rapi_delete(rapi, path) ? 0 : fail(rapi); }
+    else if (!strcmp(command, "mkdir") && count == 1) { device_path(args[0], path, sizeof path); status = rapi_make_directory(rapi, path) ? 0 : fail(rapi); }
+    else if (!strcmp(command, "rmdir") && count == 1) { device_path(args[0], path, sizeof path); status = rapi_remove_directory(rapi, path) ? 0 : fail(rapi); }
     else if (!strcmp(command, "mv") && count == 2) {
-        velo_path(args[0], path, sizeof path);
-        velo_path(args[1], second, sizeof second);
+        device_path(args[0], path, sizeof path);
+        device_path(args[1], second, sizeof second);
         status = rapi_move(rapi, path, second) ? 0 : fail(rapi);
     }
     else if (!strcmp(command, "run") && count >= 1) {
@@ -320,20 +321,20 @@ int main(int argc, char **argv) {
             snprintf(arguments + length, sizeof arguments - length, "%s%s", i > 1 ? " " : "", args[i]);
         }
         const char *program = args[0];
-        if (program[0] == '/') { velo_path(program, path, sizeof path); program = path; }
+        if (program[0] == '/') { device_path(program, path, sizeof path); program = path; }
         status = rapi_run(rapi, program, arguments) ? 0 : fail(rapi);
     }
     else if (!strcmp(command, "sync") && count == 1) status = sync_folder(rapi, args[0]);
     else if (!strcmp(command, "reg")) status = registry(rapi, count, args);
     else if (!strcmp(command, "load") && (count == 1 || count == 2)) {
         char dest[1100] = "";
-        if (count == 2) velo_path(args[1], dest, sizeof dest);
+        if (count == 2) device_path(args[1], dest, sizeof dest);
         status = rapi_load_run(rapi, args[0], dest, log_line, NULL) ? 0 : 1;
     }
     else if (!strcmp(command, "proxy") && count == 1 && (!strcmp(args[0], "on") || !strcmp(args[0], "off"))) {
         rapi_version_t version = { 0 };
         status = rapi_setup_proxy(rapi, !strcmp(args[0], "on")) ? 0 : fail(rapi);
-        if (!status && rapi_version(rapi, &version) && version.major >= 2) printf("Pocket IE picks this up after a soft reset\n");
+        if (!status && rapi_version(rapi, &version) && version.major >= 2) printf(RAPI_PROXY_NOTE "\n");
     }
     else if (!strcmp(command, "baud") && count == 1) {
         uint32_t baud = (uint32_t)strtoul(args[0], NULL, 10);
