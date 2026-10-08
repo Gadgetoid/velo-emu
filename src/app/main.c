@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "app/android.h"
+#include "app/capture.h"
 #include "app/desktop.h"
 #include "app/dialog.h"
 #include "app/host.h"
@@ -62,11 +63,6 @@
 #define AUDIO_CHUNK 8192
 #define WINDOW_TITLE     "Philips Velo 1"
 #define ANDROID_UNLIT_LEVEL 0.5f
-#ifdef __APPLE__
-#define SCREENSHOT_FOLDER SDL_FOLDER_DESKTOP
-#else
-#define SCREENSHOT_FOLDER SDL_FOLDER_PICTURES
-#endif
 
 #define SERIAL_PORT_MAX   16
 #define PORT_SCAN_SECONDS 2.0
@@ -535,62 +531,6 @@ static int profile_system(const profile_t *profile) {
     return rom_catalog_probe(profile->rom, NULL);
 }
 
-static const void *clipboard_png(void *userdata, const char *mime_type, size_t *size) {
-    const size_t *stored = userdata;
-    if (strcmp(mime_type, "image/png")) { *size = 0; return NULL; }
-    *size = stored[0];
-    return stored + 1;
-}
-
-static bool copy_screen(view_t *view) {
-    int width, height;
-    const uint32_t *pixels = view_image(view, &width, &height);
-    uint8_t *png;
-    size_t length;
-    if (!pixels || !png_encode(pixels, width, height, &png, &length)) return false;
-#ifdef __ANDROID__
-    bool shared = android_share_picture(png, length, "Velo Screen.png");
-    free(png);
-    return shared;
-#endif
-    size_t *stored = malloc(sizeof(size_t) + length);
-    if (!stored) { free(png); return false; }
-    stored[0] = length;
-    memcpy(stored + 1, png, length);
-    free(png);
-    const char *types[] = { "image/png" };
-    if (SDL_SetClipboardData(clipboard_png, free, stored, types, 1)) return true;
-    free(stored);
-    return false;
-}
-
-static bool save_screenshot(view_t *view, char *path, size_t size) {
-    int width, height;
-    const uint32_t *pixels = view_image(view, &width, &height);
-    uint8_t *png;
-    size_t length;
-    if (!pixels || !png_encode(pixels, width, height, &png, &length)) return false;
-    time_t now = time(NULL);
-    struct tm local;
-    localtime_r(&now, &local);
-    char stamp[64];
-    strftime(stamp, sizeof stamp, "%Y-%m-%d at %H.%M.%S", &local);
-#ifdef __ANDROID__
-    snprintf(path, size, "Velo Screenshot %s.png", stamp);
-    bool stored = android_save_picture(png, length, path);
-    free(png);
-    return stored;
-#endif
-    const char *folder = SDL_GetUserFolder(SCREENSHOT_FOLDER);
-    if (folder) snprintf(path, size, "%sVelo Screenshot %s.png", folder, stamp);
-    else snprintf(path, size, "%s/Velo Screenshot %s.png", getenv("HOME") ? getenv("HOME") : ".", stamp);
-    FILE *file = fopen(path, "wb");
-    bool saved = file && fwrite(png, 1, length, file) == length;
-    if (file) fclose(file);
-    free(png);
-    return saved;
-}
-
 static void window_size(view_display_t display, uint32_t scale, int *width, int *height) {
     view_source_size(display, width, height);
     *width = *width * WINDOW_SCALE * (int)scale / 100;
@@ -890,12 +830,12 @@ static bool handle_view_menu(app_t *app, int item) {
         fit_window(app->window, app->view, settings->scale);
         return true;
     case MENU_COPY_SCREEN:
-        notice_show(&app->notice, copy_screen(app->view) ? "screen copied" : "could not copy the screen", NOTICE_SHORT);
+        notice_show(&app->notice, capture_copy_screen(app->view) ? "screen copied" : "could not copy the screen", NOTICE_SHORT);
         return true;
     case MENU_SAVE_SCREENSHOT: {
         char path[1100];
         char message[1200];
-        if (save_screenshot(app->view, path, sizeof path)) snprintf(message, sizeof message, "saved %s", file_leaf_name(path));
+        if (capture_save_screenshot(app->view, path, sizeof path)) snprintf(message, sizeof message, "saved %s", file_leaf_name(path));
         else snprintf(message, sizeof message, "could not save the screenshot");
         notice_show(&app->notice, message, NOTICE_MEDIUM);
         return true;
