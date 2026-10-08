@@ -1,7 +1,7 @@
-#include "app/dialog.h"
-#include "app/menu_layout.h"
-#include "app/menu_queue.h"
-#include "app/menu_state.h"
+#include "frontend/common/dialog.h"
+#include "frontend/common/menu_layout.h"
+#include "frontend/common/menu_queue.h"
+#include "frontend/common/menu_state.h"
 
 #include <ctype.h>
 #include <math.h>

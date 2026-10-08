@@ -1,8 +1,8 @@
-#include "app/menu_state.h"
+#include "frontend/common/menu_state.h"
 
 #include <SDL3/SDL.h>
 
-#include "app/menu.h"
+#include "frontend/common/menu.h"
 
 #define TITLE_MAX 96
 

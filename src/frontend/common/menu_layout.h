@@ -1,5 +1,5 @@
 #pragma once
-#include "app/menu.h"
+#include "frontend/common/menu.h"
 
 #ifdef __APPLE__
 #define MENU_HOST             "Mac"

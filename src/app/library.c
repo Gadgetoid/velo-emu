@@ -7,9 +7,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "app/android.h"
 #include "app/host.h"
 #include "app/paths.h"
+#include "frontend/android/android.h"
 #include "util/fat.h"
 #include "util/file.h"
 

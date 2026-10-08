@@ -91,7 +91,7 @@ cat > "$stage/AndroidManifest.xml" <<EOF
 EOF
 
 javac -nowarn -source 11 -target 11 -Xlint:-options -cp "$android_jar" -d "$stage/classes" \
-    $(find "$sdl/android-project/app/src/main/java" -name '*.java') src/app/VeloActivity.java src/app/VeloShareProvider.java
+    $(find "$sdl/android-project/app/src/main/java" -name '*.java') src/frontend/android/VeloActivity.java src/frontend/android/VeloShareProvider.java
 "$build_tools/d8" --min-api $min_api --lib "$android_jar" --output "$stage/dex" $(find "$stage/classes" -name '*.class')
 
 "$build_tools/aapt2" compile --dir "$stage/res" -o "$stage/res.zip"

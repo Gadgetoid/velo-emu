@@ -6,17 +6,14 @@
 #include <string.h>
 #include <time.h>
 
-#include "app/android.h"
 #include "app/capture.h"
 #include "app/desktop.h"
-#include "app/dialog.h"
 #include "app/host.h"
 #include "app/input.h"
 #include "app/launch.h"
 #include "app/library.h"
 #include "app/log.h"
 #include "app/machine_session.h"
-#include "app/menu.h"
 #include "app/notices.h"
 #include "app/paths.h"
 #include "app/picks.h"
@@ -32,6 +29,9 @@
 #include "core/gdb.h"
 #include "core/lcd.h"
 #include "core/machine.h"
+#include "frontend/android/android.h"
+#include "frontend/common/dialog.h"
+#include "frontend/common/menu.h"
 #include "net/net_gateway.h"
 #include "rapi/rapi.h"
 #include "util/file.h"

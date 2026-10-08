@@ -1,6 +1,6 @@
 #import <Cocoa/Cocoa.h>
 
-#include "app/dialog.h"
+#include "frontend/common/dialog.h"
 
 #include <string.h>
 

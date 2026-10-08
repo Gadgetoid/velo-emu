@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "app/android.h"
+#include "frontend/android/android.h"
 
 #define COMMAND_BRIGHTNESS     0x8000
 #define COMMAND_KEEP_SCREEN_ON 0x8001

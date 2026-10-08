@@ -8,7 +8,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "app/android.h"
+#include "frontend/android/android.h"
 #include "util/png.h"
 
 #ifdef __APPLE__

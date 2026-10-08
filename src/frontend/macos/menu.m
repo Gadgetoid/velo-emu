@@ -1,7 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
-#include "app/menu_layout.h"
-#include "app/menu_queue.h"
+#include "frontend/common/menu_layout.h"
+#include "frontend/common/menu_queue.h"
 
 static NSMenuItem *items[MENU_COUNT];
 

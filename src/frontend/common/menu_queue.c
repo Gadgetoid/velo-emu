@@ -1,8 +1,8 @@
-#include "app/menu_queue.h"
+#include "frontend/common/menu_queue.h"
 
 #include <string.h>
 
-#include "app/menu.h"
+#include "frontend/common/menu.h"
 
 #define MENU_QUEUE 32
 

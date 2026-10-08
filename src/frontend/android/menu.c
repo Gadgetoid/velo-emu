@@ -7,12 +7,12 @@
 #include <strings.h>
 #include <sys/stat.h>
 
-#include "app/android.h"
-#include "app/dialog.h"
-#include "app/menu.h"
-#include "app/menu_layout.h"
-#include "app/menu_queue.h"
-#include "app/menu_state.h"
+#include "frontend/android/android.h"
+#include "frontend/common/dialog.h"
+#include "frontend/common/menu.h"
+#include "frontend/common/menu_layout.h"
+#include "frontend/common/menu_queue.h"
+#include "frontend/common/menu_state.h"
 #include "vendor/stb_truetype.h"
 
 #define ROW_POINTS        44.0f

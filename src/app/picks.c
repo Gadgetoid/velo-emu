@@ -6,8 +6,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include "app/android.h"
 #include "app/paths.h"
+#include "frontend/android/android.h"
 #include "util/file.h"
 
 static Uint32 pick_event_type;

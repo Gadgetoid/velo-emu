@@ -3,9 +3,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "app/dialog.h"
 #include "app/rom_catalog.h"
 #include "core/machine.h"
+#include "frontend/common/dialog.h"
 
 void library_find_roms(rom_set_t *roms);
 void library_machines_folder(char *path, size_t size);
