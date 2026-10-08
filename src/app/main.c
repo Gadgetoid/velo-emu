@@ -61,7 +61,7 @@ typedef struct {
     profiles_t profiles;
     profile_t current;
     int current_index;
-    machine_session_hooks_t session_hooks;
+    machine_session_output_t session_output;
     machine_session_t session;
     key_layout_t key_layout;
     SDL_Window *window;
@@ -600,17 +600,24 @@ static void handle_menu(app_t *app, int item, int *switch_to, bool *events_seen)
     }
 }
 
+static bool start_session(app_t *app, machine_session_t *session, const profile_t *profile, const char *state_file, bool fresh,
+                          char *notice, size_t notice_size) {
+    if (!machine_session_start(session, profile, app->settings.speed, app->settings.optimisations != 0, state_file, fresh,
+                               &app->snapshots, &app->session_output, notice, notice_size)) return false;
+    debug_log_start(profile->rom);
+    if (session->new_state) library_insert_card(session->machine);
+    return true;
+}
+
 static void switch_machine(app_t *app, int index) {
     if (desktop_busy(app->desktop)) {
         notice_show(&app->notice, "busy with a desktop transfer", NOTICE_SHORT);
         return;
     }
-    const char *switch_notice = NULL;
+    char switch_notice[NOTICE_TEXT_CAPACITY];
     machine_session_t next_session = { 0 };
     profile_t next_profile = app->profiles.entries[index];
-    bool next_started = machine_session_start(&next_session, &next_profile, app->settings.speed, app->settings.optimisations != 0,
-                                              NULL, false, &switch_notice, &app->snapshots, &app->session_hooks);
-    if (!next_started) {
+    if (!start_session(app, &next_session, &next_profile, NULL, false, switch_notice, sizeof switch_notice)) {
         notice_show(&app->notice, switch_notice, NOTICE_MEDIUM);
         return;
     }
@@ -636,7 +643,7 @@ static void switch_machine(app_t *app, int index) {
     if (app->debugger) gdb_set_machine(app->debugger, machine);
     char message[160];
     snprintf(message, sizeof message, "switched to %s", app->current.name);
-    notice_show(&app->notice, switch_notice ? switch_notice : message, NOTICE_MEDIUM);
+    notice_show(&app->notice, switch_notice[0] ? switch_notice : message, NOTICE_MEDIUM);
 }
 
 static void handle_picked(app_t *app, bool velo_online) {
@@ -897,15 +904,11 @@ static int load_launch(app_t *app, int argc, char **argv, bool *start) {
     return 0;
 }
 
-static bool start_session(app_t *app, const char *state_file, bool fresh, const char **notice) {
-    return machine_session_start(&app->session, &app->current, app->settings.speed, app->settings.optimisations != 0,
-                                 state_file, fresh, notice, &app->snapshots, &app->session_hooks);
-}
 
 static int start_machine(app_t *app) {
     settings_t *settings = &app->settings;
     const launch_t *launch = &app->launch;
-    app->session_hooks = (machine_session_hooks_t){ app_log, print_debug_line, debug_log_start, library_insert_card, app };
+    app->session_output = (machine_session_output_t){ app_log, print_debug_line, app };
     library_find_roms(&app->roms);
     library_machines_folder(app->profiles_folder, sizeof app->profiles_folder);
     profiles_load(&app->profiles, app->profiles_folder);
@@ -939,19 +942,19 @@ static int start_machine(app_t *app) {
         }
         app->current = app->profiles.entries[app->current_index];
     }
-    const char *notice;
-    char fallback_notice[1600];
-    bool started = start_session(app, launch->state_file, launch->fresh, &notice);
+    char notice[NOTICE_TEXT_CAPACITY];
+    bool started = start_session(app, &app->session, &app->current, launch->state_file, launch->fresh, notice, sizeof notice);
     if (!started && app->current_index >= 0 && !launch->machine) {
+        char fallback_notice[NOTICE_TEXT_CAPACITY];
         snprintf(fallback_notice, sizeof fallback_notice, "Couldn't start %s: %s", app->current.name, notice);
         fprintf(stderr, "%s\n", fallback_notice);
         for (int i = 0; i < app->profiles.count && !started; i++) {
             if (i == app->current_index) continue;
             app->current = app->profiles.entries[i];
-            started = start_session(app, NULL, false, &notice);
+            started = start_session(app, &app->session, &app->current, NULL, false, notice, sizeof notice);
             if (started) {
                 app->current_index = i;
-                notice = fallback_notice;
+                snprintf(notice, sizeof notice, "%s", fallback_notice);
             }
         }
     }
