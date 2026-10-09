@@ -977,10 +977,11 @@ static bool open_window(app_t *app) {
     lcd_set_size(screen.width, screen.height);
 
     SDL_SetAppMetadata("Velo", options_version(), "velo-emu");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return false;
     }
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO) && app_log_verbose()) fprintf(stderr, "audio: %s\n", SDL_GetError());
     picks_init();
     int window_width, window_height;
     window_size((view_display_t)app->settings.display, app->settings.scale, &window_width, &window_height);
