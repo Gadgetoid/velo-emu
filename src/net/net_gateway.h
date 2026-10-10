@@ -11,6 +11,7 @@ typedef struct {
     const char *user_agent;
     const char *rapi_socket;
     int rapi_port;
+    bool ethernet;
 } net_gateway_options_t;
 
 typedef void (*net_gateway_log_fn)(const char *message);
@@ -21,6 +22,8 @@ void     net_gateway_destroy(net_gateway_t *gateway);
 void     net_gateway_reset(net_gateway_t *gateway);
 void     net_gateway_from_guest(net_gateway_t *gateway, const uint8_t *data, size_t length);
 size_t   net_gateway_to_guest(net_gateway_t *gateway, uint8_t *out, size_t max);
+void     net_gateway_frame_from_guest(net_gateway_t *gateway, const uint8_t *frame, size_t length);
+size_t   net_gateway_frame_to_guest(net_gateway_t *gateway, uint8_t *frame, size_t max);
 void     net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms);
 bool     net_gateway_online(const net_gateway_t *gateway);
 bool     net_gateway_take_desktop_connected(net_gateway_t *gateway);

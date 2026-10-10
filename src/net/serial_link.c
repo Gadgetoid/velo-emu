@@ -23,7 +23,7 @@
 void serial_link_init(serial_link_t *link, net_gateway_log_fn log) {
     memset(link, 0, sizeof *link);
     link->log = log;
-    link->options = (net_gateway_options_t){ NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0 };
+    link->options = (net_gateway_options_t){ NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0, false };
     link->fd = -1;
     link->pty_slave = -1;
     link->listener = -1;

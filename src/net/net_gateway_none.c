@@ -20,6 +20,12 @@ void     net_gateway_from_guest(net_gateway_t *gateway, const uint8_t *data, siz
 size_t   net_gateway_to_guest(net_gateway_t *gateway, uint8_t *out, size_t max) {
     (void)gateway; (void)out; (void)max; return 0;
 }
+void     net_gateway_frame_from_guest(net_gateway_t *gateway, const uint8_t *frame, size_t length) {
+    (void)gateway; (void)frame; (void)length;
+}
+size_t   net_gateway_frame_to_guest(net_gateway_t *gateway, uint8_t *frame, size_t max) {
+    (void)gateway; (void)frame; (void)max; return 0;
+}
 void     net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms) {
     (void)gateway; (void)guest_ms;
 }

@@ -350,7 +350,7 @@ static const option_spec_t SPEC = {
 int main(int argc, char **argv) {
     static run_t run;
     run = (run_t){ .seconds = 5, .png_cell = 4, .png_backlight = -1, .soft_reset_at = -1, .cable_at = -1, .net_at = -1, .replug_at = -1,
-                   .net_options = { NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0 } };
+                   .net_options = { NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0, false } };
     static serial_link_t serial;
     serial_link_init(&serial, log_stderr);
     const char *positional[1];

@@ -44,6 +44,8 @@
 #define HDLC_ESCAPE 0x7D
 
 #define FRAME_MAX   4096
+#define ETHERNET_FRAME_MAX 1514
+#define ETHERNET_QUEUE 64
 #define OUT_SIZE    (256 * 1024)
 #define MAX_POLL    64
 #define MAX_TIMERS  4
@@ -137,6 +139,11 @@ struct net_gateway {
     bool arp_pending;
     uint8_t arp_mac[6];
     uint8_t arp_ip[4];
+
+    bool ethernet;
+    uint8_t queued[ETHERNET_QUEUE][ETHERNET_FRAME_MAX];
+    uint16_t queued_length[ETHERNET_QUEUE];
+    size_t queued_head, queued_count;
 };
 
 static void gateway_log(net_gateway_t *gateway, const char *format, ...) {
@@ -450,9 +457,21 @@ static void retarget_desktop(uint8_t *ip, size_t length, bool outbound) {
     memcpy(address, to, 4);
 }
 
+static void queue_frame(net_gateway_t *gateway, const uint8_t *frame, size_t length) {
+    if (length > ETHERNET_FRAME_MAX || gateway->queued_count == ETHERNET_QUEUE) return;
+    size_t slot = (gateway->queued_head + gateway->queued_count) % ETHERNET_QUEUE;
+    memcpy(gateway->queued[slot], frame, length);
+    gateway->queued_length[slot] = (uint16_t)length;
+    gateway->queued_count++;
+}
+
 static slirp_ssize_t slirp_send_packet(const void *buffer, size_t length, void *opaque) {
     net_gateway_t *gateway = opaque;
     const uint8_t *ethernet = buffer;
+    if (gateway->ethernet) {
+        queue_frame(gateway, ethernet, length);
+        return (slirp_ssize_t)length;
+    }
     if (length < ETH_HEADER) return (slirp_ssize_t)length;
     uint16_t type = (uint16_t)(ethernet[12] << 8 | ethernet[13]);
     if (type == ETH_ARP && length >= ETH_HEADER + 28) {
@@ -797,6 +816,9 @@ net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_opti
     signal(SIGPIPE, SIG_IGN);
     net_gateway_t *gateway = calloc(1, sizeof *gateway);
     gateway->log = log;
+    gateway->desktop_listener = gateway->rapi_listener = -1;
+    for (int i = 0; i < DESKTOP_CLIENTS; i++) gateway->desktop_clients[i].fd = -1;
+    for (int i = 0; i < RAPI_RELAYS; i++) gateway->rapi_relays[i].client = gateway->rapi_relays[i].upstream = -1;
     SlirpConfig config = { 0 };
     config.version = SLIRP_CONFIG_VERSION_MAX < 6 ? SLIRP_CONFIG_VERSION_MAX : 6;
     config.in_enabled = true;
@@ -813,10 +835,13 @@ net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_opti
         free(gateway);
         return NULL;
     }
+    gateway->ethernet = options && options->ethernet;
     start_proxy(gateway, options ? options->user_agent : NULL);
-    start_desktop(gateway);
-    start_rapi(gateway, options ? options->rapi_socket : NULL);
-    start_rapi_port(gateway, options ? options->rapi_port : 0);
+    if (!gateway->ethernet) {
+        start_desktop(gateway);
+        start_rapi(gateway, options ? options->rapi_socket : NULL);
+        start_rapi_port(gateway, options ? options->rapi_port : 0);
+    }
     net_gateway_reset(gateway);
     return gateway;
 }
@@ -934,6 +959,21 @@ static int get_revents(int index, void *opaque) {
     if (revents & POLLERR) events |= SLIRP_POLL_ERR;
     if (revents & POLLHUP) events |= SLIRP_POLL_HUP;
     return events;
+}
+
+void net_gateway_frame_from_guest(net_gateway_t *gateway, const uint8_t *frame, size_t length) {
+    if (!gateway->ethernet || length < ETH_HEADER || length > ETHERNET_FRAME_MAX) return;
+    slirp_input(gateway->slirp, frame, (int)length);
+}
+
+size_t net_gateway_frame_to_guest(net_gateway_t *gateway, uint8_t *frame, size_t max) {
+    if (!gateway->queued_count) return 0;
+    size_t length = gateway->queued_length[gateway->queued_head];
+    if (length > max) length = max;
+    memcpy(frame, gateway->queued[gateway->queued_head], length);
+    gateway->queued_head = (gateway->queued_head + 1) % ETHERNET_QUEUE;
+    gateway->queued_count--;
+    return length;
 }
 
 void net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms) {

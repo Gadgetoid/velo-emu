@@ -33,6 +33,7 @@ static const char *usage =
     "  reg ls|dump KEY          list a registry key, or everything under it\n"
     "  reg get KEY NAME         read a value\n"
     "  reg set KEY NAME dword|string VALUE\n"
+    "  reg set KEY NAME multi VALUE...\n"
     "\n"
     "Paths on the " RAPI_DEVICE " are relative to \\My Documents unless they start with / or \\; / and \\ both separate folders.\n"
     "--socket=PATH picks another RAPI socket (default rapi.sock in the data folder); --connect=HOST:PORT uses an emulator's RAPI over the Network instead; --timeout=SECONDS is how long to wait for the " RAPI_DEVICE " once connected (default 30); --help and --version as usual.\n";
@@ -188,7 +189,7 @@ static int registry(rapi_t *rapi, int count, char **args) {
     if (count < 2) return 2;
     const char *action = args[0];
     bool set = !strcmp(action, "set");
-    if (!(!strcmp(action, "ls") && count == 2) && !(!strcmp(action, "dump") && count == 2) && !(!strcmp(action, "get") && count == 3) && !(set && count == 5)) return 2;
+    if (!(!strcmp(action, "ls") && count == 2) && !(!strcmp(action, "dump") && count == 2) && !(!strcmp(action, "get") && count == 3) && !(set && (count == 5 || (count > 5 && !strcmp(args[3], "multi"))))) return 2;
     uint32_t key;
     if (!open_key(rapi, args[1], set, &key)) return *rapi_error(rapi) ? fail(rapi) : 1;
     int status = 0;
@@ -211,6 +212,13 @@ static int registry(rapi_t *rapi, int count, char **args) {
         uint8_t data[RAPI_REG_DATA_MAX];
         uint32_t length = rapi_reg_encode(args[4], data, sizeof data);
         if (!rapi_reg_set(rapi, key, args[2], RAPI_REG_SZ, data, length)) status = fail(rapi);
+    } else if (!strcmp(args[3], "multi")) {
+        uint8_t data[RAPI_REG_DATA_MAX];
+        uint32_t length = 0;
+        for (int i = 4; i < count && length + 2 < sizeof data; i++) length += rapi_reg_encode(args[i], data + length, sizeof data - 2 - length);
+        data[length++] = 0;
+        data[length++] = 0;
+        if (!rapi_reg_set(rapi, key, args[2], RAPI_REG_MULTI_SZ, data, length)) status = fail(rapi);
     } else {
         status = 2;
     }
