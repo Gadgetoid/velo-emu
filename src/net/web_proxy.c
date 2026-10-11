@@ -776,11 +776,14 @@ web_proxy_t *web_proxy_start(net_gateway_log_fn log, const char *user_agent) {
         }
         curl_ready = true;
     }
+    static int proxies;
     web_proxy_t *proxy = calloc(1, sizeof *proxy);
     proxy->log = log;
+    char name[32];
+    snprintf(name, sizeof name, "velo-proxy-%d", proxies++);
     snprintf(proxy->user_agent, sizeof proxy->user_agent, "%s", user_agent ? user_agent : "");
     proxy->address.sun_family = AF_UNIX;
-    if (!net_gateway_socket_path(proxy->address.sun_path, sizeof proxy->address.sun_path, "velo-proxy")) {
+    if (!net_gateway_socket_path(proxy->address.sun_path, sizeof proxy->address.sun_path, name)) {
         proxy_log(log, "proxy: no usable socket path\n");
         free(proxy);
         return NULL;

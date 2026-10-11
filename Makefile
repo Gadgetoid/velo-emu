@@ -42,7 +42,7 @@ SRC_MENU  = src/frontend/linux/menu.c src/frontend/linux/dialog.c src/frontend/l
 endif
 
 ifeq ($(shell $(PKG_CONFIG) --exists slirp && echo yes),yes)
-SRC_NET  = src/net/net_gateway.c src/net/serial_link.c
+SRC_NET  = src/net/net_gateway.c src/net/ppp_gateway.c src/net/ethernet_gateway.c src/net/serial_link.c
 CFLAGS  += $(shell $(PKG_CONFIG) --cflags slirp)
 NET_LIBS = $(shell $(PKG_CONFIG) --libs slirp)
 ifeq ($(shell $(PKG_CONFIG) --exists libcurl && echo yes),yes)
@@ -54,7 +54,7 @@ SRC_NET  += src/net/web_proxy_none.c
 endif
 LDFLAGS += $(NET_LIBS)
 else
-SRC_NET  = src/net/net_gateway_none.c src/net/web_proxy_none.c src/net/serial_link.c
+SRC_NET  = src/net/net_gateway_none.c src/net/ppp_gateway.c src/net/ethernet_gateway.c src/net/web_proxy_none.c src/net/serial_link.c
 endif
 
 SRC_MACHINE = src/core/mips.c src/core/machine.c src/core/ce.c src/core/gdb.c src/core/mailbox.c src/core/agent.c src/core/screen.c src/native/lzw.c src/native/lz.c src/native/native.c src/core/optimiser.c src/core/vdisk.c src/core/pccard.c src/core/ne2000.c src/core/uart.c src/core/key_text.c src/util/options.c src/util/file.c

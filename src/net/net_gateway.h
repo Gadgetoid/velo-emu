@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define NET_GATEWAY_DEFAULT_USER_AGENT "Lynx/2.9.2 libwww-FM/2.14 SSL-MM/1.4.1 OpenSSL/3.0.13"
+#define NET_GATEWAY_FRAME_MAX          1514
 
 typedef struct net_gateway net_gateway_t;
 
@@ -11,20 +12,20 @@ typedef struct {
     const char *user_agent;
     const char *rapi_socket;
     int rapi_port;
-    bool ethernet;
 } net_gateway_options_t;
 
 typedef void (*net_gateway_log_fn)(const char *message);
+typedef void (*net_gateway_sink_fn)(void *context, const uint8_t *frame, size_t length);
 
-bool     net_gateway_available(void);
-net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_options_t *options);
-void     net_gateway_destroy(net_gateway_t *gateway);
-void     net_gateway_reset(net_gateway_t *gateway);
-void     net_gateway_from_guest(net_gateway_t *gateway, const uint8_t *data, size_t length);
-size_t   net_gateway_to_guest(net_gateway_t *gateway, uint8_t *out, size_t max);
-void     net_gateway_frame_from_guest(net_gateway_t *gateway, const uint8_t *frame, size_t length);
-size_t   net_gateway_frame_to_guest(net_gateway_t *gateway, uint8_t *frame, size_t max);
-void     net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms);
-bool     net_gateway_online(const net_gateway_t *gateway);
-bool     net_gateway_take_desktop_connected(net_gateway_t *gateway);
-bool     net_gateway_socket_path(char *path, size_t size, const char *name);
+extern const uint8_t NET_GATEWAY_GUEST_IP[4];
+extern const uint8_t NET_GATEWAY_HOST_IP[4];
+extern const uint8_t NET_GATEWAY_DNS_IP[4];
+extern const uint8_t NET_GATEWAY_HOST_MAC[6];
+
+bool           net_gateway_available(void);
+net_gateway_t *net_gateway_create(net_gateway_log_fn log, const net_gateway_options_t *options, net_gateway_sink_fn sink, void *context);
+void           net_gateway_destroy(net_gateway_t *gateway);
+void           net_gateway_input(net_gateway_t *gateway, const uint8_t *frame, size_t length);
+void           net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms);
+bool           net_gateway_take_desktop_connected(net_gateway_t *gateway);
+bool           net_gateway_socket_path(char *path, size_t size, const char *name);

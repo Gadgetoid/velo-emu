@@ -6,7 +6,7 @@
 #include "app/host.h"
 #include "app/log.h"
 #include "app/paths.h"
-#include "net/net_gateway.h"
+#include "net/ppp_gateway.h"
 
 #define RECONNECT_SECONDS 2ull
 #define PORT_SCAN_SECONDS 2.0
@@ -121,7 +121,7 @@ void serial_service_attach(serial_service_t *service, machine_t *machine, serial
 }
 
 bool serial_service_online(const serial_service_t *service) {
-    return service->link.gateway && net_gateway_online(service->link.gateway);
+    return service->link.gateway && ppp_gateway_online(service->link.gateway);
 }
 
 void serial_service_step(serial_service_t *service, machine_t *machine, double elapsed, notice_t *notice) {

@@ -23,14 +23,14 @@
 void serial_link_init(serial_link_t *link, net_gateway_log_fn log) {
     memset(link, 0, sizeof *link);
     link->log = log;
-    link->options = (net_gateway_options_t){ NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0, false };
+    link->options = (net_gateway_options_t){ NET_GATEWAY_DEFAULT_USER_AGENT, NULL, 0 };
     link->fd = -1;
     link->pty_slave = -1;
     link->listener = -1;
 }
 
 void serial_link_close(serial_link_t *link) {
-    if (link->gateway) net_gateway_destroy(link->gateway);
+    if (link->gateway) ppp_gateway_destroy(link->gateway);
     if (link->fd >= 0) close(link->fd);
     if (link->pty_slave >= 0) close(link->pty_slave);
     if (link->listener >= 0) close(link->listener);
@@ -103,7 +103,7 @@ const char *serial_link_open(serial_link_t *link, serial_mode_t mode, const char
     serial_link_close(link);
     const char *failure = NULL;
     if (mode == SERIAL_NETWORK) {
-        link->gateway = net_gateway_create(link->log, &link->options);
+        link->gateway = ppp_gateway_create(link->log, &link->options);
         if (!link->gateway) failure = net_gateway_available() ? "cannot start the network" : "this build has no network (libslirp)";
     } else if (mode == SERIAL_PTY) {
         failure = open_pty(link);
@@ -157,12 +157,12 @@ static void pump_network(serial_link_t *link, machine_t *machine) {
     uint8_t buffer[4096];
     size_t count;
     bool dtr = machine_serial_dtr(machine);
-    if (dtr && !link->dtr) net_gateway_reset(link->gateway);
+    if (dtr && !link->dtr) ppp_gateway_reset(link->gateway);
     link->dtr = dtr;
-    while ((count = machine_serial_take(machine, buffer, sizeof buffer)) > 0) net_gateway_from_guest(link->gateway, buffer, count);
-    net_gateway_poll(link->gateway, machine_cycles(machine) / (MACHINE_CLOCK_HZ / 1000));
+    while ((count = machine_serial_take(machine, buffer, sizeof buffer)) > 0) ppp_gateway_from_guest(link->gateway, buffer, count);
+    ppp_gateway_poll(link->gateway, machine_cycles(machine) / (MACHINE_CLOCK_HZ / 1000));
     size_t space = machine_serial_space(machine);
-    count = net_gateway_to_guest(link->gateway, buffer, space < sizeof buffer ? space : sizeof buffer);
+    count = ppp_gateway_to_guest(link->gateway, buffer, space < sizeof buffer ? space : sizeof buffer);
     machine_serial_send(machine, buffer, count);
 }
 

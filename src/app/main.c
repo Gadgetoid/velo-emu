@@ -33,6 +33,7 @@
 #include "frontend/common/dialog.h"
 #include "frontend/common/menu.h"
 #include "net/net_gateway.h"
+#include "net/ppp_gateway.h"
 #include "rapi/rapi.h"
 #include "util/file.h"
 #include "util/options.h"
@@ -704,7 +705,7 @@ static void handle_picked(app_t *app, bool velo_online) {
 
 static void poll_desktop(app_t *app) {
     machine_t *machine = app->session.machine;
-    if (app->serial.link.gateway && net_gateway_take_desktop_connected(app->serial.link.gateway) && app->settings.shared_folder[0]) {
+    if (app->serial.link.gateway && net_gateway_take_desktop_connected(ppp_gateway_network(app->serial.link.gateway)) && app->settings.shared_folder[0]) {
         desktop_sync(app->desktop, app->settings.shared_folder);
     }
     if (desktop_take_reconnect(app->desktop)) serial_service_replug(&app->serial, machine, SPEED_SETTLE_SECONDS);

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #include "core/machine.h"
-#include "net/net_gateway.h"
+#include "net/ppp_gateway.h"
 
 #define SERIAL_LINK_QUEUE 65536
 #define SERIAL_LINK_PORT_NAME 64
@@ -13,7 +13,7 @@ typedef enum { SERIAL_OFF, SERIAL_NETWORK, SERIAL_PTY, SERIAL_DEVICE, SERIAL_TCP
 
 typedef struct {
     serial_mode_t mode;
-    net_gateway_t *gateway;
+    ppp_gateway_t *gateway;
     net_gateway_log_fn log;
     net_gateway_options_t options;
     bool dtr;
