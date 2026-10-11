@@ -28,4 +28,3 @@ void           net_gateway_destroy(net_gateway_t *gateway);
 void           net_gateway_input(net_gateway_t *gateway, const uint8_t *frame, size_t length);
 void           net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms);
 bool           net_gateway_take_desktop_connected(net_gateway_t *gateway);
-bool           net_gateway_socket_path(char *path, size_t size, const char *name);

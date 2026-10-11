@@ -25,6 +25,3 @@ void           net_gateway_poll(net_gateway_t *gateway, uint64_t guest_ms) {
 bool           net_gateway_take_desktop_connected(net_gateway_t *gateway) {
     (void)gateway; return false;
 }
-bool           net_gateway_socket_path(char *path, size_t size, const char *name) {
-    (void)path; (void)size; (void)name; return false;
-}

@@ -7,8 +7,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "net/net_gateway.h"
 #include "rapi/rapi.h"
+#include "util/socket_path.h"
 
 void app_data_folder(char *path, size_t size) {
     rapi_data_path("", path, size);
@@ -57,7 +57,7 @@ void app_settings_path(char *path, size_t size) {
 
 void app_rapi_socket_path(char *path, size_t size) {
 #ifdef __ANDROID__
-    net_gateway_socket_path(path, size, "velo-rapi");
+    socket_path(path, size, "velo-rapi");
 #else
     rapi_data_path("rapi.sock", path, size);
 #endif

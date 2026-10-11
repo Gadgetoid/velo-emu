@@ -1,4 +1,5 @@
 #include "net/web_proxy.h"
+#include "util/socket_path.h"
 #include "net/web_image.h"
 
 #include <ctype.h>
@@ -783,7 +784,7 @@ web_proxy_t *web_proxy_start(net_gateway_log_fn log, const char *user_agent) {
     snprintf(name, sizeof name, "velo-proxy-%d", proxies++);
     snprintf(proxy->user_agent, sizeof proxy->user_agent, "%s", user_agent ? user_agent : "");
     proxy->address.sun_family = AF_UNIX;
-    if (!net_gateway_socket_path(proxy->address.sun_path, sizeof proxy->address.sun_path, name)) {
+    if (!socket_path(proxy->address.sun_path, sizeof proxy->address.sun_path, name)) {
         proxy_log(log, "proxy: no usable socket path\n");
         free(proxy);
         return NULL;

@@ -1,5 +1,6 @@
 #include "net/net_gateway.h"
 #include "net/web_proxy.h"
+#include "util/socket_path.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -224,20 +225,10 @@ bool net_gateway_available(void) {
     return true;
 }
 
-bool net_gateway_socket_path(char *path, size_t size, const char *name) {
-    const char *directory = getenv("TMPDIR");
-    if (!directory || !*directory) directory = "/tmp";
-    const char *separator = directory[strlen(directory) - 1] == '/' ? "" : "/";
-    int length = snprintf(path, size, "%s%s%s-%d.sock", directory, separator, name, (int)getpid());
-    if (length >= 0 && (size_t)length < size) return true;
-    length = snprintf(path, size, "/tmp/%s-%d.sock", name, (int)getpid());
-    return length >= 0 && (size_t)length < size;
-}
-
 static bool socket_name(const net_gateway_t *gateway, char *path, size_t size, const char *name) {
     char numbered[SOCKET_NAME_MAX];
     snprintf(numbered, sizeof numbered, "%s-%d", name, gateway->instance);
-    return net_gateway_socket_path(path, size, numbered);
+    return socket_path(path, size, numbered);
 }
 
 static void start_desktop(net_gateway_t *gateway) {
