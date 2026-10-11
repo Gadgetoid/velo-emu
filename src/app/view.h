@@ -14,6 +14,8 @@ void           view_set_insets(view_t *view, int left, int top, int right, int b
 view_display_t view_display(const view_t *view);
 void           view_set_screen_size(view_t *view, int width, int height);
 void           view_source_size(view_display_t display, int *width, int *height);
+void           view_window_size(view_display_t display, uint32_t scale, int bar_height, int *width, int *height);
+void           view_fit_window(view_t *view, uint32_t scale);
 bool           view_update(view_t *view, float seconds, bool powered);
 void           view_render(view_t *view);
 bool           view_screen_position(view_t *view, float window_x, float window_y, int *x, int *y);

@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define WINDOW_SCALE 2
+
 struct view {
     SDL_Window    *window;
     SDL_Renderer  *renderer;
@@ -13,6 +15,7 @@ struct view {
     int texture_w, texture_h;
     int output_w, output_h;
     float left, top, right, bottom;
+    int bar_height;
     bool laid_out;
     SDL_FRect dest;
     uint32_t sharp[SCREEN_MAX_WIDTH * SCREEN_MAX_HEIGHT];
@@ -29,7 +32,26 @@ view_t *view_create(SDL_Window *window, SDL_Renderer *renderer, view_display_t d
     view->renderer = renderer;
     view->display = display;
     view->top = (float)top;
+    view->bar_height = top;
     return view;
+}
+
+void view_window_size(view_display_t display, uint32_t scale, int bar_height, int *width, int *height) {
+    view_source_size(display, width, height);
+    *width = *width * WINDOW_SCALE * (int)scale / 100;
+    *height = *height * WINDOW_SCALE * (int)scale / 100 + bar_height;
+}
+
+void view_fit_window(view_t *view, uint32_t scale) {
+#ifdef __ANDROID__
+    (void)view;
+    (void)scale;
+    return;
+#endif
+    if (SDL_GetWindowFlags(view->window) & SDL_WINDOW_FULLSCREEN) SDL_SetWindowFullscreen(view->window, false);
+    int width, height;
+    view_window_size(view->display, scale, view->bar_height, &width, &height);
+    SDL_SetWindowSize(view->window, width, height);
 }
 
 void view_destroy(view_t *view) {
