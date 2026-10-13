@@ -137,7 +137,7 @@ tools/mkcard.sh card.img 32 ~/Downloads/SOFTWARE
 velo --card=card.img
 ```
 
-It uses `hdiutil` on macOS and `sfdisk`, `mkfs.fat` and `mtools` on Linux. Insert it with Devices > Insert Card Image… or `--card=IMAGE`; the image path is kept in the saved state. Inserting over a card ejects the old one and inserts the new one a second later. To change its contents on the host, eject it first; on macOS `hdiutil attach -imagekey diskimage-class=CRawDiskImage card.img` mounts it, and on Linux `mcopy -i card.img@@512` copies to and from it.
+It needs mtools (`brew install mtools` or `apt install mtools`). It formats with `hdiutil` on macOS or `sfdisk` and `mkfs.fat` on Linux, copies with `mcopy`, then `tools/fatcase.py` gives every short lower-case name a long-name entry, since CE ignores the NT case flags mtools and macOS use for them. Insert it with Devices > Insert Card Image… or `--card=IMAGE`; the image path is kept in the saved state. Inserting over a card ejects the old one and inserts the new one a second later. To change its contents on the host, eject it first; on macOS `hdiutil attach -imagekey diskimage-class=CRawDiskImage card.img` mounts it, and on Linux `mcopy -i card.img@@512` copies to and from it.
 
 A new machine's first boot inserts the Velo Software Library card from the `cards` folder in the data folder (`~/Library/Application Support/Velo/cards`, `~/.local/share/velo-emu/cards`): the one with a `VELOLIB` folder for CE 1.0, or `VELOLIB2` for CE 2.0. After that the machine keeps whatever card it has.
 
