@@ -15,6 +15,7 @@ install -D -m 755 headless "$root/usr/bin/velo-headless"
 install -D -m 755 velo-rapi "$root/usr/bin/velo-rapi"
 install -D -m 755 velo-state "$root/usr/bin/velo-state"
 install -D -m 644 README.md "$root/usr/share/doc/$package/README.md"
+for page in using pc-card paravirtual-disk networking installing-software headless debugging optimisations android building testing hardware object-store; do install -D -m 644 "docs/$page.md" "$root/usr/share/doc/$package/docs/$page.md"; done
 install -D -m 644 LICENSE "$root/usr/share/doc/$package/LICENSE"
 install -D -m 644 assets/velo.svg "$root/usr/share/icons/hicolor/scalable/apps/$package.svg"
 for size in 16 32 64 128 256 512; do install -D -m 644 "$icons/velo-$size.png" "$root/usr/share/icons/hicolor/${size}x${size}/apps/$package.png"; done
